@@ -15,8 +15,10 @@ def LoginView(page: ft.Page):
     # =====================================================
     # Assets
     # =====================================================
-    ASSET_LOGO = "assets/logo.png"
-    ASSET_BG = "assets/login_bg.png"
+    # Flet web 會從 assets_dir 內尋找檔案。
+    # VM / Web 模式建議使用相對於 assets 資料夾的檔名，不要寫成 assets/logo.png。
+    ASSET_LOGO = "logo.png"
+    ASSET_BG = "login_bg.png"
 
     # =====================================================
     # 色彩設定
@@ -367,7 +369,10 @@ def LoginView(page: ft.Page):
         safe_update(error_text)
 
     def do_login(e):
+        print("LOGIN CLICKED")
+
         if login_state["loading"]:
+            print("LOGIN IGNORED: already loading")
             return
 
         login_state["pressed"] = False
@@ -375,6 +380,8 @@ def LoginView(page: ft.Page):
 
         employee_id = (employee_field.value or "").strip()
         password = (password_field.value or "").strip()
+
+        print(f"LOGIN INPUT: employee_id={employee_id!r}, password_len={len(password)}")
 
         if not employee_id:
             show_error("請輸入員工編號。")
@@ -384,13 +391,15 @@ def LoginView(page: ft.Page):
             show_error("請輸入密碼。")
             return
 
+        navigated = False
         set_login_loading(True)
 
         try:
+            print("LOGIN STEP 1: authenticate_user start")
             result = authenticate_user(employee_id, password)
+            print("LOGIN STEP 2: authenticate_user done", result.ok, result.message)
 
             if not result.ok:
-                set_login_loading(False)
                 show_error(result.message)
                 return
 
@@ -403,29 +412,40 @@ def LoginView(page: ft.Page):
                 remove_client_value("knh_employee_id")
 
             if user.get("must_change_password", False):
-                set_login_loading(False)
+                print("LOGIN STEP 3: must_change_password")
                 show_change_password(user, current_hash=stored_hash)
                 return
 
+            print("LOGIN STEP 4: save session")
             save_login_session(user)
+
+            print("LOGIN STEP 5: save last login")
             last_login_result = save_user_last_login(user.get("id", ""))
             if not last_login_result.ok:
                 print("更新最近登入時間失敗:", last_login_result.message)
 
+            print("LOGIN STEP 6: page.go('/')")
+            navigated = True
             page.go("/")
 
         except Exception as ex:
-            set_login_loading(False)
             show_error(f"登入失敗：{ex}")
-            print("login error:", ex)
+            print("LOGIN ERROR:", repr(ex))
 
-    login_button = ft.GestureDetector(
-        mouse_cursor=ft.MouseCursor.CLICK,
-        on_hover=login_hover,
-        on_tap_down=login_tap_down,
-        on_tap_up=do_login,
-        on_tap_cancel=login_tap_cancel,
+        finally:
+            # 手機 / Web 模式若中途出錯，避免永遠停在「驗證中」
+            if not navigated:
+                print("LOGIN FINALLY: reset loading")
+                try:
+                    set_login_loading(False)
+                except Exception as ex:
+                    print("LOGIN FINALLY reset error:", repr(ex))
+
+    # VM / 手機 Web 模式：使用 on_click 比 GestureDetector.on_tap_up 穩定。
+    login_button = ft.Container(
         content=login_btn_box,
+        on_click=do_login,
+        on_hover=login_hover,
     )
 
     # =====================================================
