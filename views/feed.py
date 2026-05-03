@@ -1,0 +1,1762 @@
+# views/feed.py
+import flet as ft
+import threading
+import time
+
+from services.feed_service import (
+    load_feed_page_data,
+    submit_material_feed_record,
+    submit_recycled_feed_record,
+    today_slash_date as service_today_slash_date,
+    today_dash_date as service_today_dash_date,
+    parse_feed_date_to_taipei_iso,
+    format_feed_datetime,
+    now_taipei,
+)
+
+from services.dryer_status_service import (
+    load_dryer_status,
+    save_dryer_status,
+)
+
+
+def FeedContent(page: ft.Page):
+    # =====================================================
+    # 0. 基本資料狀態
+    # =====================================================
+    new_materials = {}
+    aux_materials = {}
+    rec_materials = {}
+    low_stock_items = []  # feed_service 仍會回傳低水位，但本頁不再顯示
+    recent_records = []
+
+    dryer_status_items = []
+    dryer_latest_updated = {"value": "-"}
+
+    data_loaded = {"done": False}
+    active_mode = {"value": "new"}  # new / aux / rec
+    submitting = {"value": False}
+
+    submit_state = {
+        "hover": False,
+        "pressed": False,
+    }
+
+    if hasattr(page, "session_data"):
+        current_user_name = page.session_data.get("user_name", "周正偉")
+    else:
+        current_user_name = "周正偉"
+
+    # =====================================================
+    # 1. 色彩設定
+    # =====================================================
+    CARD = "#FFFFFF"
+    TEXT_MAIN = "#111827"
+    TEXT_SUB = "#64748B"
+    BORDER = "#E2E8F0"
+    INPUT_BG = "#F8FAFC"
+
+    BLUE = "#2F80ED"
+    BLUE_SOFT = "#E5F0FF"
+    BLUE_BORDER = "#B0D0FF"
+    BLUE_BTN = "#4F7FB8"
+    BLUE_BTN_HOVER = "#456FA3"
+    BLUE_BTN_PRESS = "#3D628F"
+
+    PURPLE = "#8B5CF6"
+    PURPLE_SOFT = "#F3E8FF"
+    PURPLE_BORDER = "#D8B4FE"
+    PURPLE_BTN = "#7358B8"
+    PURPLE_BTN_HOVER = "#654BA4"
+    PURPLE_BTN_PRESS = "#573F8F"
+
+    ORANGE = "#F97316"
+    ORANGE_SOFT = "#FFF7ED"
+    ORANGE_BORDER = "#FDBA74"
+    ORANGE_BTN = "#C96D32"
+    ORANGE_BTN_HOVER = "#B8602C"
+    ORANGE_BTN_PRESS = "#A55427"
+
+    DISABLED = "#94A3B8"
+
+    GREEN = "#10B981"
+    GREEN_SOFT = "#ECFDF5"
+    GREEN_BORDER = "#A7F3D0"
+
+    RED = "#EF4444"
+    RED_SOFT = "#FEF2F2"
+    RED_BORDER = "#FECACA"
+
+    # =====================================================
+    # 2. 安全更新工具
+    # =====================================================
+    def safe_update(control):
+        try:
+            control.update()
+        except Exception:
+            pass
+
+    def safe_page_update():
+        try:
+            page.update()
+        except Exception:
+            pass
+
+    def show_snack(message: str, color: str):
+        snack = ft.SnackBar(
+            content=ft.Text(message, color="white", weight=ft.FontWeight.W_600),
+            bgcolor=color,
+            duration=3200,
+        )
+        page.overlay.append(snack)
+        snack.open = True
+        safe_page_update()
+
+    def get_str(value, default=""):
+        if isinstance(value, list):
+            return str(value[0]) if value else default
+        if value is None:
+            return default
+        return str(value)
+
+    def get_num(value, default=0):
+        if isinstance(value, list):
+            value = value[0] if value else default
+        try:
+            return float(value)
+        except Exception:
+            return default
+
+    def today_slash_date():
+        return service_today_slash_date()
+
+    def today_dash_date():
+        return service_today_dash_date()
+
+    def now_datetime_string(date_text: str):
+        return parse_feed_date_to_taipei_iso(date_text)
+
+    def format_datetime_local(dt_text: str):
+        return format_feed_datetime(dt_text)
+
+    def get_operator_options():
+        # 已建立登入系統後，填單人直接使用目前登入者，不再使用寫死名單。
+        if current_user_name:
+            return [current_user_name]
+        return ["未登入使用者"]
+    
+    def parse_rec_material_display(display_text: str):
+        """
+        將下拉選單文字：
+        【力鵬】 2025121007 ｜ PA6 ｜ 340 KG
+
+        轉成：
+        material = [力鵬] PA6
+        qty = 340 KG
+        """
+        text = str(display_text or "").strip()
+
+        supplier = ""
+        mat_type = ""
+        weight = ""
+
+        try:
+            parts = [p.strip() for p in text.split("｜")]
+
+            # parts[0] = 【力鵬】 2025121007
+            # parts[1] = PA6
+            # parts[2] = 340 KG
+            if len(parts) >= 1:
+                first = parts[0]
+
+                if first.startswith("【") and "】" in first:
+                    supplier = first.split("】")[0].replace("【", "").strip()
+
+            if len(parts) >= 2:
+                mat_type = parts[1].strip()
+
+            if len(parts) >= 3:
+                weight = parts[2].strip()
+
+            material_text = f"[{supplier}] {mat_type}".strip()
+
+            if material_text == "[]":
+                material_text = text
+
+            return material_text, weight if weight else "1 筆"
+
+        except Exception:
+            return text, "1 筆"
+
+    # =====================================================
+    # 3. 狀態列
+    # =====================================================
+    status_badge = ft.Container(
+        height=36,
+        padding=ft.padding.symmetric(horizontal=16),
+        border_radius=18,
+        bgcolor=BLUE_SOFT,
+        border=ft.border.all(1, BLUE_BORDER),
+        content=ft.Row(
+            controls=[
+                ft.ProgressRing(width=15, height=15, stroke_width=2, color=BLUE),
+                ft.Text(
+                    "資料同步中",
+                    size=13,
+                    color=BLUE,
+                    weight=ft.FontWeight.W_600,
+                ),
+            ],
+            spacing=8,
+            alignment=ft.MainAxisAlignment.CENTER,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        ),
+    )
+
+    def set_status(text, theme="blue", loading=False):
+        if theme == "green":
+            bg = GREEN_SOFT
+            border = GREEN_BORDER
+            fg = GREEN
+            icon = ft.Icons.CHECK_CIRCLE_OUTLINE
+        elif theme == "red":
+            bg = RED_SOFT
+            border = RED_BORDER
+            fg = RED
+            icon = ft.Icons.ERROR_OUTLINE
+        elif theme == "orange":
+            bg = ORANGE_SOFT
+            border = ORANGE_BORDER
+            fg = ORANGE
+            icon = ft.Icons.INFO_OUTLINE
+        else:
+            bg = BLUE_SOFT
+            border = BLUE_BORDER
+            fg = BLUE
+            icon = ft.Icons.SYNC
+
+        status_badge.bgcolor = bg
+        status_badge.border = ft.border.all(1, border)
+
+        if loading:
+            lead = ft.ProgressRing(width=15, height=15, stroke_width=2, color=fg)
+        else:
+            lead = ft.Icon(icon, size=17, color=fg)
+
+        status_badge.content = ft.Row(
+            controls=[
+                lead,
+                ft.Text(text, size=13, color=fg, weight=ft.FontWeight.W_600),
+            ],
+            spacing=8,
+            alignment=ft.MainAxisAlignment.CENTER,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+
+        safe_update(status_badge)
+
+    # =====================================================
+    # 4. 共用 UI 元件
+    # =====================================================
+    def field_label(icon_name, label, color="#64748B", required=False):
+        return ft.Row(
+            controls=[
+                ft.Icon(icon_name, size=18, color=color),
+                ft.Text(
+                    label + (" *" if required else ""),
+                    size=14,
+                    color=TEXT_MAIN,
+                    weight=ft.FontWeight.W_600,
+                ),
+            ],
+            spacing=8,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+
+    def text_input(label, icon_name, value="", hint="", required=False, multiline=False):
+        return ft.Column(
+            controls=[
+                field_label(icon_name, label, required=required),
+                ft.TextField(
+                    value=value,
+                    hint_text=hint,
+                    multiline=multiline,
+                    min_lines=2 if multiline else 1,
+                    max_lines=3 if multiline else 1,
+                    border_radius=12,
+                    border_color=BORDER,
+                    focused_border_color=BLUE,
+                    bgcolor=INPUT_BG,
+                    filled=True,
+                    text_size=15,
+                    height=94 if multiline else 52,
+                    content_padding=ft.padding.symmetric(horizontal=14, vertical=12),
+                ),
+            ],
+            spacing=7,
+            expand=True,
+        )
+
+    def dropdown_input(label, icon_name, options, required=False):
+        opts = [ft.dropdown.Option(o) for o in options] if options else [ft.dropdown.Option("資料載入中")]
+        return ft.Column(
+            controls=[
+                field_label(icon_name, label, required=required),
+                ft.Dropdown(
+                    options=opts,
+                    border_radius=12,
+                    border_color=BORDER,
+                    focused_border_color=BLUE,
+                    bgcolor=INPUT_BG,
+                    filled=True,
+                    height=52,
+                    text_size=15,
+                    content_padding=ft.padding.symmetric(horizontal=14, vertical=12),
+                ),
+            ],
+            spacing=7,
+            expand=True,
+        )
+
+    def info_card(title, lines, theme="blue"):
+        if theme == "red":
+            color = RED
+            bg = RED_SOFT
+            border = RED_BORDER
+            icon = ft.Icons.WARNING_AMBER_ROUNDED
+        elif theme == "purple":
+            color = PURPLE
+            bg = "#FBF7FF"
+            border = PURPLE_BORDER
+            icon = ft.Icons.HISTORY
+        else:
+            color = BLUE
+            bg = "#F8FBFF"
+            border = BLUE_BORDER
+            icon = ft.Icons.LIGHTBULB_OUTLINE
+
+        return ft.Container(
+            bgcolor=bg,
+            border=ft.border.all(1, border),
+            border_radius=16,
+            padding=18,
+            content=ft.Column(
+                controls=[
+                    ft.Row(
+                        controls=[
+                            ft.Icon(icon, size=24, color=color),
+                            ft.Text(title, size=18, color=color, weight=ft.FontWeight.BOLD),
+                        ],
+                        spacing=10,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    ft.Column(
+                        controls=[
+                            ft.Row(
+                                controls=[
+                                    ft.Container(width=8, height=8, bgcolor=color, border_radius=4),
+                                    ft.Text(line, size=14, color=TEXT_MAIN),
+                                ],
+                                spacing=10,
+                            )
+                            for line in lines
+                        ],
+                        spacing=10,
+                    ),
+                ],
+                spacing=14,
+            ),
+        )
+
+    # =====================================================
+    # 5. Header
+    # =====================================================
+    header = ft.Container(
+        padding=ft.padding.only(bottom=8),
+        content=ft.Row(
+            controls=[
+                ft.Row(
+                    controls=[
+                        ft.Container(
+                            width=54,
+                            height=54,
+                            border_radius=16,
+                            bgcolor="#EFF6FF",
+                            alignment=ft.Alignment(0, 0),
+                            content=ft.Icon(
+                                ft.Icons.FACTORY_OUTLINED,
+                                size=30,
+                                color="#334155",
+                            ),
+                        ),
+                        ft.Column(
+                            controls=[
+                                ft.Text(
+                                    "現場打料作業",
+                                    size=28,
+                                    weight=ft.FontWeight.BOLD,
+                                    color=TEXT_MAIN,
+                                ),
+                                ft.Text(
+                                    "記錄原料領用與配料資訊，確保生產流程順暢與庫存準確。",
+                                    size=14,
+                                    color=TEXT_SUB,
+                                ),
+                            ],
+                            spacing=4,
+                        ),
+                    ],
+                    spacing=16,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                status_badge,
+            ],
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        ),
+    )
+
+    # =====================================================
+    # 6. 乾燥塔內存備忘：取代低水位警示
+    # =====================================================
+    dryer_updated_text = ft.Text(
+        "更新：-",
+        size=13,
+        color=TEXT_SUB,
+    )
+
+    dryer_status_grid = ft.ResponsiveRow(
+        columns=12,
+        spacing=12,
+        run_spacing=12,
+    )
+
+    dryer_memo_panel = ft.Container(
+        bgcolor="#FFFFFF",
+        border=ft.border.all(1, BORDER),
+        border_radius=18,
+        padding=18,
+        shadow=ft.BoxShadow(
+            spread_radius=0,
+            blur_radius=10,
+            color="#06000000",
+            offset=ft.Offset(0, 2),
+        ),
+        content=ft.Column(
+            controls=[
+                ft.Row(
+                    controls=[
+                        ft.Row(
+                            controls=[
+                                ft.Container(
+                                    width=46,
+                                    height=46,
+                                    border_radius=14,
+                                    bgcolor="#F8FAFC",
+                                    alignment=ft.Alignment(0, 0),
+                                    content=ft.Icon(
+                                        ft.Icons.LOCAL_FIRE_DEPARTMENT_OUTLINED,
+                                        size=25,
+                                        color="#334155",
+                                    ),
+                                ),
+                                ft.Column(
+                                    controls=[
+                                        ft.Text(
+                                            "乾燥塔內存備忘",
+                                            size=18,
+                                            weight=ft.FontWeight.BOLD,
+                                            color=TEXT_MAIN,
+                                        ),
+                                        ft.Text(
+                                            "此區為人工備忘，不影響正式原料庫存。",
+                                            size=13,
+                                            color=TEXT_SUB,
+                                        ),
+                                    ],
+                                    spacing=2,
+                                ),
+                            ],
+                            spacing=12,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        ),
+                        dryer_updated_text,
+                    ],
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                dryer_status_grid,
+            ],
+            spacing=14,
+        ),
+    )
+
+    def dryer_theme(tower_type: str):
+        if str(tower_type).upper() == "PA6":
+            return {
+                "color": ORANGE,
+                "soft": ORANGE_SOFT,
+                "border": ORANGE_BORDER,
+                "button": ORANGE_BTN,
+                "track": "#FED7AA",
+            }
+
+        return {
+            "color": BLUE,
+            "soft": BLUE_SOFT,
+            "border": BLUE_BORDER,
+            "button": BLUE_BTN,
+            "track": "#BFDBFE",
+        }
+
+    def dryer_icon_box(tower_type: str):
+        theme = dryer_theme(tower_type)
+        icon_src = "assets/dryer_pa6_icon.png" if str(tower_type).upper() == "PA6" else "assets/dryer_pet_icon.png"
+
+        # 使用使用者提供的 PET / PA6 乾燥塔圖片。
+        # 圖片文字保留；實際塔內原料由卡片欄位顯示。
+        return ft.Container(
+            width=64,
+            height=64,
+            border_radius=18,
+            bgcolor=theme["soft"],
+            border=ft.border.all(1, theme["border"]),
+            alignment=ft.Alignment(0, 0),
+            clip_behavior=ft.ClipBehavior.HARD_EDGE,
+            content=ft.Image(
+                src=icon_src,
+                width=56,
+                height=56,
+            ),
+        )
+
+    def open_dryer_edit_dialog(item: dict):
+        tower_code = item.get("tower_code", "")
+        tower_type = item.get("tower_type", "")
+
+        material_field = ft.TextField(
+            label="目前塔內原料",
+            value="" if item.get("material") == "未填寫" else item.get("material", ""),
+            hint_text="例如：PET308A-南紡",
+            border_radius=12,
+            border_color=BORDER,
+            focused_border_color=BLUE,
+            bgcolor=INPUT_BG,
+            filled=True,
+        )
+
+        percent_field = ft.TextField(
+            label="內存比例 %",
+            value=str(item.get("percent", 0)),
+            hint_text="0 ~ 100",
+            keyboard_type=ft.KeyboardType.NUMBER,
+            border_radius=12,
+            border_color=BORDER,
+            focused_border_color=BLUE,
+            bgcolor=INPUT_BG,
+            filled=True,
+        )
+
+        note_field_dialog = ft.TextField(
+            label="備註",
+            value="" if item.get("note") == "無備註" else item.get("note", ""),
+            hint_text="例如：停機前未清空",
+            multiline=True,
+            min_lines=2,
+            max_lines=3,
+            border_radius=12,
+            border_color=BORDER,
+            focused_border_color=BLUE,
+            bgcolor=INPUT_BG,
+            filled=True,
+        )
+
+        saving = {"value": False}
+
+        def close_dlg(e=None):
+            dlg.open = False
+            safe_page_update()
+
+        def save_dlg(e=None):
+            if saving["value"]:
+                return
+
+            saving["value"] = True
+
+            try:
+                current_user_id = None
+                if hasattr(page, "session_data") and isinstance(page.session_data, dict):
+                    current_user_id = page.session_data.get("user_id")
+
+                result = save_dryer_status(
+                    tower_code=tower_code,
+                    material=str(material_field.value or "").strip(),
+                    percent=str(percent_field.value or "").strip(),
+                    note=str(note_field_dialog.value or "").strip(),
+                    updated_by_user_id=current_user_id,
+                    updated_by_name=current_user_name,
+                )
+
+                if not result.ok:
+                    show_snack(result.message, RED)
+                    return
+
+                reload_dryer_status_data()
+                refresh_dryer_status_panel()
+                close_dlg()
+                show_snack(result.message, GREEN)
+
+            except Exception as ex:
+                show_snack(f"儲存失敗：{ex}", RED)
+
+            finally:
+                saving["value"] = False
+
+        theme = dryer_theme(tower_type)
+
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Row(
+                controls=[
+                    dryer_icon_box(tower_type),
+                    ft.Column(
+                        controls=[
+                            ft.Text(f"編輯 {tower_code}", size=18, weight=ft.FontWeight.BOLD),
+                            ft.Text("人工備忘，不影響正式庫存。", size=12, color=TEXT_SUB),
+                        ],
+                        spacing=2,
+                    ),
+                ],
+                spacing=12,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            content=ft.Container(
+                width=430,
+                content=ft.Column(
+                    controls=[
+                        material_field,
+                        percent_field,
+                        note_field_dialog,
+                    ],
+                    spacing=14,
+                    tight=True,
+                ),
+            ),
+            actions=[
+                ft.TextButton("取消", on_click=close_dlg),
+                ft.ElevatedButton(
+                    "儲存",
+                    icon=ft.Icons.SAVE_OUTLINED,
+                    style=ft.ButtonStyle(
+                        bgcolor=theme["button"],
+                        color="white",
+                        shape=ft.RoundedRectangleBorder(radius=10),
+                    ),
+                    on_click=save_dlg,
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+
+        page.overlay.append(dlg)
+        dlg.open = True
+        safe_page_update()
+
+    def dryer_status_card(item: dict):
+        tower_code = item.get("tower_code", "-")
+        tower_type = item.get("tower_type", "PET")
+        material = item.get("material", "未填寫")
+        note = item.get("note", "無備註")
+        percent = int(item.get("percent", 0) or 0)
+        updated_at = item.get("updated_at", "-")
+        updated_by = item.get("updated_by_name", "-")
+        theme = dryer_theme(tower_type)
+
+        return ft.Container(
+            col={"xs": 12, "sm": 6, "md": 6, "lg": 3},
+            content=ft.Container(
+                bgcolor="#FFFFFF",
+                border=ft.border.all(1, theme["border"]),
+                border_radius=16,
+                padding=14,
+                content=ft.Column(
+                    controls=[
+                        ft.Row(
+                            controls=[
+                                dryer_icon_box(tower_type),
+                                ft.Column(
+                                    controls=[
+                                        ft.Text(
+                                            tower_code,
+                                            size=17,
+                                            weight=ft.FontWeight.BOLD,
+                                            color=TEXT_MAIN,
+                                        ),
+                                        ft.Text(
+                                            f"更新：{updated_at}",
+                                            size=12,
+                                            color=TEXT_SUB,
+                                        ),
+                                    ],
+                                    spacing=3,
+                                    expand=True,
+                                ),
+                            ],
+                            spacing=12,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        ),
+                        ft.Container(
+                            padding=ft.padding.symmetric(horizontal=11, vertical=9),
+                            bgcolor="#F8FAFC",
+                            border_radius=12,
+                            border=ft.border.all(1, "#E5EAF2"),
+                            content=ft.Column(
+                                controls=[
+                                    ft.Text("目前塔內原料", size=12, color=TEXT_SUB),
+                                    ft.Text(
+                                        material,
+                                        size=15,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=TEXT_MAIN,
+                                        max_lines=1,
+                                        overflow=ft.TextOverflow.ELLIPSIS,
+                                    ),
+                                ],
+                                spacing=2,
+                            ),
+                        ),
+                        ft.Column(
+                            controls=[
+                                ft.Row(
+                                    controls=[
+                                        ft.Text(
+                                            f"{percent}%",
+                                            size=16,
+                                            weight=ft.FontWeight.BOLD,
+                                            color=theme["color"],
+                                            width=48,
+                                        ),
+                                        ft.Container(
+                                            expand=True,
+                                            content=ft.ProgressBar(
+                                                value=max(0, min(100, percent)) / 100,
+                                                color=theme["color"],
+                                                bgcolor=theme["track"],
+                                                height=8,
+                                            ),
+                                        ),
+                                    ],
+                                    spacing=8,
+                                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                ),
+                                ft.Text(
+                                    f"備註：{note}",
+                                    size=12,
+                                    color=TEXT_SUB,
+                                    max_lines=1,
+                                    overflow=ft.TextOverflow.ELLIPSIS,
+                                ),
+                                ft.Text(
+                                    f"更新人員：{updated_by}",
+                                    size=12,
+                                    color="#94A3B8",
+                                    max_lines=1,
+                                    overflow=ft.TextOverflow.ELLIPSIS,
+                                ),
+                            ],
+                            spacing=5,
+                        ),
+                        ft.Container(
+                            height=36,
+                            border_radius=18,
+                            bgcolor=theme["soft"],
+                            border=ft.border.all(1, theme["border"]),
+                            alignment=ft.Alignment(0, 0),
+                            on_click=lambda e, it=item: open_dryer_edit_dialog(it),
+                            content=ft.Row(
+                                controls=[
+                                    ft.Icon(ft.Icons.EDIT_OUTLINED, size=16, color=theme["color"]),
+                                    ft.Text(
+                                        "編輯",
+                                        size=13,
+                                        color=theme["color"],
+                                        weight=ft.FontWeight.W_600,
+                                    ),
+                                ],
+                                spacing=5,
+                                alignment=ft.MainAxisAlignment.CENTER,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                            ),
+                        ),
+                    ],
+                    spacing=11,
+                ),
+            ),
+        )
+
+    def refresh_dryer_status_panel():
+        dryer_status_grid.controls = []
+
+        if not dryer_status_items:
+            dryer_status_grid.controls.append(
+                ft.Container(
+                    col={"xs": 12},
+                    bgcolor="#F8FAFC",
+                    border_radius=14,
+                    padding=16,
+                    content=ft.Text(
+                        "目前尚未讀取到乾燥塔內存備忘。",
+                        size=13,
+                        color=TEXT_SUB,
+                    ),
+                )
+            )
+        else:
+            for item in dryer_status_items:
+                dryer_status_grid.controls.append(dryer_status_card(item))
+
+        dryer_updated_text.value = f"更新：{dryer_latest_updated['value']}"
+        safe_update(dryer_status_grid)
+        safe_update(dryer_updated_text)
+        safe_update(dryer_memo_panel)
+
+    # =====================================================
+    # 7. 打料類型選擇卡
+    # =====================================================
+    mode_cards_row = ft.ResponsiveRow(spacing=14, run_spacing=14)
+
+    def mode_card(mode, title, desc, icon_name, color, soft, border):
+        selected = active_mode["value"] == mode
+
+        return ft.Container(
+            col={"xs": 12, "sm": 4, "md": 4, "lg": 4},
+            content=ft.GestureDetector(
+                mouse_cursor=ft.MouseCursor.CLICK,
+                on_tap=lambda e, m=mode: switch_mode(m),
+                content=ft.Container(
+                    height=112,
+                    border_radius=18,
+                    padding=18,
+                    bgcolor=soft if selected else "#FFFFFF",
+                    border=ft.border.all(2 if selected else 1, color if selected else BORDER),
+                    shadow=ft.BoxShadow(
+                        spread_radius=0,
+                        blur_radius=10,
+                        color="#08000000",
+                        offset=ft.Offset(0, 3),
+                    ),
+                    content=ft.Row(
+                        controls=[
+                            ft.Container(
+                                width=52,
+                                height=52,
+                                border_radius=14,
+                                bgcolor=soft,
+                                alignment=ft.Alignment(0, 0),
+                                content=ft.Icon(icon_name, size=28, color=color),
+                            ),
+                            ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        title,
+                                        size=18,
+                                        color=TEXT_MAIN,
+                                        weight=ft.FontWeight.BOLD,
+                                    ),
+                                    ft.Text(desc, size=13, color=TEXT_SUB),
+                                ],
+                                spacing=4,
+                                expand=True,
+                            ),
+                            ft.Icon(
+                                ft.Icons.CHECK_CIRCLE if selected else ft.Icons.RADIO_BUTTON_UNCHECKED,
+                                size=24,
+                                color=color if selected else "#94A3B8",
+                            ),
+                        ],
+                        spacing=14,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                ),
+            ),
+        )
+
+    def rebuild_mode_cards():
+        mode_cards_row.controls = [
+            mode_card(
+                "new",
+                "領用新料",
+                "領用全新原料進行生產",
+                ft.Icons.INVENTORY_2_OUTLINED,
+                BLUE,
+                BLUE_SOFT,
+                BLUE_BORDER,
+            ),
+            mode_card(
+                "aux",
+                "輔助母粒",
+                "領用母粒進行功能添加",
+                ft.Icons.PALETTE_OUTLINED,
+                PURPLE,
+                PURPLE_SOFT,
+                PURPLE_BORDER,
+            ),
+            mode_card(
+                "rec",
+                "領用回用料",
+                "領用回用料再次利用",
+                ft.Icons.RECYCLING,
+                ORANGE,
+                ORANGE_SOFT,
+                ORANGE_BORDER,
+            ),
+        ]
+        safe_update(mode_cards_row)
+
+    # =====================================================
+    # 8. 表單控制項
+    # =====================================================
+    batch_input_group = text_input(
+        "原料批號",
+        ft.Icons.NUMBERS_OUTLINED,
+        hint="輸入原料包裝上之批號",
+        required=True,
+    )
+    batch_field = batch_input_group.controls[1]
+
+    date_input_group = text_input(
+        "日期",
+        ft.Icons.CALENDAR_MONTH_OUTLINED,
+        value=today_slash_date(),
+        required=True,
+    )
+    date_field = date_input_group.controls[1]
+
+    material_input_group = dropdown_input(
+        "領用新料",
+        ft.Icons.CATEGORY_OUTLINED,
+        [],
+        required=True,
+    )
+    material_dropdown = material_input_group.controls[1]
+
+    machine_input_group = dropdown_input(
+        "選擇乾燥塔",
+        ft.Icons.SETTINGS_OUTLINED,
+        ["S1-PET", "S1-PA6", "S2-PET", "S2-PA6"],
+        required=True,
+    )
+    machine_dropdown = machine_input_group.controls[1]
+    machine_dropdown.value = "S1-PET"
+
+    qty_value = ft.Text("1", size=16, color=TEXT_MAIN, weight=ft.FontWeight.BOLD)
+
+    def change_qty(delta):
+        try:
+            current = int(qty_value.value)
+        except Exception:
+            current = 1
+
+        current = max(1, current + delta)
+        qty_value.value = str(current)
+        safe_update(qty_value)
+
+    qty_control = ft.Column(
+        controls=[
+            field_label(ft.Icons.INVENTORY_OUTLINED, "領用數量（包）", required=True),
+            ft.Container(
+                height=52,
+                border_radius=12,
+                border=ft.border.all(1, BORDER),
+                bgcolor=INPUT_BG,
+                content=ft.Row(
+                    controls=[
+                        ft.IconButton(
+                            icon=ft.Icons.REMOVE,
+                            icon_color=TEXT_MAIN,
+                            on_click=lambda e: change_qty(-1),
+                        ),
+                        ft.Container(
+                            expand=True,
+                            alignment=ft.Alignment(0, 0),
+                            content=qty_value,
+                        ),
+                        ft.IconButton(
+                            icon=ft.Icons.ADD,
+                            icon_color=TEXT_MAIN,
+                            on_click=lambda e: change_qty(1),
+                        ),
+                    ],
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                ),
+            ),
+        ],
+        spacing=7,
+        expand=True,
+    )
+
+    operator_input_group = dropdown_input(
+        "填單人",
+        ft.Icons.PERSON_OUTLINE,
+        [],
+        required=True,
+    )
+    operator_dropdown = operator_input_group.controls[1]
+
+    note_input_group = text_input(
+        "備註（選填）",
+        ft.Icons.NOTES_OUTLINED,
+        hint="輸入備註...",
+        multiline=True,
+    )
+    note_field = note_input_group.controls[1]
+
+    submit_icon = ft.Icon(ft.Icons.SEND_ROUNDED, color="white", size=22)
+    submit_text = ft.Text("送出新料紀錄", color="white", size=17, weight=ft.FontWeight.BOLD)
+
+    submit_loading = ft.ProgressRing(
+        width=20,
+        height=20,
+        stroke_width=2.5,
+        color="white",
+        visible=False,
+    )
+
+    submit_box = ft.Container(
+        height=58,
+        border_radius=12,
+        bgcolor=BLUE_BTN,
+        alignment=ft.Alignment(0, 0),
+        content=ft.Row(
+            controls=[
+                submit_icon,
+                submit_text,
+                submit_loading,
+            ],
+            alignment=ft.MainAxisAlignment.CENTER,
+            spacing=10,
+        ),
+        shadow=ft.BoxShadow(
+            spread_radius=0,
+            blur_radius=10,
+            color="#12000000",
+            offset=ft.Offset(0, 4),
+        ),
+    )
+
+
+    def get_submit_colors():
+        mode = active_mode["value"]
+
+        if mode == "new":
+            return BLUE_BTN, BLUE_BTN_HOVER, BLUE_BTN_PRESS
+
+        if mode == "aux":
+            return PURPLE_BTN, PURPLE_BTN_HOVER, PURPLE_BTN_PRESS
+
+        return ORANGE_BTN, ORANGE_BTN_HOVER, ORANGE_BTN_PRESS
+
+
+    def refresh_submit_button():
+        base, hover, press = get_submit_colors()
+
+        if submitting["value"]:
+            submit_box.bgcolor = DISABLED
+            submit_box.opacity = 0.92
+            submit_icon.visible = False
+            submit_loading.visible = True
+            submit_text.value = "寫入中..."
+
+        elif not data_loaded["done"]:
+            submit_box.bgcolor = DISABLED
+            submit_box.opacity = 0.75
+            submit_icon.visible = True
+            submit_loading.visible = False
+
+            if active_mode["value"] == "new":
+                submit_text.value = "送出新料紀錄"
+            elif active_mode["value"] == "aux":
+                submit_text.value = "送出母粒紀錄"
+            else:
+                submit_text.value = "送出回用料紀錄"
+
+        else:
+            submit_box.opacity = 1
+            submit_icon.visible = True
+            submit_loading.visible = False
+
+            if active_mode["value"] == "new":
+                submit_text.value = "送出新料紀錄"
+            elif active_mode["value"] == "aux":
+                submit_text.value = "送出母粒紀錄"
+            else:
+                submit_text.value = "送出回用料紀錄"
+
+            if submit_state["pressed"]:
+                submit_box.bgcolor = press
+            elif submit_state["hover"]:
+                submit_box.bgcolor = hover
+            else:
+                submit_box.bgcolor = base
+
+        try:
+            submit_box.update()
+        except Exception:
+            pass
+
+
+    def submit_hover(e):
+        if submitting["value"] or not data_loaded["done"]:
+            return
+
+        submit_state["hover"] = e.data == "true"
+        refresh_submit_button()
+
+
+    def submit_tap_down(e):
+        if submitting["value"] or not data_loaded["done"]:
+            return
+
+        submit_state["pressed"] = True
+        refresh_submit_button()
+
+
+    def submit_tap_cancel(e):
+        if submitting["value"] or not data_loaded["done"]:
+            return
+
+        submit_state["pressed"] = False
+        refresh_submit_button()
+
+
+    submit_button = ft.GestureDetector(
+        mouse_cursor=ft.MouseCursor.CLICK,
+        on_hover=submit_hover,
+        on_tap_down=submit_tap_down,
+        on_tap_up=lambda e: submit_feed(e),
+        on_tap_cancel=submit_tap_cancel,
+        content=submit_box,
+    )
+
+    form_title_icon = ft.Icon(ft.Icons.INVENTORY_2_OUTLINED, size=26, color=BLUE)
+    form_title_text = ft.Text("領用新料作業", size=20, color=TEXT_MAIN, weight=ft.FontWeight.BOLD)
+    form_subtitle = ft.Text("填寫領用資訊，系統將自動寫入 Supabase 並同步紀錄。", size=13, color=TEXT_SUB)
+
+    form_fields_area = ft.Column(spacing=18)
+
+    form_card = ft.Container(
+        bgcolor="#FFFFFF",
+        border=ft.border.all(1, BLUE_BORDER),
+        border_radius=18,
+        padding=22,
+        shadow=ft.BoxShadow(
+            spread_radius=0,
+            blur_radius=12,
+            color="#08000000",
+            offset=ft.Offset(0, 3),
+        ),
+        content=ft.Column(
+            controls=[
+                ft.Row(
+                    controls=[
+                        form_title_icon,
+                        ft.Column(
+                            controls=[form_title_text, form_subtitle],
+                            spacing=3,
+                        ),
+                    ],
+                    spacing=12,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                ft.Divider(height=20, color="#EEF2F7"),
+                form_fields_area,
+                submit_button,
+                ft.Row(
+                    controls=[
+                        ft.Icon(ft.Icons.VERIFIED_OUTLINED, size=17, color="#94A3B8"),
+                        ft.Text(
+                            "送出後會同步更新庫存與打料紀錄，請確認資訊正確無誤。",
+                            size=13,
+                            color="#94A3B8",
+                        ),
+                    ],
+                    spacing=8,
+                ),
+            ],
+            spacing=16,
+        ),
+    )
+
+    # =====================================================
+    # 9. 右側輔助區塊：手機時會自然往下
+    # =====================================================
+    operation_reminder = info_card(
+        "操作提醒",
+        [
+            "請確認原料批號與包裝標示一致。",
+            "領用數量單位為「包」，請正確輸入。",
+            "送出後將同步更新庫存與使用量統計。",
+            "如遇異常狀況，請聯繫當班主管處理。",
+        ],
+        "blue",
+    )
+
+    recent_table = ft.Column(spacing=0)
+
+    def recent_rows(limit=3):
+        rows = []
+
+        for item in recent_records[:limit]:
+            rows.append(
+                ft.Container(
+                    padding=ft.padding.symmetric(horizontal=12, vertical=11),
+                    border=ft.border.only(bottom=ft.BorderSide(1, "#EEF2F7")),
+                    content=ft.Row(
+                        controls=[
+                            ft.Text(item.get("time", "-"), size=13, color=TEXT_SUB, width=80),
+                            ft.Container(
+                                width=52,
+                                height=26,
+                                border_radius=13,
+                                bgcolor=item.get("tag_bg", BLUE_SOFT),
+                                alignment=ft.Alignment(0, 0),
+                                content=ft.Text(
+                                    item.get("type", "-"),
+                                    size=12,
+                                    color=item.get("tag_color", BLUE),
+                                    weight=ft.FontWeight.W_600,
+                                ),
+                            ),
+                            ft.Text(
+                                item.get("material", "-"),
+                                size=13,
+                                color=TEXT_MAIN,
+                                expand=True,
+                                max_lines=1,
+                                overflow=ft.TextOverflow.ELLIPSIS,
+                            ),
+                            ft.Text(
+                                str(item.get("qty", "")),
+                                size=13,
+                                color=TEXT_MAIN,
+                                width=60,
+                                text_align=ft.TextAlign.RIGHT,
+                            ),
+                        ],
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                )
+            )
+
+        if not rows:
+            rows.append(
+                ft.Container(
+                    padding=16,
+                    content=ft.Text("尚無打料紀錄", size=13, color=TEXT_SUB),
+                )
+            )
+
+        return rows
+
+    def refresh_recent_panel():
+        recent_table.controls = [
+            ft.Container(
+                bgcolor="#FFFFFF",
+                border_radius=12,
+                border=ft.border.all(1, "#EEF2F7"),
+                clip_behavior=ft.ClipBehavior.HARD_EDGE,
+                content=ft.Column(
+                    controls=[
+                        ft.Container(
+                            padding=ft.padding.symmetric(horizontal=12, vertical=10),
+                            bgcolor="#FAFAFB",
+                            content=ft.Row(
+                                controls=[
+                                    ft.Text("時間", size=12, color=TEXT_SUB, width=80),
+                                    ft.Text("類型", size=12, color=TEXT_SUB, width=52),
+                                    ft.Text("原料", size=12, color=TEXT_SUB, expand=True),
+                                    ft.Text("數量", size=12, color=TEXT_SUB, width=60, text_align=ft.TextAlign.RIGHT),
+                                ],
+                            ),
+                        ),
+                        *recent_rows(3),
+                    ],
+                    spacing=0,
+                ),
+            )
+        ]
+
+        safe_update(recent_table)
+
+    def close_dialog(dlg):
+        dlg.open = False
+        safe_page_update()
+
+    def open_all_recent(e):
+        all_rows = ft.Column(spacing=0, scroll=ft.ScrollMode.AUTO)
+
+        if not recent_records:
+            all_rows.controls.append(
+                ft.Container(
+                    padding=20,
+                    content=ft.Text("目前尚無可顯示的打料紀錄。", size=14, color=TEXT_SUB),
+                )
+            )
+        else:
+            for item in recent_records[:40]:
+                all_rows.controls.append(
+                    ft.Container(
+                        padding=ft.padding.symmetric(horizontal=12, vertical=12),
+                        border=ft.border.only(bottom=ft.BorderSide(1, "#EEF2F7")),
+                        content=ft.Row(
+                            controls=[
+                                ft.Text(item.get("date", "-"), size=13, color=TEXT_SUB, width=96),
+                                ft.Text(item.get("time", "-"), size=13, color=TEXT_SUB, width=60),
+                                ft.Text(item.get("type", "-"), size=13, color=item.get("tag_color", BLUE), width=70),
+                                ft.Text(item.get("material", "-"), size=13, color=TEXT_MAIN, expand=True),
+                                ft.Text(
+                                    str(item.get("qty", "")),
+                                    size=13,
+                                    color=TEXT_MAIN,
+                                    width=80,
+                                    text_align=ft.TextAlign.RIGHT,
+                                ),
+                            ],
+                        ),
+                    )
+                )
+
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("全部打料紀錄", weight=ft.FontWeight.BOLD),
+            content=ft.Container(width=760, height=420, content=all_rows),
+            actions=[
+                ft.TextButton("關閉", on_click=lambda ev: close_dialog(dlg)),
+            ],
+        )
+
+        page.overlay.append(dlg)
+        dlg.open = True
+        safe_page_update()
+
+    recent_panel = ft.Container(
+        bgcolor="#FBF7FF",
+        border=ft.border.all(1, PURPLE_BORDER),
+        border_radius=18,
+        padding=18,
+        content=ft.Column(
+            controls=[
+                ft.Row(
+                    controls=[
+                        ft.Row(
+                            controls=[
+                                ft.Icon(ft.Icons.HISTORY, size=24, color=PURPLE),
+                                ft.Text("最近打料紀錄", size=18, color=PURPLE, weight=ft.FontWeight.BOLD),
+                            ],
+                            spacing=10,
+                        ),
+                        ft.TextButton(
+                            "查看全部",
+                            icon=ft.Icons.OPEN_IN_NEW,
+                            icon_color=PURPLE,
+                            style=ft.ButtonStyle(color=PURPLE),
+                            on_click=open_all_recent,
+                        ),
+                    ],
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                ),
+                recent_table,
+            ],
+            spacing=12,
+        ),
+    )
+
+    side_column = ft.Column(
+        controls=[
+            operation_reminder,
+            recent_panel,
+        ],
+        spacing=16,
+    )
+
+    # =====================================================
+    # 10. 主內容 responsive
+    # =====================================================
+    main_grid = ft.ResponsiveRow(
+        columns=12,
+        spacing=18,
+        run_spacing=18,
+        controls=[
+            ft.Container(col={"xs": 12, "md": 7, "lg": 7}, content=form_card),
+            ft.Container(col={"xs": 12, "md": 5, "lg": 5}, content=side_column),
+        ],
+    )
+
+    # =====================================================
+    # 11. 表單欄位配置
+    # =====================================================
+    form_fields_area.controls = [
+        ft.ResponsiveRow(
+            columns=12,
+            spacing=16,
+            run_spacing=16,
+            controls=[
+                ft.Container(col={"xs": 12, "md": 6}, content=batch_input_group),
+                ft.Container(col={"xs": 12, "md": 6}, content=material_input_group),
+                ft.Container(col={"xs": 12, "md": 6}, content=date_input_group),
+                ft.Container(col={"xs": 12, "md": 6}, content=qty_control),
+                ft.Container(col={"xs": 12, "md": 6}, content=machine_input_group),
+                ft.Container(col={"xs": 12, "md": 6}, content=operator_input_group),
+                ft.Container(col={"xs": 12}, content=note_input_group),
+            ],
+        )
+    ]
+
+    # =====================================================
+    # 12. 依模式刷新表單
+    # =====================================================
+    def switch_mode(mode):
+        active_mode["value"] = mode
+        rebuild_mode_cards()
+        refresh_form_by_mode()
+
+    def refresh_form_by_mode():
+        mode = active_mode["value"]
+
+        batch_input_group.visible = mode != "rec"
+        qty_control.visible = mode != "rec"
+        note_input_group.visible = mode != "rec"
+        operator_input_group.visible = mode == "rec"
+
+        if mode == "new":
+            form_title_icon.name = ft.Icons.INVENTORY_2_OUTLINED
+            form_title_icon.color = BLUE
+            form_title_text.value = "領用新料作業"
+            material_input_group.controls[0].controls[1].value = "領用新料 *"
+
+            # 從母粒切回新料時，清掉母粒自動帶入的批號，讓新料恢復 hint 狀態
+            if str(batch_field.value or "").startswith("MB"):
+                batch_field.value = ""
+
+            if new_materials:
+                keys = sorted(new_materials.keys())
+                material_dropdown.options = [ft.dropdown.Option(k) for k in keys]
+                material_dropdown.value = keys[0]
+            else:
+                material_dropdown.options = [ft.dropdown.Option("無新料資料")]
+                material_dropdown.value = "無新料資料"
+
+            machine_dropdown.options = [
+                ft.dropdown.Option(x)
+                for x in ["S1-PET", "S1-PA6", "S2-PET", "S2-PA6"]
+            ]
+
+            if machine_dropdown.value not in ["S1-PET", "S1-PA6", "S2-PET", "S2-PA6"]:
+                machine_dropdown.value = "S1-PET"
+
+            form_card.border = ft.border.all(1, BLUE_BORDER)
+
+        elif mode == "aux":
+            form_title_icon.name = ft.Icons.PALETTE_OUTLINED
+            form_title_icon.color = PURPLE
+            form_title_text.value = "輔助母粒作業"
+            material_input_group.controls[0].controls[1].value = "領用母粒 *"
+
+            if aux_materials:
+                keys = sorted(aux_materials.keys())
+                material_dropdown.options = [ft.dropdown.Option(k) for k in keys]
+                material_dropdown.value = keys[0]
+            else:
+                material_dropdown.options = [ft.dropdown.Option("無母粒資料")]
+                material_dropdown.value = "無母粒資料"
+
+            machine_dropdown.options = [
+                ft.dropdown.Option(x)
+                for x in ["S1-PET", "S2-PET"]
+            ]
+            machine_dropdown.value = "S1-PET"
+
+            batch_field.value = f"MB{now_taipei().strftime('%Y%m%d')}"
+            form_card.border = ft.border.all(1, PURPLE_BORDER)
+
+        else:
+            form_title_icon.name = ft.Icons.RECYCLING
+            form_title_icon.color = ORANGE
+            form_title_text.value = "領用回用料作業"
+            material_input_group.controls[0].controls[1].value = "領用回用料 *"
+
+            if rec_materials:
+                keys = list(rec_materials.keys())
+                material_dropdown.options = [ft.dropdown.Option(k) for k in keys]
+                material_dropdown.value = keys[0]
+            else:
+                material_dropdown.options = [ft.dropdown.Option("目前無在庫回用料")]
+                material_dropdown.value = "目前無在庫回用料"
+
+            machine_dropdown.options = [
+                ft.dropdown.Option(x)
+                for x in ["S1-PET", "S1-PA6", "S2-PET", "S2-PA6"]
+            ]
+
+            if machine_dropdown.value not in ["S1-PET", "S1-PA6", "S2-PET", "S2-PA6"]:
+                machine_dropdown.value = "S1-PET"
+
+            operator_dropdown.options = [ft.dropdown.Option(x) for x in get_operator_options()]
+            operator_dropdown.value = current_user_name
+            form_card.border = ft.border.all(1, ORANGE_BORDER)
+
+        refresh_submit_button()
+
+        safe_update(form_card)
+        safe_update(form_fields_area)
+        safe_update(batch_input_group)
+        safe_update(material_input_group)
+        safe_update(date_input_group)
+        safe_update(qty_control)
+        safe_update(machine_input_group)
+        safe_update(operator_input_group)
+        safe_update(note_input_group)
+
+    # =====================================================
+    # 13. 送出邏輯
+    # =====================================================
+    def set_submitting(value: bool):
+        submitting["value"] = value
+        submit_state["pressed"] = False
+        refresh_submit_button()
+        safe_page_update()
+
+    def validate_common():
+        if not data_loaded["done"]:
+            show_snack("資料尚未同步完成，請稍候再送出。", RED)
+            return False
+
+        if not date_field.value:
+            show_snack("請填寫日期。", RED)
+            return False
+
+        if not machine_dropdown.value:
+            show_snack("請選擇乾燥塔。", RED)
+            return False
+
+        return True
+
+    def submit_feed(e):
+        if submitting["value"]:
+            return
+
+        submit_state["pressed"] = False
+        refresh_submit_button()
+
+        mode = active_mode["value"]
+
+        if not validate_common():
+            return
+
+        set_submitting(True)
+
+        try:
+            # =====================================================
+            # A. 新料 / 母粒
+            # Supabase：materials -> feed_records
+            # =====================================================
+            if mode in ["new", "aux"]:
+                if not batch_field.value or not str(batch_field.value).strip():
+                    show_snack("請輸入原料批號。", RED)
+                    return
+
+                invalid_values = ["無新料資料", "無母粒資料", "資料載入中"]
+                if not material_dropdown.value or material_dropdown.value in invalid_values:
+                    show_snack("請選擇領用原料。", RED)
+                    return
+
+                material_map = new_materials if mode == "new" else aux_materials
+                material_id = material_map.get(material_dropdown.value)
+
+                if not material_id:
+                    show_snack("找不到此原料資料，請重新整理。", RED)
+                    return
+
+                qty = int(qty_value.value or "1")
+
+                result = submit_material_feed_record(
+                    feed_type=mode,
+                    material_id=material_id,
+                    batch_no=str(batch_field.value).strip(),
+                    feed_date=str(date_field.value or ""),
+                    machine_code=str(machine_dropdown.value or ""),
+                    quantity_bags=qty,
+                    operator_name=current_user_name,
+                    note=str(note_field.value or ""),
+                    created_by_user_id=page.session_data.get("user_id") if hasattr(page, "session_data") else None,
+                    created_by_name=current_user_name,
+                )
+
+                if not result.ok:
+                    show_snack(result.message, RED)
+                    return
+
+                show_snack(result.message, GREEN)
+
+                if mode == "new":
+                    batch_field.value = ""
+                else:
+                    batch_field.value = f"MB{now_taipei().strftime('%Y%m%d')}"
+
+                qty_value.value = "1"
+                note_field.value = ""
+
+                safe_update(batch_field)
+                safe_update(qty_value)
+                safe_update(note_field)
+
+            # =====================================================
+            # B. 回用料
+            # Supabase：recycled_materials -> feed_records，成功後標記已領用
+            # =====================================================
+            else:
+                if not rec_materials:
+                    show_snack("目前沒有在庫的回用料。", RED)
+                    return
+
+                if not material_dropdown.value or material_dropdown.value == "目前無在庫回用料":
+                    show_snack("請選擇領用回用料。", RED)
+                    return
+
+                if not operator_dropdown.value:
+                    show_snack("請選擇填單人。", RED)
+                    return
+
+                recycled_material_id = rec_materials.get(material_dropdown.value)
+
+                if not recycled_material_id:
+                    show_snack("找不到此回用料資料，請重新整理。", RED)
+                    return
+
+                result = submit_recycled_feed_record(
+                    recycled_material_id=recycled_material_id,
+                    feed_date=str(date_field.value or ""),
+                    machine_code=str(machine_dropdown.value or ""),
+                    operator_name=str(operator_dropdown.value or current_user_name),
+                    created_by_user_id=page.session_data.get("user_id") if hasattr(page, "session_data") else None,
+                    created_by_name=current_user_name,
+                )
+
+                if not result.ok:
+                    show_snack(result.message, RED)
+                    return
+
+                show_snack(result.message, GREEN)
+
+                # 從目前畫面選單移除，避免連續重複領用
+                if material_dropdown.value in rec_materials:
+                    rec_materials.pop(material_dropdown.value)
+
+            reload_feed_data_after_submit()
+            refresh_form_by_mode()
+            refresh_recent_panel()
+            refresh_dryer_status_panel()
+
+        except Exception as ex:
+            show_snack(f"寫入失敗：{ex}", RED)
+            print("feed submit error:", ex)
+
+        finally:
+            set_submitting(False)
+
+    # =====================================================
+    # 14. 背景資料載入
+    # =====================================================
+    def apply_dryer_status_data(data: dict):
+        dryer_status_items.clear()
+        dryer_status_items.extend(data.get("items", []))
+        dryer_latest_updated["value"] = data.get("latest_updated", "-")
+
+    def reload_dryer_status_data():
+        result = load_dryer_status()
+        if result.ok:
+            apply_dryer_status_data(result.data)
+        else:
+            show_snack(result.message, RED)
+
+    def apply_feed_data(data: dict):
+        new_materials.clear()
+        aux_materials.clear()
+        rec_materials.clear()
+        low_stock_items.clear()
+        recent_records.clear()
+
+        new_materials.update(data.get("new_materials", {}))
+        aux_materials.update(data.get("aux_materials", {}))
+        rec_materials.update(data.get("rec_materials", {}))
+        low_stock_items.extend(data.get("low_stock_items", []))
+        recent_records.extend(data.get("recent_records", []))
+
+    def reload_feed_data_after_submit():
+        result = load_feed_page_data()
+        if result.ok:
+            apply_feed_data(result.data)
+        else:
+            show_snack(result.message, RED)
+
+    def load_bg_data():
+        try:
+            time.sleep(0.5)
+            set_status("資料同步中", loading=True)
+
+            result = load_feed_page_data()
+
+            if not result.ok:
+                data_loaded["done"] = False
+                set_status("資料同步失敗", theme="red")
+                show_snack(result.message, RED)
+                print("feed load data error:", result.message)
+                return
+
+            apply_feed_data(result.data)
+
+            dryer_result = load_dryer_status()
+            if dryer_result.ok:
+                apply_dryer_status_data(dryer_result.data)
+            else:
+                print("dryer status load error:", dryer_result.message)
+
+            data_loaded["done"] = True
+
+            refresh_dryer_status_panel()
+            rebuild_mode_cards()
+            refresh_form_by_mode()
+            refresh_recent_panel()
+
+            set_status("資料已同步", theme="green")
+
+        except Exception as ex:
+            data_loaded["done"] = False
+            set_status("資料同步失敗", theme="red")
+            show_snack(f"資料同步失敗：{ex}", RED)
+            print("feed load data error:", ex)
+
+    def start_bg_load():
+        threading.Thread(target=load_bg_data, daemon=True).start()
+
+    threading.Timer(0.3, start_bg_load).start()
+
+    # 初始 UI
+    rebuild_mode_cards()
+    refresh_recent_panel()
+    refresh_dryer_status_panel()
+    refresh_form_by_mode()
+
+    # =====================================================
+    # 15. 最終畫面
+    # =====================================================
+    return ft.Column(
+        controls=[
+            header,
+            dryer_memo_panel,
+            mode_cards_row,
+            main_grid,
+            ft.Container(height=90),
+        ],
+        spacing=18,
+    )
