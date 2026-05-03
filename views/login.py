@@ -15,10 +15,10 @@ def LoginView(page: ft.Page):
     # =====================================================
     # Assets
     # =====================================================
-    # Flet web 會從 assets_dir 內尋找檔案。
-    # VM / Web 模式建議使用相對於 assets 資料夾的檔名，不要寫成 assets/logo.png。
-    ASSET_LOGO = "logo.png"
-    ASSET_BG = "login_bg.png"
+    # VM / Web 部署：main.py 使用 assets_dir="."。
+    # 因此圖片路徑統一使用 assets/...，與其他頁面 dryer icon 路徑一致。
+    ASSET_LOGO = "assets/logo.png"
+    ASSET_BG = "assets/login_bg.png"
 
     # =====================================================
     # 色彩設定

@@ -41,9 +41,36 @@ def main(page: ft.Page):
         color_scheme_seed="#1E293B",
     )
 
-    # Flet 0.84：目前維持 page.go()，依照你現有穩定版邏輯處理
+    # VM / 手機 Web 穩定路由：
+    # page.go() 在部分手機瀏覽器可能已更新 route 但未即時重建 view，
+    # 因此 navigate() 會在 page.go() 後主動呼叫 route_change(None)。
+    routing_state = {"manual": False}
+
     def navigate(route_path):
-        page.go(route_path)
+        print(f"NAVIGATE TO: {route_path}")
+        try:
+            page.go(route_path)
+        except Exception as ex:
+            print("page.go error:", ex)
+
+        try:
+            if page.route != route_path:
+                page.route = route_path
+        except Exception as ex:
+            print("set page.route error:", ex)
+
+        try:
+            if not routing_state["manual"]:
+                routing_state["manual"] = True
+                route_change(None)
+        except NameError:
+            pass
+        except Exception as ex:
+            print("manual route_change error:", ex)
+        finally:
+            routing_state["manual"] = False
+
+    page.session_data["_navigate"] = navigate
 
     # =====================================================
     # 共用方法
@@ -609,6 +636,7 @@ def main(page: ft.Page):
     # =====================================================
     def route_change(e):
         route = page.route
+        print(f"ROUTE_CHANGE: route={route}, is_login={is_login()}, views={len(page.views)}")
 
         try:
             # 先建立 target_view，不要一開始就清空 page.views
@@ -704,6 +732,7 @@ def main(page: ft.Page):
             page.views.clear()
             page.views.append(target_view)
             page.update()
+            print(f"ROUTE_CHANGE DONE: route={route}, views={len(page.views)}")
 
         except Exception as ex:
             print("route_change error:", ex)
