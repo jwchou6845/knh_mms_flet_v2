@@ -91,9 +91,30 @@ def main(page: ft.Page):
     def appbar(title, nav_drawer=None):
         def open_drawer(e):
             try:
-                if nav_drawer is not None:
-                    nav_drawer.open = True
-                    page.update()
+                if nav_drawer is None:
+                    print("open drawer error: nav_drawer is None")
+                    return
+
+                print("OPEN DRAWER CLICKED")
+
+                # Flet 0.84 Web / mobile：優先使用 page.open()
+                # 只設定 nav_drawer.open=True 在部分瀏覽器不會真的彈出。
+                try:
+                    page.open(nav_drawer)
+                    return
+                except Exception as open_ex:
+                    print("page.open drawer fallback:", open_ex)
+
+                # fallback：舊式開啟方式
+                nav_drawer.open = True
+
+                try:
+                    nav_drawer.update()
+                except Exception as update_ex:
+                    print("drawer update fallback:", update_ex)
+
+                page.update()
+
             except Exception as ex:
                 print("open drawer error:", ex)
 
