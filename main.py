@@ -99,11 +99,16 @@ def main(page: ft.Page):
 
                 current_view = page.views[-1]
 
-                # Flet View 官方支援 show_drawer() / close_drawer()。
-                # 在 Web / mobile 上，這比 page.drawer.open=True 穩定。
+                # Flet 0.84：View.show_drawer() 是 coroutine，
+                # 不能直接呼叫，必須交給 page.run_task 執行。
                 if hasattr(current_view, "show_drawer"):
-                    current_view.show_drawer()
-                    page.update()
+                    async def do_open_drawer():
+                        try:
+                            await current_view.show_drawer()
+                        except Exception as ex:
+                            print("async show_drawer error:", ex)
+
+                    page.run_task(do_open_drawer)
                     return
 
                 # fallback：若環境沒有 show_drawer，才退回 open 屬性。
