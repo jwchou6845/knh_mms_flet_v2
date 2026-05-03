@@ -93,15 +93,26 @@ def main(page: ft.Page):
             try:
                 print("OPEN DRAWER CLICKED")
 
-                if nav_drawer is None:
-                    print("open drawer error: nav_drawer is None")
+                if not page.views:
+                    print("open drawer error: page.views is empty")
                     return
 
-                # Flet 0.84 舊式 Drawer 開法：
-                # 將 drawer 掛到 page.drawer，再設定 open=True。
-                page.drawer = nav_drawer
-                page.drawer.open = True
-                page.update()
+                current_view = page.views[-1]
+
+                # Flet View 官方支援 show_drawer() / close_drawer()。
+                # 在 Web / mobile 上，這比 page.drawer.open=True 穩定。
+                if hasattr(current_view, "show_drawer"):
+                    current_view.show_drawer()
+                    page.update()
+                    return
+
+                # fallback：若環境沒有 show_drawer，才退回 open 屬性。
+                if current_view.drawer is not None:
+                    current_view.drawer.open = True
+                    page.update()
+                    return
+
+                print("open drawer error: current view has no drawer")
 
             except Exception as ex:
                 print("open drawer error:", ex)
@@ -644,7 +655,6 @@ def main(page: ft.Page):
         rebuild_fab_layout()
 
         nav_drawer = drawer()
-        page.drawer = nav_drawer
 
         return ft.View(
             route=route,
