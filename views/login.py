@@ -424,9 +424,23 @@ def LoginView(page: ft.Page):
             if not last_login_result.ok:
                 print("更新最近登入時間失敗:", last_login_result.message)
 
-            print("LOGIN STEP 6: page.go('/')")
+            print("LOGIN STEP 6: navigate('/')")
             navigated = True
-            page.go("/")
+
+            nav = None
+            try:
+                nav = page.session_data.get("_navigate")
+            except Exception:
+                nav = None
+
+            if callable(nav):
+                nav("/")
+            else:
+                page.go("/")
+                try:
+                    page.update()
+                except Exception:
+                    pass
 
         except Exception as ex:
             show_error(f"登入失敗：{ex}")
