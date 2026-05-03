@@ -88,8 +88,23 @@ def main(page: ft.Page):
     # =====================================================
     # AppBar
     # =====================================================
-    def appbar(title):
+    def appbar(title, nav_drawer=None):
+        def open_drawer(e):
+            try:
+                if nav_drawer is not None:
+                    nav_drawer.open = True
+                    page.update()
+            except Exception as ex:
+                print("open drawer error:", ex)
+
         return ft.AppBar(
+            leading=ft.IconButton(
+                icon=ft.Icons.MENU,
+                icon_size=26,
+                icon_color="#111827",
+                tooltip="開啟選單",
+                on_click=open_drawer,
+            ),
             title=ft.Text(title, size=17, weight=ft.FontWeight.BOLD),
             bgcolor="#FFFFFF",
             actions=[
@@ -619,11 +634,13 @@ def main(page: ft.Page):
         )
         rebuild_fab_layout()
 
+        nav_drawer = drawer()
+
         return ft.View(
             route=route,
             bgcolor="#F8FAFC",
-            appbar=appbar(title),
-            drawer=drawer(),
+            appbar=appbar(title, nav_drawer),
+            drawer=nav_drawer,
             navigation_bar=bottom_nav(nav_idx),
             floating_action_button=fab_group,
             floating_action_button_location=ft.FloatingActionButtonLocation.END_FLOAT,
@@ -806,4 +823,4 @@ def main(page: ft.Page):
 
 
 if __name__ == "__main__":
-    ft.run(main,assets_dir=".")
+    ft.run(main, assets_dir=".")
