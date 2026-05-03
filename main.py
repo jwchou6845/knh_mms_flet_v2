@@ -43,7 +43,7 @@ def main(page: ft.Page):
 
     # Flet 0.84：目前維持 page.go()，依照你現有穩定版邏輯處理
     def navigate(route_path):
-        page.go(route_path)
+        page.push_route(route_path)
 
     # =====================================================
     # 共用方法

@@ -426,7 +426,7 @@ def LoginView(page: ft.Page):
 
             print("LOGIN STEP 6: page.go('/')")
             navigated = True
-            page.go("/")
+            page.push_route("/")
 
         except Exception as ex:
             show_error(f"登入失敗：{ex}")
