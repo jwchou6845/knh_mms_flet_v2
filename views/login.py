@@ -1,5 +1,8 @@
 # views/login.py
 # KNH MMS Login - Supabase 版（Flet 0.84）
+import json
+from datetime import datetime, timedelta, timezone
+
 import flet as ft
 
 from services.auth_service import (
@@ -9,6 +12,10 @@ from services.auth_service import (
     submit_password_reset_request,
     hash_password,
 )
+
+
+LOGIN_SESSION_KEY = "knh_login_session"
+REMEMBER_EMPLOYEE_KEY = "knh_employee_id"
 
 
 def LoginView(page: ft.Page):
@@ -33,7 +40,8 @@ def LoginView(page: ft.Page):
     MUTED_BLUE_DARK = "#4F75A3"
     MUTED_BLUE_PRESS = "#3F638E"
 
-    BORDER = "#D7E2EE"
+    BORDER = "#94A3B8"
+    FOCUS_BLUE = "#2563EB"
     INPUT_BG = "#FFFFFF"
 
     ERROR = "#DC2626"
@@ -107,6 +115,26 @@ def LoginView(page: ft.Page):
         except Exception:
             pass
 
+    def save_persistent_login_session(user: dict):
+        expires_at = datetime.now(timezone.utc) + timedelta(hours=12)
+
+        payload = {
+            "user_id": str(user.get("id", "")).strip(),
+            "employee_id": str(user.get("employee_id", "")).strip(),
+            "user_name": str(user.get("name", "")).strip(),
+            "role": user.get("role", "操作員"),
+            "shift": user.get("shift", "") or "",
+            "can_view_all_tasks": bool(user.get("can_view_all_tasks", False)),
+            "can_access_reports": bool(user.get("can_access_reports", False)),
+            "can_access_spinneret": bool(user.get("can_access_spinneret", False)),
+            "can_access_maintenance": bool(user.get("can_access_maintenance", False)),
+            "quick_shortcuts": user.get("quick_shortcuts") or [],
+            "expires_at": expires_at.isoformat(),
+        }
+
+        # 只保存登入狀態與權限，不保存 password / password_hash。
+        set_client_value(LOGIN_SESSION_KEY, json.dumps(payload, ensure_ascii=False))
+
     def save_login_session(user: dict):
         user_id = str(user.get("id", "")).strip()
         employee_id = str(user.get("employee_id", "")).strip()
@@ -124,6 +152,8 @@ def LoginView(page: ft.Page):
         page.session_data["can_access_spinneret"] = bool(user.get("can_access_spinneret", False))
         page.session_data["can_access_maintenance"] = bool(user.get("can_access_maintenance", False))
         page.session_data["quick_shortcuts"] = user.get("quick_shortcuts") or []
+
+        save_persistent_login_session(user)
 
     # =====================================================
     # 共用 UI 元件
@@ -151,7 +181,7 @@ def LoginView(page: ft.Page):
             can_reveal_password=password,
             border_radius=12,
             border_color=BORDER,
-            focused_border_color=MUTED_BLUE,
+            focused_border_color=FOCUS_BLUE,
             filled=True,
             bgcolor=INPUT_BG,
             height=52,
@@ -161,19 +191,8 @@ def LoginView(page: ft.Page):
 
     def primary_button(label, icon_name, on_click):
         return ft.ElevatedButton(
-            content=ft.Row(
-                controls=[
-                    ft.Icon(icon_name, size=20, color="white"),
-                    ft.Text(
-                        label,
-                        size=17,
-                        color="white",
-                        weight=ft.FontWeight.BOLD,
-                    ),
-                ],
-                alignment=ft.MainAxisAlignment.CENTER,
-                spacing=10,
-            ),
+            text=label,
+            icon=icon_name,
             height=56,
             bgcolor=MUTED_BLUE,
             color="white",
@@ -181,36 +200,27 @@ def LoginView(page: ft.Page):
             style=ft.ButtonStyle(
                 shape=ft.RoundedRectangleBorder(radius=12),
                 elevation=0,
+                text_style=ft.TextStyle(size=17, weight=ft.FontWeight.BOLD),
             ),
         )
 
     def secondary_button(label, icon_name, on_click):
         return ft.OutlinedButton(
-            content=ft.Row(
-                controls=[
-                    ft.Icon(icon_name, size=19, color="#2563A9"),
-                    ft.Text(
-                        label,
-                        size=15,
-                        color="#2563A9",
-                        weight=ft.FontWeight.W_600,
-                    ),
-                ],
-                alignment=ft.MainAxisAlignment.CENTER,
-                spacing=8,
-            ),
+            text=label,
+            icon=icon_name,
             height=52,
             on_click=on_click,
             style=ft.ButtonStyle(
                 shape=ft.RoundedRectangleBorder(radius=12),
                 side=ft.BorderSide(1, "#2563A9"),
+                text_style=ft.TextStyle(size=15, weight=ft.FontWeight.W_600),
             ),
         )
 
     # =====================================================
     # 登入欄位
     # =====================================================
-    remembered_employee_id = get_client_value("knh_employee_id", "")
+    remembered_employee_id = get_client_value(REMEMBER_EMPLOYEE_KEY, "")
 
     employee_field = input_field(
         hint="請輸入員工編號",
@@ -407,9 +417,9 @@ def LoginView(page: ft.Page):
             stored_hash = str(user.get("password_hash") or "").strip()
 
             if remember_checkbox.value:
-                set_client_value("knh_employee_id", employee_id)
+                set_client_value(REMEMBER_EMPLOYEE_KEY, employee_id)
             else:
-                remove_client_value("knh_employee_id")
+                remove_client_value(REMEMBER_EMPLOYEE_KEY)
 
             if user.get("must_change_password", False):
                 print("LOGIN STEP 3: must_change_password")
@@ -476,11 +486,26 @@ def LoginView(page: ft.Page):
         max_lines=3,
         border_radius=12,
         border_color=BORDER,
-        focused_border_color=MUTED_BLUE,
+        focused_border_color=FOCUS_BLUE,
         filled=True,
         bgcolor=INPUT_BG,
         text_size=14,
     )
+
+    def dialog_field(label, control):
+        return ft.Column(
+            tight=True,
+            spacing=5,
+            controls=[
+                ft.Text(
+                    label,
+                    size=13,
+                    color=TEXT_MAIN,
+                    weight=ft.FontWeight.W_600,
+                ),
+                control,
+            ],
+        )
 
     def close_reset_dialog(e=None):
         reset_dialog.open = False
@@ -535,10 +560,10 @@ def LoginView(page: ft.Page):
                         color=TEXT_SUB,
                     ),
                     ft.Container(height=8),
-                    reset_employee,
-                    reset_name,
-                    reset_contact,
-                    reset_reason,
+                    dialog_field("員工編號", reset_employee),
+                    dialog_field("員工姓名", reset_name),
+                    dialog_field("聯絡方式", reset_contact),
+                    dialog_field("申請原因", reset_reason),
                 ],
                 spacing=10,
                 tight=True,
@@ -546,7 +571,16 @@ def LoginView(page: ft.Page):
         ),
         actions=[
             ft.TextButton("取消", on_click=close_reset_dialog),
-            ft.TextButton("送出申請", on_click=submit_reset_request),
+            ft.ElevatedButton(
+                text="送出申請",
+                icon=ft.Icons.SEND_OUTLINED,
+                bgcolor=FOCUS_BLUE,
+                color="white",
+                on_click=submit_reset_request,
+                style=ft.ButtonStyle(
+                    shape=ft.RoundedRectangleBorder(radius=10),
+                ),
+            ),
         ],
         actions_alignment=ft.MainAxisAlignment.END,
     )
@@ -781,7 +815,17 @@ def LoginView(page: ft.Page):
                     print("更新最近登入時間失敗:", last_login_result.message)
 
                 show_snack(result.message, SUCCESS)
-                page.go("/")
+
+                nav = None
+                try:
+                    nav = page.session_data.get("_navigate")
+                except Exception:
+                    nav = None
+
+                if callable(nav):
+                    nav("/")
+                else:
+                    page.go("/")
 
             except Exception as ex:
                 set_change_error(f"密碼修改失敗：{ex}")

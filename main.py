@@ -1,6 +1,9 @@
 # main.py
 # KNH MMS v4.5 穩定版（Flet 0.84）
 
+import json
+from datetime import datetime, timezone
+
 import flet as ft
 from views.login import LoginView
 from views.dashboard import DashboardContent
@@ -12,6 +15,9 @@ from views.feed import FeedContent
 from views.maintenance import MaintenanceContent
 from services.auth_service import update_user_shortcuts
 from views.reports import ReportsContent
+
+
+LOGIN_SESSION_KEY = "knh_login_session"
 
 
 def main(page: ft.Page):
@@ -30,6 +36,77 @@ def main(page: ft.Page):
 
     if not hasattr(page, "session_data"):
         page.session_data = {}
+
+    def get_client_value(key, default=None):
+        try:
+            value = page.client_storage.get(key)
+            return value if value is not None else default
+        except Exception as ex:
+            print(f"client_storage get error: {key}", ex)
+            return default
+
+    def set_client_value(key, value):
+        try:
+            page.client_storage.set(key, value)
+        except Exception as ex:
+            print(f"client_storage set error: {key}", ex)
+
+    def remove_client_value(key):
+        try:
+            page.client_storage.remove(key)
+        except Exception as ex:
+            print(f"client_storage remove error: {key}", ex)
+
+    def _parse_expires_at(value):
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except Exception:
+            return None
+
+    def restore_login_session():
+        if page.session_data.get("is_logged_in"):
+            return True
+
+        raw = get_client_value(LOGIN_SESSION_KEY)
+        if not raw:
+            return False
+
+        try:
+            data = json.loads(raw) if isinstance(raw, str) else raw
+        except Exception as ex:
+            print("PERSISTENT LOGIN RESTORE JSON ERROR:", ex)
+            remove_client_value(LOGIN_SESSION_KEY)
+            return False
+
+        if not isinstance(data, dict):
+            remove_client_value(LOGIN_SESSION_KEY)
+            return False
+
+        expires_at = _parse_expires_at(data.get("expires_at"))
+        now_utc = datetime.now(timezone.utc)
+
+        if not expires_at or expires_at <= now_utc:
+            print("PERSISTENT LOGIN EXPIRED")
+            remove_client_value(LOGIN_SESSION_KEY)
+            return False
+
+        page.session_data["is_logged_in"] = True
+        page.session_data["user_id"] = data.get("user_id", "")
+        page.session_data["user_record_id"] = data.get("user_id", "")
+        page.session_data["employee_id"] = data.get("employee_id", "")
+        page.session_data["user_name"] = data.get("user_name") or data.get("employee_id") or "使用者"
+        page.session_data["role"] = data.get("role", "操作員")
+        page.session_data["shift"] = data.get("shift", "") or ""
+        page.session_data["can_view_all_tasks"] = bool(data.get("can_view_all_tasks", False))
+        page.session_data["can_access_reports"] = bool(data.get("can_access_reports", False))
+        page.session_data["can_access_spinneret"] = bool(data.get("can_access_spinneret", False))
+        page.session_data["can_access_maintenance"] = bool(data.get("can_access_maintenance", False))
+        page.session_data["quick_shortcuts"] = data.get("quick_shortcuts") or []
+
+        print("PERSISTENT LOGIN RESTORED", page.session_data.get("employee_id"))
+        return True
 
     page.fonts = {
         "Noto Sans TC":
@@ -82,51 +159,29 @@ def main(page: ft.Page):
         return page.session_data.get("user_name", "未登入")
 
     def logout():
+        remove_client_value(LOGIN_SESSION_KEY)
         page.session_data.clear()
+        page.session_data["_navigate"] = navigate
         navigate("/login")
 
     # =====================================================
     # AppBar
     # =====================================================
-    def appbar(title, nav_drawer=None):
+    def appbar(title):
         def open_drawer(e):
-            try:
-                print("OPEN DRAWER CLICKED")
+            async def do_open():
+                try:
+                    current_view = page.views[-1] if page.views else None
+                    if current_view:
+                        await current_view.show_drawer()
+                except Exception as ex:
+                    print("show_drawer error:", ex)
 
-                if not page.views:
-                    print("open drawer error: page.views is empty")
-                    return
-
-                current_view = page.views[-1]
-
-                # Flet 0.84：View.show_drawer() 是 coroutine，
-                # 不能直接呼叫，必須交給 page.run_task 執行。
-                if hasattr(current_view, "show_drawer"):
-                    async def do_open_drawer():
-                        try:
-                            await current_view.show_drawer()
-                        except Exception as ex:
-                            print("async show_drawer error:", ex)
-
-                    page.run_task(do_open_drawer)
-                    return
-
-                # fallback：若環境沒有 show_drawer，才退回 open 屬性。
-                if current_view.drawer is not None:
-                    current_view.drawer.open = True
-                    page.update()
-                    return
-
-                print("open drawer error: current view has no drawer")
-
-            except Exception as ex:
-                print("open drawer error:", ex)
+            page.run_task(do_open)
 
         return ft.AppBar(
             leading=ft.IconButton(
                 icon=ft.Icons.MENU,
-                icon_size=26,
-                icon_color="#111827",
                 tooltip="開啟選單",
                 on_click=open_drawer,
             ),
@@ -659,13 +714,11 @@ def main(page: ft.Page):
         )
         rebuild_fab_layout()
 
-        nav_drawer = drawer()
-
         return ft.View(
             route=route,
             bgcolor="#F8FAFC",
-            appbar=appbar(title, nav_drawer),
-            drawer=nav_drawer,
+            appbar=appbar(title),
+            drawer=drawer(),
             navigation_bar=bottom_nav(nav_idx),
             floating_action_button=fab_group,
             floating_action_button_location=ft.FloatingActionButtonLocation.END_FLOAT,
@@ -683,6 +736,9 @@ def main(page: ft.Page):
         try:
             # 先建立 target_view，不要一開始就清空 page.views
             target_view = None
+
+            if not is_login() and route != "/login":
+                restore_login_session()
 
             if not is_login() and route != "/login":
                 target_view = LoginView(page)
@@ -840,6 +896,8 @@ def main(page: ft.Page):
 
     page.on_route_change = route_change
     page.on_view_pop = view_pop
+
+    restore_login_session()
 
     if is_login():
         navigate("/")
