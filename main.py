@@ -1,9 +1,6 @@
 # main.py
 # KNH MMS v4.5 穩定版（Flet 0.84）
 
-import json
-from datetime import datetime, timezone
-
 import flet as ft
 from views.login import LoginView
 from views.dashboard import DashboardContent
@@ -16,8 +13,6 @@ from views.maintenance import MaintenanceContent
 from services.auth_service import update_user_shortcuts
 from views.reports import ReportsContent
 
-
-LOGIN_SESSION_KEY = "knh_login_session"
 
 
 def main(page: ft.Page):
@@ -37,76 +32,6 @@ def main(page: ft.Page):
     if not hasattr(page, "session_data"):
         page.session_data = {}
 
-    def get_client_value(key, default=None):
-        try:
-            value = page.client_storage.get(key)
-            return value if value is not None else default
-        except Exception as ex:
-            print(f"client_storage get error: {key}", ex)
-            return default
-
-    def set_client_value(key, value):
-        try:
-            page.client_storage.set(key, value)
-        except Exception as ex:
-            print(f"client_storage set error: {key}", ex)
-
-    def remove_client_value(key):
-        try:
-            page.client_storage.remove(key)
-        except Exception as ex:
-            print(f"client_storage remove error: {key}", ex)
-
-    def _parse_expires_at(value):
-        if not value:
-            return None
-        try:
-            return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        except Exception:
-            return None
-
-    def restore_login_session():
-        if page.session_data.get("is_logged_in"):
-            return True
-
-        raw = get_client_value(LOGIN_SESSION_KEY)
-        if not raw:
-            return False
-
-        try:
-            data = json.loads(raw) if isinstance(raw, str) else raw
-        except Exception as ex:
-            print("PERSISTENT LOGIN RESTORE JSON ERROR:", ex)
-            remove_client_value(LOGIN_SESSION_KEY)
-            return False
-
-        if not isinstance(data, dict):
-            remove_client_value(LOGIN_SESSION_KEY)
-            return False
-
-        expires_at = _parse_expires_at(data.get("expires_at"))
-        now_utc = datetime.now(timezone.utc)
-
-        if not expires_at or expires_at <= now_utc:
-            print("PERSISTENT LOGIN EXPIRED")
-            remove_client_value(LOGIN_SESSION_KEY)
-            return False
-
-        page.session_data["is_logged_in"] = True
-        page.session_data["user_id"] = data.get("user_id", "")
-        page.session_data["user_record_id"] = data.get("user_id", "")
-        page.session_data["employee_id"] = data.get("employee_id", "")
-        page.session_data["user_name"] = data.get("user_name") or data.get("employee_id") or "使用者"
-        page.session_data["role"] = data.get("role", "操作員")
-        page.session_data["shift"] = data.get("shift", "") or ""
-        page.session_data["can_view_all_tasks"] = bool(data.get("can_view_all_tasks", False))
-        page.session_data["can_access_reports"] = bool(data.get("can_access_reports", False))
-        page.session_data["can_access_spinneret"] = bool(data.get("can_access_spinneret", False))
-        page.session_data["can_access_maintenance"] = bool(data.get("can_access_maintenance", False))
-        page.session_data["quick_shortcuts"] = data.get("quick_shortcuts") or []
-
-        print("PERSISTENT LOGIN RESTORED", page.session_data.get("employee_id"))
-        return True
 
     page.fonts = {
         "Noto Sans TC":
@@ -119,33 +44,20 @@ def main(page: ft.Page):
     )
 
     # VM / 手機 Web 穩定路由：
-    # page.go() 在部分手機瀏覽器可能已更新 route 但未即時重建 view，
-    # 因此 navigate() 會在 page.go() 後主動呼叫 route_change(None)。
-    routing_state = {"manual": False}
-
+    # 只呼叫 page.go()，不再手動 route_change(None)。
+    # 原本 page.go() 後又手動 route_change 會導致同一頁建立兩次，
+    # feed.py / inventory.py 這類進頁就載入資料的頁面會因此重複查詢與卡住。
     def navigate(route_path):
         print(f"NAVIGATE TO: {route_path}")
         try:
             page.go(route_path)
         except Exception as ex:
             print("page.go error:", ex)
-
-        try:
-            if page.route != route_path:
+            try:
                 page.route = route_path
-        except Exception as ex:
-            print("set page.route error:", ex)
-
-        try:
-            if not routing_state["manual"]:
-                routing_state["manual"] = True
                 route_change(None)
-        except NameError:
-            pass
-        except Exception as ex:
-            print("manual route_change error:", ex)
-        finally:
-            routing_state["manual"] = False
+            except Exception as ex2:
+                print("manual route_change fallback error:", ex2)
 
     page.session_data["_navigate"] = navigate
 
@@ -159,7 +71,6 @@ def main(page: ft.Page):
         return page.session_data.get("user_name", "未登入")
 
     def logout():
-        remove_client_value(LOGIN_SESSION_KEY)
         page.session_data.clear()
         page.session_data["_navigate"] = navigate
         navigate("/login")
@@ -729,16 +640,20 @@ def main(page: ft.Page):
     # =====================================================
     # Route Change
     # =====================================================
+    route_state = {"building": False}
+
     def route_change(e):
+        if route_state["building"]:
+            print("ROUTE_CHANGE SKIP: already building")
+            return
+
         route = page.route
         print(f"ROUTE_CHANGE: route={route}, is_login={is_login()}, views={len(page.views)}")
 
         try:
+            route_state["building"] = True
             # 先建立 target_view，不要一開始就清空 page.views
             target_view = None
-
-            if not is_login() and route != "/login":
-                restore_login_session()
 
             if not is_login() and route != "/login":
                 target_view = LoginView(page)
@@ -831,8 +746,10 @@ def main(page: ft.Page):
             page.views.append(target_view)
             page.update()
             print(f"ROUTE_CHANGE DONE: route={route}, views={len(page.views)}")
+            route_state["building"] = False
 
         except Exception as ex:
+            route_state["building"] = False
             print("route_change error:", ex)
 
             error_view = ft.View(
@@ -910,8 +827,6 @@ def main(page: ft.Page):
 
     page.on_route_change = route_change
     page.on_view_pop = view_pop
-
-    restore_login_session()
 
     if is_login():
         navigate("/")

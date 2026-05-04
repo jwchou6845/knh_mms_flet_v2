@@ -1,8 +1,5 @@
 # views/login.py
 # KNH MMS Login - Supabase 版（Flet 0.84）
-import json
-from datetime import datetime, timedelta, timezone
-
 import flet as ft
 
 from services.auth_service import (
@@ -14,7 +11,6 @@ from services.auth_service import (
 )
 
 
-LOGIN_SESSION_KEY = "knh_login_session"
 REMEMBER_EMPLOYEE_KEY = "knh_employee_id"
 
 
@@ -97,43 +93,24 @@ def LoginView(page: ft.Page):
         page.update()
 
     def get_client_value(key: str, default=""):
+        # VM 目前的 Flet Page 沒有 client_storage，這裡改用 session_data 暫存，
+        # 避免換頁 / 重新建頁時出現 Page has no attribute client_storage。
         try:
-            value = page.client_storage.get(key)
-            return value if value is not None else default
+            return page.session_data.get(key, default)
         except Exception:
             return default
 
     def set_client_value(key: str, value):
         try:
-            page.client_storage.set(key, value)
+            page.session_data[key] = value
         except Exception:
             pass
 
     def remove_client_value(key: str):
         try:
-            page.client_storage.remove(key)
+            page.session_data.pop(key, None)
         except Exception:
             pass
-
-    def save_persistent_login_session(user: dict):
-        expires_at = datetime.now(timezone.utc) + timedelta(hours=12)
-
-        payload = {
-            "user_id": str(user.get("id", "")).strip(),
-            "employee_id": str(user.get("employee_id", "")).strip(),
-            "user_name": str(user.get("name", "")).strip(),
-            "role": user.get("role", "操作員"),
-            "shift": user.get("shift", "") or "",
-            "can_view_all_tasks": bool(user.get("can_view_all_tasks", False)),
-            "can_access_reports": bool(user.get("can_access_reports", False)),
-            "can_access_spinneret": bool(user.get("can_access_spinneret", False)),
-            "can_access_maintenance": bool(user.get("can_access_maintenance", False)),
-            "quick_shortcuts": user.get("quick_shortcuts") or [],
-            "expires_at": expires_at.isoformat(),
-        }
-
-        # 只保存登入狀態與權限，不保存 password / password_hash。
-        set_client_value(LOGIN_SESSION_KEY, json.dumps(payload, ensure_ascii=False))
 
     def save_login_session(user: dict):
         user_id = str(user.get("id", "")).strip()
@@ -153,7 +130,6 @@ def LoginView(page: ft.Page):
         page.session_data["can_access_maintenance"] = bool(user.get("can_access_maintenance", False))
         page.session_data["quick_shortcuts"] = user.get("quick_shortcuts") or []
 
-        save_persistent_login_session(user)
 
     # =====================================================
     # 共用 UI 元件
