@@ -190,9 +190,22 @@ def LoginView(page: ft.Page):
         )
 
     def primary_button(label, icon_name, on_click):
+        # Flet 0.84 on this VM: Button does not accept text=/icon= kwargs.
+        # Use content=Row(...) for compatibility.
         return ft.ElevatedButton(
-            text=label,
-            icon=icon_name,
+            content=ft.Row(
+                controls=[
+                    ft.Icon(icon_name, size=20, color="white"),
+                    ft.Text(
+                        label,
+                        size=17,
+                        color="white",
+                        weight=ft.FontWeight.BOLD,
+                    ),
+                ],
+                alignment=ft.MainAxisAlignment.CENTER,
+                spacing=10,
+            ),
             height=56,
             bgcolor=MUTED_BLUE,
             color="white",
@@ -200,20 +213,29 @@ def LoginView(page: ft.Page):
             style=ft.ButtonStyle(
                 shape=ft.RoundedRectangleBorder(radius=12),
                 elevation=0,
-                text_style=ft.TextStyle(size=17, weight=ft.FontWeight.BOLD),
             ),
         )
 
     def secondary_button(label, icon_name, on_click):
         return ft.OutlinedButton(
-            text=label,
-            icon=icon_name,
+            content=ft.Row(
+                controls=[
+                    ft.Icon(icon_name, size=19, color="#2563A9"),
+                    ft.Text(
+                        label,
+                        size=15,
+                        color="#2563A9",
+                        weight=ft.FontWeight.W_600,
+                    ),
+                ],
+                alignment=ft.MainAxisAlignment.CENTER,
+                spacing=8,
+            ),
             height=52,
             on_click=on_click,
             style=ft.ButtonStyle(
                 shape=ft.RoundedRectangleBorder(radius=12),
                 side=ft.BorderSide(1, "#2563A9"),
-                text_style=ft.TextStyle(size=15, weight=ft.FontWeight.W_600),
             ),
         )
 
@@ -572,8 +594,15 @@ def LoginView(page: ft.Page):
         actions=[
             ft.TextButton("取消", on_click=close_reset_dialog),
             ft.ElevatedButton(
-                text="送出申請",
-                icon=ft.Icons.SEND_OUTLINED,
+                content=ft.Row(
+                    controls=[
+                        ft.Icon(ft.Icons.SEND_OUTLINED, size=18, color="white"),
+                        ft.Text("送出申請", size=14, color="white", weight=ft.FontWeight.W_600),
+                    ],
+                    spacing=6,
+                    alignment=ft.MainAxisAlignment.CENTER,
+                    tight=True,
+                ),
                 bgcolor=FOCUS_BLUE,
                 color="white",
                 on_click=submit_reset_request,
