@@ -234,32 +234,80 @@ def InventoryContent(page: ft.Page):
             },
         )
 
-    def ui_button(label, icon_name, bg_color, hover_color, press_color, text_color, on_click_func):
-        return ft.ElevatedButton(
-            content=ft.Row(
-                controls=[
-                    ft.Icon(icon_name, color=text_color, size=18),
-                    ft.Text(
-                        label,
-                        color=text_color,
-                        weight=ft.FontWeight.BOLD,
-                        size=15,
-                    ),
-                ],
-                alignment=ft.MainAxisAlignment.CENTER,
-                spacing=8,
-            ),
-            style=button_style(bg_color, hover_color, press_color, text_color),
-            on_click=on_click_func,
-            expand=True,
-            disabled=True,
+    def _button_inner(label, icon_name, text_color):
+        return ft.Row(
+            controls=[
+                ft.Icon(icon_name, color=text_color, size=18),
+                ft.Text(
+                    label,
+                    color=text_color,
+                    weight=ft.FontWeight.BOLD,
+                    size=15,
+                ),
+            ],
+            alignment=ft.MainAxisAlignment.CENTER,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            spacing=8,
+            tight=True,
         )
 
-    def set_button_loading(button: ft.ElevatedButton, text: str):
+    def ui_button(label, icon_name, bg_color, hover_color, press_color, text_color, on_click_func):
+        """
+        VM / 手機 Web 穩定版按鈕。
+        目前 VM 的 Flet Button 不支援 text=/icon= kwargs，且手機 Web 對
+        ElevatedButton(content=Row(...)) 偶發文字 / 圖示不渲染。
+        因此確認送出類按鈕改用 Container + Row，並用 disabled/opacity 控制狀態。
+        """
+        btn_ref = {"control": None}
+
+        def handle_click(e):
+            btn = btn_ref.get("control")
+            if btn is not None and getattr(btn, "disabled", False):
+                return
+            on_click_func(e)
+
+        btn = ft.Container(
+            height=58,
+            border_radius=12,
+            bgcolor=bg_color,
+            alignment=ft.Alignment(0, 0),
+            content=_button_inner(label, icon_name, text_color),
+            on_click=handle_click,
+            expand=True,
+            opacity=0.55,
+            shadow=ft.BoxShadow(
+                spread_radius=0,
+                blur_radius=10,
+                color="#10000000",
+                offset=ft.Offset(0, 3),
+            ),
+        )
+        btn.disabled = True
+        btn.data = {
+            "label": label,
+            "icon": icon_name,
+            "bg": bg_color,
+            "hover": hover_color,
+            "press": press_color,
+            "text_color": text_color,
+        }
+        btn_ref["control"] = btn
+        return btn
+
+    def apply_button_enabled_state(button):
+        info = button.data if isinstance(button.data, dict) else {}
+        button.bgcolor = info.get("bg", BLUE_BTN)
+        button.opacity = 0.55 if getattr(button, "disabled", False) else 1
+
+    def set_button_loading(button, text: str):
         button.disabled = True
+        button.bgcolor = DISABLED
+        button.opacity = 0.92
         button.content = ft.Row(
             alignment=ft.MainAxisAlignment.CENTER,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
             spacing=10,
+            tight=True,
             controls=[
                 ft.ProgressRing(width=18, height=18, stroke_width=2, color="#FFFFFF"),
                 ft.Text(text, color="#FFFFFF", weight=ft.FontWeight.BOLD, size=15),
@@ -267,16 +315,14 @@ def InventoryContent(page: ft.Page):
         )
         safe_update(button)
 
-    def set_button_normal(button: ft.ElevatedButton, label: str, icon_name, text_color: str):
+    def set_button_normal(button, label: str, icon_name, text_color: str):
         button.disabled = False
-        button.content = ft.Row(
-            controls=[
-                ft.Icon(icon_name, color=text_color, size=18),
-                ft.Text(label, color=text_color, weight=ft.FontWeight.BOLD, size=15),
-            ],
-            alignment=ft.MainAxisAlignment.CENTER,
-            spacing=8,
-        )
+        if isinstance(button.data, dict):
+            button.data["label"] = label
+            button.data["icon"] = icon_name
+            button.data["text_color"] = text_color
+        button.content = _button_inner(label, icon_name, text_color)
+        apply_button_enabled_state(button)
         safe_update(button)
 
     def section_card(title, icon_name, icon_color, bar_color, content_controls):
@@ -349,6 +395,8 @@ def InventoryContent(page: ft.Page):
         else:
             btn_new.disabled = False
             n_batch.error_text = None if val else "請輸入進貨批號"
+
+        apply_button_enabled_state(btn_new)
 
         if do_update:
             safe_update(n_batch)
@@ -495,6 +543,8 @@ def InventoryContent(page: ft.Page):
         else:
             btn_rec.disabled = False
             r_id.error_text = None if val and val != today_batch_prefix() else "請補齊流水號"
+
+        apply_button_enabled_state(btn_rec)
 
         if do_update:
             safe_update(r_id)
@@ -848,63 +898,77 @@ def InventoryContent(page: ft.Page):
     # =====================================================
     content_area = ft.Container(content=new_tab_content)
 
-    def get_tab_style(is_active, theme="blue"):
-        if theme == "blue":
-            active_bg = BLUE_BG
-            active_text = BLUE
-        else:
-            active_bg = GREEN_BG
-            active_text = GREEN
-
-        if is_active:
-            return ft.ButtonStyle(
-                bgcolor=active_bg,
-                color=active_text,
-                shape=ft.RoundedRectangleBorder(radius=12),
-                padding=ft.padding.symmetric(horizontal=24, vertical=16),
-                elevation=0,
-            )
-
-        return ft.ButtonStyle(
-            bgcolor="#F1F5F9",
-            color=TEXT_SUB,
-            shape=ft.RoundedRectangleBorder(radius=12),
-            padding=ft.padding.symmetric(horizontal=24, vertical=16),
-            elevation=0,
+    def tab_inner(label, icon_name, color):
+        return ft.Row(
+            controls=[
+                ft.Icon(icon_name, size=18, color=color),
+                ft.Text(
+                    label,
+                    weight=ft.FontWeight.BOLD,
+                    size=14,
+                    color=color,
+                ),
+            ],
+            spacing=8,
+            alignment=ft.MainAxisAlignment.CENTER,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            tight=True,
         )
 
-    tab_btn_new = ft.ElevatedButton(
-        content=ft.Row(
-            [
-                ft.Icon(ft.Icons.BUSINESS, size=18),
-                ft.Text("供應商新料", weight=ft.FontWeight.BOLD),
-            ],
-            spacing=8,
-        ),
-        style=get_tab_style(True, "blue"),
+    def make_tab_button(label, icon_name, active_color, active_bg, active_border, is_active=False):
+        color = active_color if is_active else TEXT_SUB
+        return ft.Container(
+            height=48,
+            padding=ft.padding.symmetric(horizontal=18),
+            border_radius=12,
+            bgcolor=active_bg if is_active else "#F1F5F9",
+            border=ft.border.all(1, active_border if is_active else GRAY_BORDER),
+            alignment=ft.Alignment(0, 0),
+            content=tab_inner(label, icon_name, color),
+        )
+
+    def set_tab_visual(tab, label, icon_name, theme="blue", active=False):
+        if theme == "blue":
+            color = BLUE
+            bg = BLUE_BG
+            border = BLUE_BORDER
+        else:
+            color = GREEN
+            bg = GREEN_BG
+            border = GREEN_BORDER
+
+        tab.bgcolor = bg if active else "#F1F5F9"
+        tab.border = ft.border.all(1, border if active else GRAY_BORDER)
+        tab.content = tab_inner(label, icon_name, color if active else TEXT_SUB)
+
+    tab_btn_new = make_tab_button(
+        "供應商新料",
+        ft.Icons.BUSINESS,
+        BLUE,
+        BLUE_BG,
+        BLUE_BORDER,
+        is_active=True,
     )
 
-    tab_btn_rec = ft.ElevatedButton(
-        content=ft.Row(
-            [
-                ft.Icon(ft.Icons.FACTORY, size=18),
-                ft.Text("廠內回用料", weight=ft.FontWeight.BOLD),
-            ],
-            spacing=8,
-        ),
-        style=get_tab_style(False, "green"),
+    tab_btn_rec = make_tab_button(
+        "廠內回用料",
+        ft.Icons.FACTORY,
+        GREEN,
+        GREEN_BG,
+        GREEN_BORDER,
+        is_active=False,
     )
 
     def switch_tab(tab_name):
         status_bar.visible = False
 
         if tab_name == "new":
-            tab_btn_new.style = get_tab_style(True, "blue")
-            tab_btn_rec.style = get_tab_style(False, "green")
+            set_tab_visual(tab_btn_new, "供應商新料", ft.Icons.BUSINESS, "blue", True)
+            set_tab_visual(tab_btn_rec, "廠內回用料", ft.Icons.FACTORY, "green", False)
             content_area.content = new_tab_content
         else:
-            tab_btn_new.style = get_tab_style(False, "blue")
-            tab_btn_rec.style = get_tab_style(True, "green")
+            set_tab_visual(tab_btn_new, "供應商新料", ft.Icons.BUSINESS, "blue", False)
+            set_tab_visual(tab_btn_rec, "廠內回用料", ft.Icons.FACTORY, "green", True)
             content_area.content = rec_tab_content
 
         safe_update(tab_btn_new)
