@@ -645,8 +645,20 @@ def FeedContent(page: ft.Page):
             actions=[
                 ft.TextButton("取消", on_click=close_dlg),
                 ft.ElevatedButton(
-                    "儲存",
-                    icon=ft.Icons.SAVE_OUTLINED,
+                    content=ft.Row(
+                        controls=[
+                            ft.Icon(ft.Icons.SAVE_OUTLINED, size=18, color="white"),
+                            ft.Text(
+                                "儲存",
+                                size=14,
+                                color="white",
+                                weight=ft.FontWeight.W_600,
+                            ),
+                        ],
+                        alignment=ft.MainAxisAlignment.CENTER,
+                        spacing=8,
+                        tight=True,
+                    ),
                     style=ft.ButtonStyle(
                         bgcolor=theme["button"],
                         color="white",
@@ -1329,7 +1341,19 @@ def FeedContent(page: ft.Page):
         dlg = ft.AlertDialog(
             modal=True,
             title=ft.Text("全部打料紀錄", weight=ft.FontWeight.BOLD),
-            content=ft.Container(width=760, height=420, content=all_rows),
+            content=ft.Container(
+                width=min((page.width or 860) * 0.92, 760),
+                height=min((page.height or 760) * 0.72, 420),
+                content=ft.Row(
+                    scroll=ft.ScrollMode.AUTO,
+                    controls=[
+                        ft.Container(
+                            width=760,
+                            content=all_rows,
+                        ),
+                    ],
+                ),
+            ),
             actions=[
                 ft.TextButton("關閉", on_click=lambda ev: close_dialog(dlg)),
             ],
@@ -1356,9 +1380,20 @@ def FeedContent(page: ft.Page):
                             spacing=10,
                         ),
                         ft.TextButton(
-                            "查看全部",
-                            icon=ft.Icons.OPEN_IN_NEW,
-                            icon_color=PURPLE,
+                            content=ft.Row(
+                                controls=[
+                                    ft.Text(
+                                        "查看全部",
+                                        size=14,
+                                        color=PURPLE,
+                                        weight=ft.FontWeight.W_600,
+                                    ),
+                                    ft.Icon(ft.Icons.OPEN_IN_NEW, size=17, color=PURPLE),
+                                ],
+                                alignment=ft.MainAxisAlignment.CENTER,
+                                spacing=5,
+                                tight=True,
+                            ),
                             style=ft.ButtonStyle(color=PURPLE),
                             on_click=open_all_recent,
                         ),

@@ -871,8 +871,22 @@ def main(page: ft.Page):
                                         selectable=True,
                                     ),
                                     ft.ElevatedButton(
-                                        "回首頁",
-                                        icon=ft.Icons.HOME_OUTLINED,
+                                        content=ft.Row(
+                                            controls=[
+                                                ft.Icon(ft.Icons.HOME_OUTLINED, size=18, color="white"),
+                                                ft.Text(
+                                                    "回首頁",
+                                                    size=15,
+                                                    color="white",
+                                                    weight=ft.FontWeight.W_600,
+                                                ),
+                                            ],
+                                            alignment=ft.MainAxisAlignment.CENTER,
+                                            spacing=8,
+                                            tight=True,
+                                        ),
+                                        bgcolor="#2563EB",
+                                        color="white",
                                         on_click=lambda _: navigate("/"),
                                     ),
                                 ],

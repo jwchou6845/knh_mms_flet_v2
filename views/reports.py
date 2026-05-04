@@ -829,8 +829,20 @@ def ReportsContent(page: ft.Page):
                         ft.Text("僅顯示前 5 筆資料", size=12, color=TEXT_MUTED),
                         ft.Container(expand=True),
                         ft.TextButton(
-                            "查看全部",
-                            icon=ft.Icons.CHEVRON_RIGHT,
+                            content=ft.Row(
+                                controls=[
+                                    ft.Text(
+                                        "查看全部",
+                                        size=14,
+                                        color=BLUE,
+                                        weight=ft.FontWeight.W_600,
+                                    ),
+                                    ft.Icon(ft.Icons.CHEVRON_RIGHT, size=18, color=BLUE),
+                                ],
+                                alignment=ft.MainAxisAlignment.CENTER,
+                                spacing=4,
+                                tight=True,
+                            ),
                             on_click=lambda e: show_msg("查看全部會在下一階段接上。", BLUE),
                         ),
                     ],
