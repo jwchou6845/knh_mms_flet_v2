@@ -1147,9 +1147,12 @@ def FeedContent(page: ft.Page):
     # 手機 Web / VM 模式：GestureDetector.on_tap_up 偶發不觸發，
     # 會造成按鈕呈現像「卡死」。改用 Container.on_click，
     # 與 login.py 的穩定修正版一致。
+    # 注意：submit_feed 會在後面才定義，這裡必須使用 lambda 延遲解析，
+    # 否則 FeedContent 建立畫面時會出現：
+    # cannot access local variable 'submit_feed' where it is not associated with a value
     submit_button = ft.Container(
         content=submit_box,
-        on_click=submit_feed,
+        on_click=lambda e: submit_feed(e),
         on_hover=submit_hover,
     )
 
