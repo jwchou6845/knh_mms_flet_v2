@@ -129,13 +129,32 @@ def SpinneretContent(page: ft.Page):
         )
 
     def ui_button(label, icon_name, bg_color, text_color, on_click_func):
-        return ft.ElevatedButton(
-            content=ft.Row([
-                ft.Icon(icon_name, color=text_color, size=18),
-                ft.Text(label, color=text_color, weight=ft.FontWeight.BOLD, size=14)
-            ], alignment=ft.MainAxisAlignment.CENTER),
-            style=ft.ButtonStyle(bgcolor=bg_color, shape=ft.RoundedRectangleBorder(radius=12), padding=ft.padding.symmetric(vertical=15)),
-            on_click=on_click_func, expand=True
+        # VM / 手機 Web 穩定版：
+        # 這裡不要用 ElevatedButton(content=Row)，避免手機 Web 偶發按鈕文字 / 圖示不渲染。
+        # 改用 Container + Row，點擊事件直接掛在 Container 上。
+        return ft.Container(
+            height=46,
+            expand=True,
+            border_radius=12,
+            bgcolor=bg_color,
+            border=ft.border.all(1, bg_color),
+            alignment=ft.Alignment(0, 0),
+            on_click=on_click_func,
+            content=ft.Row(
+                controls=[
+                    ft.Icon(icon_name, color=text_color, size=18),
+                    ft.Text(
+                        label,
+                        color=text_color,
+                        weight=ft.FontWeight.BOLD,
+                        size=14,
+                    ),
+                ],
+                alignment=ft.MainAxisAlignment.CENTER,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                spacing=8,
+                tight=True,
+            ),
         )
 
     # 選項清單由 services.spinneret_service 統一提供，對應 Airtable single select 設定。
