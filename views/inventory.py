@@ -180,10 +180,13 @@ def InventoryContent(page: ft.Page):
     # 4. UI 元件工廠
     # =====================================================
     def ui_input(label, val="", hint="", is_number=False):
+        # 手機 Web 上 TextField 的 label 在有值時容易不顯示，
+        # 因此欄位標題改由外層 field_group 固定顯示。
         return ft.TextField(
-            label=label,
+            label=None,
             value=val,
-            hint_text=hint,
+            hint_text=hint or label,
+            hint_style=ft.TextStyle(size=14, color="#94A3B8"),
             bgcolor=INPUT_BG,
             border_color=BORDER,
             focused_border_color=BLUE,
@@ -198,7 +201,8 @@ def InventoryContent(page: ft.Page):
     def ui_dropdown(label, options):
         opts = [ft.dropdown.Option(o) for o in options] if options else [ft.dropdown.Option("載入中...")]
         return ft.Dropdown(
-            label=label,
+            label=None,
+            hint_text=label,
             options=opts,
             bgcolor=INPUT_BG,
             border_color=BORDER,
@@ -207,6 +211,24 @@ def InventoryContent(page: ft.Page):
             text_size=14,
             height=58,
             content_padding=ft.padding.symmetric(horizontal=16, vertical=14),
+            expand=True,
+        )
+
+    def field_group(label, control, required=False):
+        # 固定外部欄位標題，避免 iOS / Flet Web 上 TextField label 消失。
+        return ft.Column(
+            controls=[
+                ft.Text(
+                    label + (" *" if required else ""),
+                    size=13,
+                    color=TEXT_SUB,
+                    weight=ft.FontWeight.W_600,
+                    max_lines=1,
+                    overflow=ft.TextOverflow.ELLIPSIS,
+                ),
+                control,
+            ],
+            spacing=6,
             expand=True,
         )
 
@@ -494,8 +516,22 @@ def InventoryContent(page: ft.Page):
         icon_color=BLUE,
         bar_color=BLUE_BAR,
         content_controls=[
-            ft.Row([n_batch, n_mat], spacing=20),
-            ft.Row([n_date, n_qty], spacing=20),
+            ft.Row(
+                [
+                    field_group("進貨批號（需補齊流水號）", n_batch, required=True),
+                    field_group("關聯原料", n_mat, required=True),
+                ],
+                spacing=20,
+                vertical_alignment=ft.CrossAxisAlignment.START,
+            ),
+            ft.Row(
+                [
+                    field_group("進貨日期", n_date, required=True),
+                    field_group("進貨數量（包）", n_qty, required=True),
+                ],
+                spacing=20,
+                vertical_alignment=ft.CrossAxisAlignment.START,
+            ),
             ft.Container(height=4),
             ft.Row([btn_new]),
         ],
@@ -638,9 +674,30 @@ def InventoryContent(page: ft.Page):
         icon_color=GREEN,
         bar_color=GREEN_BAR,
         content_controls=[
-            ft.Row([r_id, r_date], spacing=20),
-            ft.Row([r_type, r_weight], spacing=20),
-            ft.Row([r_machine, r_vendor], spacing=20),
+            ft.Row(
+                [
+                    field_group("原料編號（需補齊流水號）", r_id, required=True),
+                    field_group("入庫日期", r_date, required=True),
+                ],
+                spacing=20,
+                vertical_alignment=ft.CrossAxisAlignment.START,
+            ),
+            ft.Row(
+                [
+                    field_group("原料種類", r_type, required=True),
+                    field_group("重量（KG）", r_weight, required=True),
+                ],
+                spacing=20,
+                vertical_alignment=ft.CrossAxisAlignment.START,
+            ),
+            ft.Row(
+                [
+                    field_group("來源機台", r_machine, required=True),
+                    field_group("供應商", r_vendor, required=True),
+                ],
+                spacing=20,
+                vertical_alignment=ft.CrossAxisAlignment.START,
+            ),
             ft.Container(height=4),
             ft.Row([btn_rec]),
         ],
