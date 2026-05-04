@@ -47,6 +47,9 @@ def FeedContent(page: ft.Page):
     else:
         current_user_name = "周正偉"
 
+    page_w = page.width or 430
+    is_mobile_page = page_w <= 520
+
     # =====================================================
     # 1. 色彩設定
     # =====================================================
@@ -126,6 +129,31 @@ def FeedContent(page: ft.Page):
             return float(value)
         except Exception:
             return default
+
+    def parse_percent_1_decimal(value, default=0.0):
+        text = str(value if value is not None else "").strip().replace("％", "%")
+        text = text.replace("%", "")
+
+        if not text:
+            return float(default)
+
+        try:
+            number = float(text)
+        except Exception:
+            raise ValueError("內存比例請輸入數字，例如 62.6")
+
+        if number < 0 or number > 100:
+            raise ValueError("內存比例需介於 0.0 到 100.0 之間")
+
+        return round(number, 1)
+
+    def normalize_dryer_status_item(item):
+        row = dict(item or {})
+        try:
+            row["percent"] = parse_percent_1_decimal(row.get("percent", 0), 0.0)
+        except Exception:
+            row["percent"] = 0.0
+        return row
 
     def today_slash_date():
         return service_today_slash_date()
@@ -372,52 +400,67 @@ def FeedContent(page: ft.Page):
     # =====================================================
     # 5. Header
     # =====================================================
+    header_title_block = ft.Row(
+        controls=[
+            ft.Container(
+                width=54,
+                height=54,
+                border_radius=16,
+                bgcolor="#EFF6FF",
+                alignment=ft.Alignment(0, 0),
+                content=ft.Icon(
+                    ft.Icons.FACTORY_OUTLINED,
+                    size=30,
+                    color="#334155",
+                ),
+            ),
+            ft.Column(
+                controls=[
+                    ft.Text(
+                        "現場打料作業",
+                        size=25 if is_mobile_page else 26,
+                        weight=ft.FontWeight.BOLD,
+                        color=TEXT_MAIN,
+                    ),
+                    ft.Text(
+                        "記錄原料領用與配料資訊，確保生產流程順暢與庫存準確。",
+                        size=13 if is_mobile_page else 14,
+                        color=TEXT_SUB,
+                        max_lines=2,
+                        overflow=ft.TextOverflow.ELLIPSIS,
+                    ),
+                ],
+                spacing=4,
+                expand=True,
+            ),
+        ],
+        spacing=14,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        expand=True,
+    )
+
     header = ft.Container(
         padding=ft.padding.only(bottom=8),
-        content=ft.Row(
-            controls=[
-                ft.Row(
-                    controls=[
-                        ft.Container(
-                            width=54,
-                            height=54,
-                            border_radius=16,
-                            bgcolor="#EFF6FF",
-                            alignment=ft.Alignment(0, 0),
-                            content=ft.Icon(
-                                ft.Icons.FACTORY_OUTLINED,
-                                size=30,
-                                color="#334155",
-                            ),
-                        ),
-                        ft.Column(
-                            controls=[
-                                ft.Text(
-                                    "現場打料作業",
-                                    size=26,
-                                    weight=ft.FontWeight.BOLD,
-                                    color=TEXT_MAIN,
-                                ),
-                                ft.Text(
-                                    "記錄原料領用與配料資訊，確保生產流程順暢與庫存準確。",
-                                    size=14,
-                                    color=TEXT_SUB,
-                                    max_lines=2,
-                                    overflow=ft.TextOverflow.ELLIPSIS,
-                                ),
-                            ],
-                            spacing=4,
-                            expand=True,
-                        ),
-                    ],
-                    spacing=14,
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                    expand=True,
-                ),
-                status_badge,
-            ],
-            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        content=(
+            ft.Column(
+                controls=[
+                    header_title_block,
+                    ft.Container(
+                        alignment=ft.Alignment(-1, 0),
+                        content=status_badge,
+                    ),
+                ],
+                spacing=10,
+            )
+            if is_mobile_page
+            else ft.Row(
+                controls=[
+                    header_title_block,
+                    status_badge,
+                ],
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            )
         ),
     )
 
@@ -553,7 +596,7 @@ def FeedContent(page: ft.Page):
 
         percent_field = ft.TextField(
             label="內存比例 %",
-            value=f"{float(item.get('percent', 0) or 0):.1f}",
+            value=f"{parse_percent_1_decimal(item.get('percent', 0), 0.0):.1f}",
             hint_text="0.0 ~ 100.0",
             hint_style=ft.TextStyle(size=14, color="#94A3B8"),
             keyboard_type=ft.KeyboardType.TEXT,
@@ -596,10 +639,16 @@ def FeedContent(page: ft.Page):
                 if hasattr(page, "session_data") and isinstance(page.session_data, dict):
                     current_user_id = page.session_data.get("user_id")
 
+                try:
+                    percent_value = parse_percent_1_decimal(percent_field.value, 0.0)
+                except ValueError as ex:
+                    show_snack(str(ex), RED)
+                    return
+
                 result = save_dryer_status(
                     tower_code=tower_code,
                     material=str(material_field.value or "").strip(),
-                    percent=str(percent_field.value or "").strip(),
+                    percent=percent_value,
                     note=str(note_field_dialog.value or "").strip(),
                     updated_by_user_id=current_user_id,
                     updated_by_name=current_user_name,
@@ -688,7 +737,7 @@ def FeedContent(page: ft.Page):
         material = item.get("material", "未填寫")
         note = item.get("note", "無備註")
         try:
-            percent = round(float(item.get("percent", 0) or 0), 1)
+            percent = parse_percent_1_decimal(item.get("percent", 0), 0.0)
         except Exception:
             percent = 0.0
         updated_at = item.get("updated_at", "-")
@@ -1166,7 +1215,13 @@ def FeedContent(page: ft.Page):
 
     form_title_icon = ft.Icon(ft.Icons.INVENTORY_2_OUTLINED, size=26, color=BLUE)
     form_title_text = ft.Text("領用新料作業", size=20, color=TEXT_MAIN, weight=ft.FontWeight.BOLD)
-    form_subtitle = ft.Text("填寫領用資訊，系統將自動寫入 Supabase 並同步紀錄。", size=13, color=TEXT_SUB)
+    form_subtitle = ft.Text(
+        "填寫領用資訊，系統將自動寫入 Supabase 並同步紀錄。",
+        size=13,
+        color=TEXT_SUB,
+        max_lines=2,
+        overflow=ft.TextOverflow.ELLIPSIS,
+    )
 
     form_fields_area = ft.Column(spacing=18)
 
@@ -1718,7 +1773,10 @@ def FeedContent(page: ft.Page):
     # =====================================================
     def apply_dryer_status_data(data: dict):
         dryer_status_items.clear()
-        dryer_status_items.extend(data.get("items", []))
+        dryer_status_items.extend([
+            normalize_dryer_status_item(item)
+            for item in data.get("items", [])
+        ])
         dryer_latest_updated["value"] = data.get("latest_updated", "-")
 
     def reload_dryer_status_data():
