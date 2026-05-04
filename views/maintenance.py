@@ -151,6 +151,122 @@ def icon_button_style() -> ft.ButtonStyle:
     )
 
 
+
+def _stable_button_content(
+    text: str,
+    icon,
+    text_color: str,
+    icon_size: int = 20,
+    text_size: int = 15,
+) -> ft.Row:
+    return ft.Row(
+        alignment=ft.MainAxisAlignment.CENTER,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        spacing=8,
+        tight=True,
+        controls=[
+            ft.Icon(icon, size=icon_size, color=text_color),
+            ft.Text(
+                text,
+                size=text_size,
+                weight=ft.FontWeight.BOLD,
+                color=text_color,
+                max_lines=1,
+                overflow=ft.TextOverflow.ELLIPSIS,
+            ),
+        ],
+    )
+
+
+def stable_filled_button(
+    text: str,
+    icon,
+    bg: str = BLUE_BTN,
+    on_click=None,
+    height: int = 46,
+    expand: bool = True,
+    text_color: str = "#FFFFFF",
+) -> ft.Container:
+    btn = ft.Container(
+        expand=expand,
+        height=height,
+        border_radius=12,
+        bgcolor=bg,
+        alignment=ft.Alignment(0, 0),
+        padding=ft.padding.symmetric(horizontal=12),
+        ink=True,
+        content=_stable_button_content(text, icon, text_color),
+    )
+    btn.disabled = False
+    btn.data = {
+        "stable_label": text,
+        "stable_icon": icon,
+        "stable_bg": bg,
+        "stable_text_color": text_color,
+    }
+
+    def handle_click(e):
+        if getattr(btn, "disabled", False):
+            return
+        if callable(on_click):
+            on_click(e)
+
+    btn.on_click = handle_click
+    return btn
+
+
+def stable_outline_button(
+    text: str,
+    icon=None,
+    color: str = BLUE_BTN,
+    border_color: str = BLUE_BORDER,
+    hover_bg: str = BLUE_SOFT,
+    on_click=None,
+    height: int = 46,
+    expand: bool = True,
+) -> ft.Container:
+    btn = ft.Container(
+        expand=expand,
+        height=height,
+        border_radius=12,
+        bgcolor="#FFFFFF",
+        border=ft.border.all(1, border_color),
+        alignment=ft.Alignment(0, 0),
+        padding=ft.padding.symmetric(horizontal=12),
+        ink=True,
+        content=(
+            _stable_button_content(text, icon, color, icon_size=18, text_size=14)
+            if icon
+            else ft.Text(
+                text,
+                size=14,
+                weight=ft.FontWeight.BOLD,
+                color=color,
+                max_lines=1,
+                overflow=ft.TextOverflow.ELLIPSIS,
+            )
+        ),
+    )
+    btn.disabled = False
+    btn.data = {
+        "stable_label": text,
+        "stable_icon": icon,
+        "stable_bg": "#FFFFFF",
+        "stable_text_color": color,
+        "stable_border_color": border_color,
+        "stable_hover_bg": hover_bg,
+    }
+
+    def handle_click(e):
+        if getattr(btn, "disabled", False):
+            return
+        if callable(on_click):
+            on_click(e)
+
+    btn.on_click = handle_click
+    return btn
+
+
 def card(content, padding: int = 16, expand: bool = False) -> ft.Container:
     return ft.Container(
         expand=expand,
@@ -225,37 +341,40 @@ def task_tag_colors(tag: str):
 
 def set_button_loading(
     page: ft.Page,
-    button: ft.ElevatedButton,
+    button,
     text: str = "寫入中...",
 ) -> None:
     button.disabled = True
     button.content = ft.Row(
         alignment=ft.MainAxisAlignment.CENTER,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
         spacing=10,
+        tight=True,
         controls=[
             ft.ProgressRing(width=18, height=18, stroke_width=2, color="#FFFFFF"),
             ft.Text(text, size=15, weight=ft.FontWeight.BOLD, color="#FFFFFF"),
         ],
     )
-    page.update()
+    try:
+        button.update()
+    except Exception:
+        page.update()
 
 
 def set_button_normal(
     page: ft.Page,
-    button: ft.ElevatedButton,
+    button,
     text: str,
     icon,
 ) -> None:
     button.disabled = False
-    button.content = ft.Row(
-        alignment=ft.MainAxisAlignment.CENTER,
-        spacing=8,
-        controls=[
-            ft.Icon(icon, size=20, color="#FFFFFF"),
-            ft.Text(text, size=15, weight=ft.FontWeight.BOLD, color="#FFFFFF"),
-        ],
-    )
-    page.update()
+    data = button.data if isinstance(getattr(button, "data", None), dict) else {}
+    text_color = data.get("stable_text_color", "#FFFFFF")
+    button.content = _stable_button_content(text, icon, text_color)
+    try:
+        button.update()
+    except Exception:
+        page.update()
 
 
 # ============================================================
@@ -741,17 +860,12 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
             max_lines=4,
         )
 
-        submit_btn = ft.ElevatedButton(
+        submit_btn = stable_filled_button(
+            "送出紀錄",
+            ft.Icons.SAVE_OUTLINED,
+            bg=BLUE_BTN,
+            on_click=lambda e: on_submit(e),
             height=48,
-            style=primary_button_style(),
-            content=ft.Row(
-                alignment=ft.MainAxisAlignment.CENTER,
-                spacing=8,
-                controls=[
-                    ft.Icon(ft.Icons.SAVE_OUTLINED, size=20, color="#FFFFFF"),
-                    ft.Text("送出紀錄", size=15, weight=ft.FontWeight.BOLD, color="#FFFFFF"),
-                ],
-            ),
         )
 
         def on_submit(_):
@@ -1132,17 +1246,12 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
             max_lines=4,
         )
 
-        submit_btn = ft.ElevatedButton(
+        submit_btn = stable_filled_button(
+            "送出紀錄",
+            ft.Icons.SAVE_OUTLINED,
+            bg=BLUE_BTN,
+            on_click=lambda e: on_submit(e),
             height=46,
-            style=primary_button_style(),
-            content=ft.Row(
-                alignment=ft.MainAxisAlignment.CENTER,
-                spacing=8,
-                controls=[
-                    ft.Icon(ft.Icons.SAVE_OUTLINED, size=20, color="#FFFFFF"),
-                    ft.Text("送出紀錄", size=15, weight=ft.FontWeight.BOLD, color="#FFFFFF"),
-                ],
-            ),
         )
 
         def close_inline_record_form(_=None):
@@ -1204,11 +1313,11 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
                     ft.Row(
                         spacing=10,
                         controls=[
-                            ft.OutlinedButton(
+                            stable_outline_button(
                                 "取消",
-                                expand=True,
-                                style=outline_button_style(),
+                                ft.Icons.CLOSE,
                                 on_click=close_inline_record_form,
+                                height=46,
                             ),
                             ft.Container(expand=True, content=submit_btn),
                         ],
@@ -1529,29 +1638,32 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
                     ),
                 ],
             ),
-            ft.Row(
+            ft.ResponsiveRow(
+                columns=12,
                 spacing=10,
+                run_spacing=10,
                 controls=[
-                    ft.OutlinedButton(
-                        "收起紀錄" if state.get("open_records_item_id") == item.get("id") else "查看紀錄",
-                        expand=True,
-                        style=outline_button_style(
+                    ft.Container(
+                        col={"xs": 12, "sm": 6},
+                        content=stable_outline_button(
+                            "收起紀錄" if state.get("open_records_item_id") == item.get("id") else "查看紀錄",
+                            ft.Icons.HISTORY_OUTLINED,
                             color=PURPLE_BTN if state.get("open_records_item_id") == item.get("id") else BLUE_BTN,
-                            hover_bg=PURPLE_SOFT if state.get("open_records_item_id") == item.get("id") else BLUE_SOFT,
                             border_color=PURPLE_BORDER if state.get("open_records_item_id") == item.get("id") else BLUE_BORDER,
+                            hover_bg=PURPLE_SOFT if state.get("open_records_item_id") == item.get("id") else BLUE_SOFT,
+                            on_click=lambda _, current_item=item: toggle_item_records(current_item),
+                            height=44,
                         ),
-                        on_click=lambda _, current_item=item: toggle_item_records(current_item),
                     ),
-                    ft.ElevatedButton(
-                        "收起表單" if is_form_open else "新增紀錄",
-                        expand=True,
-                        height=44,
-                        style=primary_button_style(
+                    ft.Container(
+                        col={"xs": 12, "sm": 6},
+                        content=stable_filled_button(
+                            "收起表單" if is_form_open else "新增紀錄",
+                            ft.Icons.KEYBOARD_ARROW_UP if is_form_open else ft.Icons.ADD_CIRCLE_OUTLINE,
                             bg=PURPLE_BTN if is_form_open else BLUE_BTN,
-                            hover=PURPLE_BTN_HOVER if is_form_open else BLUE_BTN_HOVER,
-                            pressed=PURPLE_BTN_PRESS if is_form_open else BLUE_BTN_PRESS,
+                            on_click=toggle_inline_record_form,
+                            height=44,
                         ),
-                        on_click=toggle_inline_record_form,
                     ),
                 ],
             ),
@@ -1841,45 +1953,39 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
             rebuild()
 
         def extension_action_button(label: str, icon, color: str, soft_bg: str, handler):
+            """手機 Web 穩定版：不用 OutlinedButton，改成 Container + Column。"""
             return ft.Container(
-                expand=True,
-                content=ft.OutlinedButton(
-                    height=104,
-                    style=ft.ButtonStyle(
-                        bgcolor={
-                            ft.ControlState.DEFAULT: "#FFFFFF",
-                            ft.ControlState.HOVERED: soft_bg,
-                            ft.ControlState.PRESSED: "#E2E8F0",
-                        },
-                        color={
-                            ft.ControlState.DEFAULT: color,
-                            ft.ControlState.HOVERED: color,
-                            ft.ControlState.PRESSED: color,
-                        },
-                        side={
-                            ft.ControlState.DEFAULT: ft.BorderSide(1, BORDER),
-                            ft.ControlState.HOVERED: ft.BorderSide(1, color),
-                            ft.ControlState.PRESSED: ft.BorderSide(1, color),
-                        },
-                        shape=ft.RoundedRectangleBorder(radius=14),
-                    ),
-                    content=ft.Column(
-                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                        alignment=ft.MainAxisAlignment.CENTER,
-                        spacing=8,
-                        controls=[
-                            ft.Container(
-                                width=42,
-                                height=42,
-                                border_radius=21,
-                                bgcolor=soft_bg,
-                                alignment=ft.Alignment(0, 0),
-                                content=ft.Icon(icon, color=color, size=23),
-                            ),
-                            ft.Text(label, size=12, color=TEXT, text_align=ft.TextAlign.CENTER),
-                        ],
-                    ),
-                    on_click=handler,
+                height=106,
+                bgcolor="#FFFFFF",
+                border=ft.border.all(1, color),
+                border_radius=16,
+                padding=ft.padding.symmetric(horizontal=10, vertical=12),
+                alignment=ft.Alignment(0, 0),
+                ink=True,
+                on_click=handler,
+                content=ft.Column(
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                    alignment=ft.MainAxisAlignment.CENTER,
+                    spacing=8,
+                    controls=[
+                        ft.Container(
+                            width=42,
+                            height=42,
+                            border_radius=21,
+                            bgcolor=soft_bg,
+                            alignment=ft.Alignment(0, 0),
+                            content=ft.Icon(icon, color=color, size=23),
+                        ),
+                        ft.Text(
+                            label,
+                            size=12,
+                            color=TEXT,
+                            weight=ft.FontWeight.W_600,
+                            text_align=ft.TextAlign.CENTER,
+                            max_lines=2,
+                            overflow=ft.TextOverflow.ELLIPSIS,
+                        ),
+                    ],
                 ),
             )
 
@@ -1889,17 +1995,12 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
             cycle_tf = ft.TextField(label="週期天數", value="30", keyboard_type=ft.KeyboardType.NUMBER)
             desc_tf = ft.TextField(label="說明", multiline=True, min_lines=2, max_lines=3)
 
-            submit_btn = ft.ElevatedButton(
+            submit_btn = stable_filled_button(
+                "新增清潔項目",
+                ft.Icons.ADD_OUTLINED,
+                bg=BLUE_BTN,
+                on_click=lambda e: on_submit(e),
                 height=46,
-                style=primary_button_style(),
-                content=ft.Row(
-                    alignment=ft.MainAxisAlignment.CENTER,
-                    spacing=8,
-                    controls=[
-                        ft.Icon(ft.Icons.ADD_OUTLINED, size=20, color="#FFFFFF"),
-                        ft.Text("新增清潔項目", size=15, weight=ft.FontWeight.BOLD, color="#FFFFFF"),
-                    ],
-                ),
             )
 
             def on_submit(_):
@@ -1937,7 +2038,12 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
                         ft.Row(
                             spacing=10,
                             controls=[
-                                ft.OutlinedButton("取消", expand=True, style=outline_button_style(), on_click=close_inline_form),
+                                stable_outline_button(
+                                    "取消",
+                                    ft.Icons.CLOSE,
+                                    on_click=close_inline_form,
+                                    height=46,
+                                ),
                                 ft.Container(expand=True, content=submit_btn),
                             ],
                         ),
@@ -1953,17 +2059,12 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
             cycle_tf = ft.TextField(label="週期天數", value="30", keyboard_type=ft.KeyboardType.NUMBER)
             desc_tf = ft.TextField(label="說明", multiline=True, min_lines=2, max_lines=3)
 
-            submit_btn = ft.ElevatedButton(
+            submit_btn = stable_filled_button(
+                "新增耗材項目",
+                ft.Icons.ADD_OUTLINED,
+                bg=ORANGE_BTN,
+                on_click=lambda e: on_submit(e),
                 height=46,
-                style=primary_button_style(bg=ORANGE_BTN, hover=ORANGE_BTN_HOVER, pressed=ORANGE_BTN_PRESS),
-                content=ft.Row(
-                    alignment=ft.MainAxisAlignment.CENTER,
-                    spacing=8,
-                    controls=[
-                        ft.Icon(ft.Icons.ADD_OUTLINED, size=20, color="#FFFFFF"),
-                        ft.Text("新增耗材項目", size=15, weight=ft.FontWeight.BOLD, color="#FFFFFF"),
-                    ],
-                ),
             )
 
             def on_submit(_):
@@ -2005,7 +2106,12 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
                         ft.Row(
                             spacing=10,
                             controls=[
-                                ft.OutlinedButton("取消", expand=True, style=outline_button_style(), on_click=close_inline_form),
+                                stable_outline_button(
+                                    "取消",
+                                    ft.Icons.CLOSE,
+                                    on_click=close_inline_form,
+                                    height=46,
+                                ),
                                 ft.Container(expand=True, content=submit_btn),
                             ],
                         ),
@@ -2036,17 +2142,12 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
 
             item_dd.on_change = on_item_change
 
-            submit_btn = ft.ElevatedButton(
+            submit_btn = stable_filled_button(
+                "更新週期",
+                ft.Icons.SAVE_OUTLINED,
+                bg=PURPLE_BTN,
+                on_click=lambda e: on_submit(e),
                 height=46,
-                style=primary_button_style(bg=PURPLE_BTN, hover=PURPLE_BTN_HOVER, pressed=PURPLE_BTN_PRESS),
-                content=ft.Row(
-                    alignment=ft.MainAxisAlignment.CENTER,
-                    spacing=8,
-                    controls=[
-                        ft.Icon(ft.Icons.SAVE_OUTLINED, size=20, color="#FFFFFF"),
-                        ft.Text("更新週期", size=15, weight=ft.FontWeight.BOLD, color="#FFFFFF"),
-                    ],
-                ),
             )
 
             def on_submit(_):
@@ -2082,7 +2183,12 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
                         ft.Row(
                             spacing=10,
                             controls=[
-                                ft.OutlinedButton("取消", expand=True, style=outline_button_style(), on_click=close_inline_form),
+                                stable_outline_button(
+                                    "取消",
+                                    ft.Icons.CLOSE,
+                                    on_click=close_inline_form,
+                                    height=46,
+                                ),
                                 ft.Container(expand=True, content=submit_btn),
                             ],
                         ),
@@ -2091,12 +2197,23 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
             )
 
         controls = [
-            ft.Row(
+            ft.ResponsiveRow(
+                columns=12,
                 spacing=10,
+                run_spacing=10,
                 controls=[
-                    extension_action_button("新增清潔項目", ft.Icons.CLEANING_SERVICES_OUTLINED, BLUE_BTN, BLUE_SOFT, open_create_cleaning_dialog),
-                    extension_action_button("新增耗材項目", ft.Icons.INVENTORY_2_OUTLINED, ORANGE, ORANGE_SOFT, open_create_consumable_dialog),
-                    extension_action_button("編輯週期", ft.Icons.EVENT_REPEAT_OUTLINED, PURPLE_BTN, PURPLE_SOFT, open_update_cycle_dialog),
+                    ft.Container(
+                        col={"xs": 12, "sm": 4},
+                        content=extension_action_button("新增清潔項目", ft.Icons.CLEANING_SERVICES_OUTLINED, BLUE_BTN, BLUE_SOFT, open_create_cleaning_dialog),
+                    ),
+                    ft.Container(
+                        col={"xs": 12, "sm": 4},
+                        content=extension_action_button("新增耗材項目", ft.Icons.INVENTORY_2_OUTLINED, ORANGE, ORANGE_SOFT, open_create_consumable_dialog),
+                    ),
+                    ft.Container(
+                        col={"xs": 12, "sm": 4},
+                        content=extension_action_button("編輯週期", ft.Icons.EVENT_REPEAT_OUTLINED, PURPLE_BTN, PURPLE_SOFT, open_update_cycle_dialog),
+                    ),
                 ],
             ),
         ]
@@ -2280,17 +2397,12 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
             max_lines=4,
         )
 
-        submit_btn = ft.ElevatedButton(
+        submit_btn = stable_filled_button(
+            "送出紀錄",
+            ft.Icons.SAVE_OUTLINED,
+            bg=BLUE_BTN,
+            on_click=lambda e: on_submit(e),
             height=50,
-            style=primary_button_style(),
-            content=ft.Row(
-                alignment=ft.MainAxisAlignment.CENTER,
-                spacing=8,
-                controls=[
-                    ft.Icon(ft.Icons.SAVE_OUTLINED, size=20, color="#FFFFFF"),
-                    ft.Text("送出紀錄", size=15, weight=ft.FontWeight.BOLD, color="#FFFFFF"),
-                ],
-            ),
         )
 
         def clear_form(_=None):
