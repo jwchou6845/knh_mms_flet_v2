@@ -113,6 +113,36 @@ def HandoverTasksContent(page: ft.Page):
             return pill("低", GREEN_SOFT, GREEN, GREEN_BORDER, width=46)
         return pill("中", ORANGE_SOFT, ORANGE, ORANGE_BORDER, width=46)
 
+    def stable_action_button(label, icon_name, bgcolor, fgcolor, on_click, width=128, height=40):
+        """
+        Flet Web / 手機版穩定按鈕。
+        避免使用 ElevatedButton(content=Row(...)) 在部分手機瀏覽器中
+        出現可點擊但文字 / 圖示不顯示的問題。
+        """
+        return ft.Container(
+            width=width,
+            height=height,
+            border_radius=12,
+            bgcolor=bgcolor,
+            alignment=ft.Alignment(0, 0),
+            on_click=on_click,
+            content=ft.Row(
+                controls=[
+                    ft.Icon(icon_name, size=17, color=fgcolor),
+                    ft.Text(
+                        label,
+                        size=13,
+                        color=fgcolor,
+                        weight=ft.FontWeight.BOLD,
+                    ),
+                ],
+                spacing=6,
+                alignment=ft.MainAxisAlignment.CENTER,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                tight=True,
+            ),
+        )
+
     # =====================================================
     # 3. 資料讀取
     # =====================================================
@@ -424,24 +454,14 @@ def HandoverTasksContent(page: ft.Page):
                                 wrap=True,
                                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
                             ),
-                            ft.ElevatedButton(
-                                content=ft.Row(
-                                    controls=[
-                                        ft.Icon(ft.Icons.CHECK_CIRCLE_OUTLINE, size=17, color="white"),
-                                        ft.Text("標記完成", size=13, color="white", weight=ft.FontWeight.BOLD),
-                                    ],
-                                    spacing=6,
-                                    alignment=ft.MainAxisAlignment.CENTER,
-                                    tight=True,
-                                ),
-                                height=38,
+                            stable_action_button(
+                                label="標記完成",
+                                icon_name=ft.Icons.CHECK_CIRCLE_OUTLINE,
                                 bgcolor=BLUE_BTN,
-                                color="white",
-                                style=ft.ButtonStyle(
-                                    shape=ft.RoundedRectangleBorder(radius=12),
-                                    elevation=0,
-                                ),
+                                fgcolor="white",
                                 on_click=lambda e, t=task: open_complete(t),
+                                width=128,
+                                height=40,
                             ),
                         ],
                         spacing=12,
