@@ -54,9 +54,16 @@ def _to_int(value: Any, default: int = 0) -> int:
         return default
 
 
-def normalize_percent(value: Any) -> int:
-    percent = _to_int(value, 0)
-    return max(0, min(100, percent))
+def normalize_percent(value: Any) -> float:
+    try:
+        if value is None:
+            percent = 0.0
+        else:
+            percent = round(float(value), 1)
+    except Exception:
+        percent = 0.0
+
+    return max(0.0, min(100.0, percent))
 
 
 def build_dryer_status_card_data(row: dict[str, Any]) -> dict[str, Any]:
