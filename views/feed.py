@@ -679,7 +679,10 @@ def FeedContent(page: ft.Page):
         tower_type = item.get("tower_type", "PET")
         material = item.get("material", "未填寫")
         note = item.get("note", "無備註")
-        percent = int(item.get("percent", 0) or 0)
+        try:
+            percent = round(float(item.get("percent", 0) or 0), 1)
+        except Exception:
+            percent = 0.0
         updated_at = item.get("updated_at", "-")
         updated_by = item.get("updated_by_name", "-")
         theme = dryer_theme(tower_type)
@@ -742,7 +745,7 @@ def FeedContent(page: ft.Page):
                                 ft.Row(
                                     controls=[
                                         ft.Text(
-                                            f"{percent}%",
+                                            f"{percent:.1f}%",
                                             size=16,
                                             weight=ft.FontWeight.BOLD,
                                             color=theme["color"],
@@ -1141,13 +1144,13 @@ def FeedContent(page: ft.Page):
         refresh_submit_button()
 
 
-    submit_button = ft.GestureDetector(
-        mouse_cursor=ft.MouseCursor.CLICK,
-        on_hover=submit_hover,
-        on_tap_down=submit_tap_down,
-        on_tap_up=lambda e: submit_feed(e),
-        on_tap_cancel=submit_tap_cancel,
+    # 手機 Web / VM 模式：GestureDetector.on_tap_up 偶發不觸發，
+    # 會造成按鈕呈現像「卡死」。改用 Container.on_click，
+    # 與 login.py 的穩定修正版一致。
+    submit_button = ft.Container(
         content=submit_box,
+        on_click=submit_feed,
+        on_hover=submit_hover,
     )
 
     form_title_icon = ft.Icon(ft.Icons.INVENTORY_2_OUTLINED, size=26, color=BLUE)
@@ -1771,10 +1774,40 @@ def FeedContent(page: ft.Page):
             show_snack(f"資料同步失敗：{ex}", RED)
             print("feed load data error:", ex)
 
-    def start_bg_load():
-        threading.Thread(target=load_bg_data, daemon=True).start()
+    def load_initial_data_once():
+        """
+        VM / 手機 Web 穩定版：
+        這裡刻意不使用 threading.Timer / threading.Thread 直接更新 Flet 控制項。
+        原本背景執行緒在「乾燥塔內存備忘」載入後會接續呼叫多個 update，
+        手機瀏覽器上容易讓後續按鈕事件變得不穩或像卡死。
+        
+        第一版先同步載入資料，犧牲一點點進頁速度，換取互動穩定性。
+        """
+        try:
+            set_status("資料同步中", loading=True)
 
-    threading.Timer(0.3, start_bg_load).start()
+            result = load_feed_page_data()
+            if result.ok:
+                apply_feed_data(result.data)
+                data_loaded["done"] = True
+            else:
+                data_loaded["done"] = False
+                print("feed load data error:", result.message)
+
+            dryer_result = load_dryer_status()
+            if dryer_result.ok:
+                apply_dryer_status_data(dryer_result.data)
+            else:
+                print("dryer status load error:", dryer_result.message)
+
+            set_status("資料已同步" if data_loaded["done"] else "資料同步失敗", theme="green" if data_loaded["done"] else "red")
+
+        except Exception as ex:
+            data_loaded["done"] = False
+            set_status("資料同步失敗", theme="red")
+            print("feed initial load error:", ex)
+
+    load_initial_data_once()
 
     # 初始 UI
     rebuild_mode_cards()
