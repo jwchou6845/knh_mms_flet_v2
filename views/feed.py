@@ -273,13 +273,14 @@ def FeedContent(page: ft.Page):
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
         )
 
-    def text_input(label, icon_name, value="", hint="", required=False, multiline=False):
+    def text_input(label, icon_name, value=None, hint="", required=False, multiline=False):
         return ft.Column(
             controls=[
                 field_label(icon_name, label, required=required),
                 ft.TextField(
-                    value=value,
+                    value=value if value not in ("", None) else None,
                     hint_text=hint,
+                    hint_style=ft.TextStyle(size=14, color="#94A3B8"),
                     multiline=multiline,
                     min_lines=2 if multiline else 1,
                     max_lines=3 if multiline else 1,
@@ -393,7 +394,7 @@ def FeedContent(page: ft.Page):
                             controls=[
                                 ft.Text(
                                     "現場打料作業",
-                                    size=28,
+                                    size=26,
                                     weight=ft.FontWeight.BOLD,
                                     color=TEXT_MAIN,
                                 ),
@@ -401,13 +402,17 @@ def FeedContent(page: ft.Page):
                                     "記錄原料領用與配料資訊，確保生產流程順暢與庫存準確。",
                                     size=14,
                                     color=TEXT_SUB,
+                                    max_lines=2,
+                                    overflow=ft.TextOverflow.ELLIPSIS,
                                 ),
                             ],
                             spacing=4,
+                            expand=True,
                         ),
                     ],
-                    spacing=16,
+                    spacing=14,
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    expand=True,
                 ),
                 status_badge,
             ],
@@ -538,6 +543,7 @@ def FeedContent(page: ft.Page):
             label="目前塔內原料",
             value="" if item.get("material") == "未填寫" else item.get("material", ""),
             hint_text="例如：PET308A-南紡",
+            hint_style=ft.TextStyle(size=14, color="#94A3B8"),
             border_radius=12,
             border_color=BORDER,
             focused_border_color=BLUE,
@@ -547,9 +553,10 @@ def FeedContent(page: ft.Page):
 
         percent_field = ft.TextField(
             label="內存比例 %",
-            value=str(item.get("percent", 0)),
-            hint_text="0 ~ 100",
-            keyboard_type=ft.KeyboardType.NUMBER,
+            value=f"{float(item.get('percent', 0) or 0):.1f}",
+            hint_text="0.0 ~ 100.0",
+            hint_style=ft.TextStyle(size=14, color="#94A3B8"),
+            keyboard_type=ft.KeyboardType.TEXT,
             border_radius=12,
             border_color=BORDER,
             focused_border_color=BLUE,
@@ -561,6 +568,7 @@ def FeedContent(page: ft.Page):
             label="備註",
             value="" if item.get("note") == "無備註" else item.get("note", ""),
             hint_text="例如：停機前未清空",
+            hint_style=ft.TextStyle(size=14, color="#94A3B8"),
             multiline=True,
             min_lines=2,
             max_lines=3,
@@ -1477,7 +1485,7 @@ def FeedContent(page: ft.Page):
 
             # 從母粒切回新料時，清掉母粒自動帶入的批號，讓新料恢復 hint 狀態
             if str(batch_field.value or "").startswith("MB"):
-                batch_field.value = ""
+                batch_field.value = None
 
             if new_materials:
                 keys = sorted(new_materials.keys())
@@ -1640,7 +1648,7 @@ def FeedContent(page: ft.Page):
                 show_snack(result.message, GREEN)
 
                 if mode == "new":
-                    batch_field.value = ""
+                    batch_field.value = None
                 else:
                     batch_field.value = f"MB{now_taipei().strftime('%Y%m%d')}"
 
