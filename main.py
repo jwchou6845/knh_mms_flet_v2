@@ -2,6 +2,7 @@
 # KNH MMS v4.5 穩定版（Flet 0.84）
 
 import flet as ft
+import time
 from views.login import LoginView
 from views.dashboard import DashboardContent
 from views.inventory import InventoryContent
@@ -44,9 +45,11 @@ def main(page: ft.Page):
     )
 
     # VM / 手機 Web 穩定路由：
-    # 只呼叫 page.go()，不再手動 route_change(None)。
-    # 原本 page.go() 後又手動 route_change 會導致同一頁建立兩次，
-    # feed.py / inventory.py 這類進頁就載入資料的頁面會因此重複查詢與卡住。
+    # 目前 VM 的 Flet page.go() 在部分情境不會穩定觸發 on_route_change，
+    # 所以仍需要手動 route_change(None) 作為保險。
+    # 但 route_change 內會做防重複處理，避免同一頁被連續建立兩次。
+    routing_state = {"building": False, "last_route": None, "last_time": 0.0}
+
     def navigate(route_path):
         print(f"NAVIGATE TO: {route_path}")
         try:
@@ -55,9 +58,15 @@ def main(page: ft.Page):
             print("page.go error:", ex)
             try:
                 page.route = route_path
-                route_change(None)
             except Exception as ex2:
-                print("manual route_change fallback error:", ex2)
+                print("set page.route error:", ex2)
+
+        # 手機 Web / VM 登入後有時 page.go() 不會立即重建 view。
+        # 這裡手動補一次；重複觸發會在 route_change 開頭被擋掉。
+        try:
+            route_change(None)
+        except Exception as ex:
+            print("manual route_change fallback error:", ex)
 
     page.session_data["_navigate"] = navigate
 
@@ -640,14 +649,23 @@ def main(page: ft.Page):
     # =====================================================
     # Route Change
     # =====================================================
-    route_state = {"building": False}
+    route_state = {"building": False, "last_route": None, "last_time": 0.0}
 
     def route_change(e):
+        route = page.route
+        now = time.monotonic()
+
         if route_state["building"]:
-            print("ROUTE_CHANGE SKIP: already building")
+            print(f"ROUTE_CHANGE SKIP: already building route={route}")
             return
 
-        route = page.route
+        if (
+            route == route_state.get("last_route")
+            and now - float(route_state.get("last_time") or 0) < 0.8
+        ):
+            print(f"ROUTE_CHANGE SKIP: duplicate route={route}")
+            return
+
         print(f"ROUTE_CHANGE: route={route}, is_login={is_login()}, views={len(page.views)}")
 
         try:
@@ -745,6 +763,8 @@ def main(page: ft.Page):
             page.views.clear()
             page.views.append(target_view)
             page.update()
+            route_state["last_route"] = route
+            route_state["last_time"] = time.monotonic()
             print(f"ROUTE_CHANGE DONE: route={route}, views={len(page.views)}")
             route_state["building"] = False
 
@@ -816,6 +836,9 @@ def main(page: ft.Page):
             page.views.clear()
             page.views.append(error_view)
             page.update()
+
+        finally:
+            route_state["building"] = False
 
     # =====================================================
     # 返回鍵
