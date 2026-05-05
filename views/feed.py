@@ -499,12 +499,6 @@ def FeedContent(page: ft.Page):
     # =====================================================
     # 6. 乾燥塔內存備忘：取代低水位警示
     # =====================================================
-    dryer_updated_text = ft.Text(
-        "更新：-",
-        size=13,
-        color=TEXT_SUB,
-    )
-
     dryer_status_grid = ft.ResponsiveRow(
         columns=12,
         spacing=12,
@@ -560,9 +554,8 @@ def FeedContent(page: ft.Page):
                             spacing=12,
                             vertical_alignment=ft.CrossAxisAlignment.CENTER,
                         ),
-                        dryer_updated_text,
                     ],
-                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    alignment=ft.MainAxisAlignment.START,
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 ),
                 dryer_status_grid,
@@ -907,7 +900,6 @@ def FeedContent(page: ft.Page):
             for item in dryer_status_items:
                 dryer_status_grid.controls.append(dryer_status_card(item))
 
-        dryer_updated_text.value = f"更新：{dryer_latest_updated['value']}"
 
     def refresh_dryer_status_panel(update_now=True):
         _apply_dryer_status_panel()
@@ -1214,7 +1206,7 @@ def FeedContent(page: ft.Page):
     form_title_icon = ft.Icon(ft.Icons.INVENTORY_2_OUTLINED, size=26, color=BLUE)
     form_title_text = ft.Text("領用新料作業", size=20, color=TEXT_MAIN, weight=ft.FontWeight.BOLD)
     form_subtitle = ft.Text(
-        "填寫領用資訊，系統將自動寫入 Supabase 並同步紀錄。",
+        "填寫領用資訊，系統將自動寫入並同步紀錄。",
         size=13,
         color=TEXT_SUB,
         max_lines=2,
