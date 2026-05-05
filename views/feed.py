@@ -46,13 +46,12 @@ def FeedContent(page: ft.Page):
     view_token = object()
     load_guard = {"token": view_token}
 
-    if hasattr(page, "session_data") and isinstance(page.session_data, dict):
-        page.session_data["_feed_view_token"] = view_token
+    session_data = page.session_data if hasattr(page, "session_data") and isinstance(page.session_data, dict) else {}
+    if session_data is not None:
+        session_data["_feed_view_token"] = view_token
 
-    if hasattr(page, "session_data"):
-        current_user_name = page.session_data.get("user_name", "周正偉")
-    else:
-        current_user_name = "周正偉"
+    current_user_name = str(session_data.get("user_name") or "").strip()
+    current_user_id = session_data.get("user_id")
 
     page_w = page.width or 430
     is_mobile_page = page_w <= 520
@@ -668,10 +667,6 @@ def FeedContent(page: ft.Page):
             saving["value"] = True
 
             try:
-                current_user_id = None
-                if hasattr(page, "session_data") and isinstance(page.session_data, dict):
-                    current_user_id = page.session_data.get("user_id")
-
                 try:
                     percent_value = parse_percent_1_decimal(percent_field.value, 0.0)
                 except ValueError as ex:
@@ -1296,197 +1291,183 @@ def FeedContent(page: ft.Page):
     )
     recent_toggle_icon = ft.Icon(ft.Icons.OPEN_IN_NEW, size=17, color=PURPLE)
 
-    def recent_rows(limit=5):
-        rows = []
+    RECENT_TABLE_WIDTH = 980
 
-        for item in recent_records[:limit]:
+    def recent_machine_text(item: dict):
+        return (
+            item.get("machine")
+            or item.get("machine_code")
+            or item.get("tower")
+            or item.get("dryer")
+            or "-"
+        )
+
+    def recent_table_cell(
+        text,
+        width,
+        color=TEXT_MAIN,
+        weight=None,
+        align=ft.TextAlign.LEFT,
+        max_lines=1,
+    ):
+        return ft.Container(
+            width=width,
+            padding=ft.padding.only(right=8),
+            alignment=ft.Alignment(1, 0) if align == ft.TextAlign.RIGHT else ft.Alignment(-1, 0),
+            content=ft.Text(
+                str(text if text not in (None, "") else "-"),
+                size=13,
+                color=color,
+                weight=weight,
+                text_align=align,
+                max_lines=max_lines,
+                overflow=ft.TextOverflow.ELLIPSIS,
+            ),
+        )
+
+    def recent_type_badge(item: dict, is_header=False):
+        if is_header:
+            return recent_table_cell("類型", 76, color=TEXT_SUB, weight=ft.FontWeight.W_600)
+
+        return ft.Container(
+            width=76,
+            padding=ft.padding.only(right=8),
+            alignment=ft.Alignment(-1, 0),
+            content=ft.Container(
+                height=26,
+                width=58,
+                border_radius=13,
+                bgcolor=item.get("tag_bg", BLUE_SOFT),
+                alignment=ft.Alignment(0, 0),
+                content=ft.Text(
+                    item.get("type", "-"),
+                    size=12,
+                    color=item.get("tag_color", BLUE),
+                    weight=ft.FontWeight.W_600,
+                    max_lines=1,
+                    overflow=ft.TextOverflow.ELLIPSIS,
+                ),
+            ),
+        )
+
+    def recent_table_row(item: dict, is_header=False):
+        bg = "#FAFAFB" if is_header else "#FFFFFF"
+        text_color = TEXT_SUB if is_header else TEXT_MAIN
+        weight = ft.FontWeight.W_600 if is_header else None
+        border = None if is_header else ft.border.only(bottom=ft.BorderSide(1, "#EEF2F7"))
+
+        if is_header:
+            date_text = "日期"
+            time_text = "時間"
+            machine_text = "機台/塔別"
+            material_text = "原料"
+            qty_text = "數量"
+            operator_text = "人員"
+            note_text = "備註"
+        else:
+            date_text = item.get("date", "-")
+            time_text = item.get("time", "-")
+            machine_text = recent_machine_text(item)
+            material_text = item.get("material", "-")
+            qty_text = item.get("qty", "-")
+            operator_text = item.get("operator", "-")
+            note_text = item.get("note", "-")
+
+        return ft.Container(
+            width=RECENT_TABLE_WIDTH,
+            bgcolor=bg,
+            padding=ft.padding.symmetric(horizontal=12, vertical=11),
+            border=border,
+            content=ft.Row(
+                controls=[
+                    recent_table_cell(date_text, 96, color=text_color, weight=weight),
+                    recent_table_cell(time_text, 66, color=text_color, weight=weight),
+                    recent_type_badge(item, is_header=is_header),
+                    recent_table_cell(machine_text, 92, color=text_color, weight=weight),
+                    recent_table_cell(material_text, 350, color=text_color, weight=weight, max_lines=1),
+                    recent_table_cell(qty_text, 82, color=text_color, weight=weight, align=ft.TextAlign.RIGHT),
+                    recent_table_cell(operator_text, 106, color=text_color, weight=weight),
+                    recent_table_cell(note_text, 112, color=text_color, weight=weight),
+                ],
+                spacing=0,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+        )
+
+    def recent_table_view(limit=5):
+        actual_limit = min(limit, len(recent_records))
+        rows = [recent_table_row({}, is_header=True)]
+
+        if recent_records:
+            for item in recent_records[:limit]:
+                rows.append(recent_table_row(item))
+        else:
             rows.append(
                 ft.Container(
-                    padding=ft.padding.symmetric(horizontal=12, vertical=11),
-                    border=ft.border.only(bottom=ft.BorderSide(1, "#EEF2F7")),
-                    content=ft.Row(
-                        controls=[
-                            ft.Text(item.get("time", "-"), size=13, color=TEXT_SUB, width=80),
-                            ft.Container(
-                                width=52,
-                                height=26,
-                                border_radius=13,
-                                bgcolor=item.get("tag_bg", BLUE_SOFT),
-                                alignment=ft.Alignment(0, 0),
-                                content=ft.Text(
-                                    item.get("type", "-"),
-                                    size=12,
-                                    color=item.get("tag_color", BLUE),
-                                    weight=ft.FontWeight.W_600,
-                                ),
-                            ),
-                            ft.Text(
-                                item.get("material", "-"),
-                                size=13,
-                                color=TEXT_MAIN,
-                                expand=True,
-                                max_lines=1,
-                                overflow=ft.TextOverflow.ELLIPSIS,
-                            ),
-                            ft.Text(
-                                str(item.get("qty", "")),
-                                size=13,
-                                color=TEXT_MAIN,
-                                width=60,
-                                text_align=ft.TextAlign.RIGHT,
-                            ),
-                        ],
-                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                    ),
-                )
-            )
-
-        if not rows:
-            rows.append(
-                ft.Container(
+                    width=RECENT_TABLE_WIDTH,
                     padding=16,
                     content=ft.Text("尚無打料紀錄", size=13, color=TEXT_SUB),
                 )
             )
 
-        return rows
+        info_text = (
+            f"顯示最近 {actual_limit} 筆紀錄，左右滑動可查看右側欄位。"
+            if recent_records
+            else "資料同步後會顯示最近打料紀錄。"
+        )
 
-    def recent_detail_card(item: dict):
         return ft.Container(
-            padding=ft.padding.symmetric(horizontal=12, vertical=12),
-            border=ft.border.only(bottom=ft.BorderSide(1, "#EEF2F7")),
+            bgcolor="#FFFFFF",
+            border_radius=12,
+            border=ft.border.all(1, "#EEF2F7"),
+            clip_behavior=ft.ClipBehavior.HARD_EDGE,
             content=ft.Column(
                 controls=[
+                    ft.Container(
+                        padding=ft.padding.symmetric(horizontal=12, vertical=9),
+                        bgcolor="#FAFAFB",
+                        content=ft.Row(
+                            controls=[
+                                ft.Icon(ft.Icons.INFO_OUTLINE, size=16, color=TEXT_SUB),
+                                ft.Text(
+                                    info_text,
+                                    size=12,
+                                    color=TEXT_SUB,
+                                    weight=ft.FontWeight.W_600,
+                                    expand=True,
+                                ),
+                            ],
+                            spacing=6,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        ),
+                    ),
                     ft.Row(
+                        scroll=ft.ScrollMode.AUTO,
                         controls=[
                             ft.Container(
-                                width=54,
-                                height=26,
-                                border_radius=13,
-                                bgcolor=item.get("tag_bg", BLUE_SOFT),
-                                alignment=ft.Alignment(0, 0),
-                                content=ft.Text(
-                                    item.get("type", "-"),
-                                    size=12,
-                                    color=item.get("tag_color", BLUE),
-                                    weight=ft.FontWeight.W_600,
+                                width=RECENT_TABLE_WIDTH,
+                                content=ft.Column(
+                                    controls=rows,
+                                    spacing=0,
                                 ),
-                            ),
-                            ft.Text(
-                                f"{item.get('date', '-')} {item.get('time', '-')}",
-                                size=13,
-                                color=TEXT_SUB,
-                                expand=True,
-                                text_align=ft.TextAlign.RIGHT,
-                            ),
+                            )
                         ],
-                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                    ),
-                    ft.Text(
-                        item.get("material", "-"),
-                        size=14,
-                        color=TEXT_MAIN,
-                        weight=ft.FontWeight.W_600,
-                        max_lines=2,
-                        overflow=ft.TextOverflow.ELLIPSIS,
-                    ),
-                    ft.Row(
-                        controls=[
-                            ft.Text(f"數量：{item.get('qty', '-')}", size=13, color=TEXT_SUB, expand=True),
-                            ft.Text(f"人員：{item.get('operator', '-')}", size=13, color=TEXT_SUB),
-                        ],
-                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     ),
                 ],
-                spacing=6,
+                spacing=0,
             ),
         )
-
-    def recent_all_cards(limit=20):
-        rows = []
-
-        if not recent_records:
-            rows.append(
-                ft.Container(
-                    padding=16,
-                    content=ft.Text("目前尚無可顯示的打料紀錄。", size=13, color=TEXT_SUB),
-                )
-            )
-            return rows
-
-        rows.append(
-            ft.Container(
-                padding=ft.padding.symmetric(horizontal=12, vertical=10),
-                bgcolor="#FAFAFB",
-                content=ft.Row(
-                    controls=[
-                        ft.Icon(ft.Icons.INFO_OUTLINE, size=16, color=TEXT_SUB),
-                        ft.Text(
-                            f"顯示最近 {min(limit, len(recent_records))} 筆紀錄",
-                            size=12,
-                            color=TEXT_SUB,
-                            weight=ft.FontWeight.W_600,
-                        ),
-                    ],
-                    spacing=6,
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                ),
-            )
-        )
-
-        for item in recent_records[:limit]:
-            rows.append(recent_detail_card(item))
-
-        return rows
 
     def _apply_recent_panel():
         if recent_show_all["value"]:
             recent_toggle_text.value = "收合"
             recent_toggle_icon.name = ft.Icons.EXPAND_LESS
-
-            recent_table.controls = [
-                ft.Container(
-                    bgcolor="#FFFFFF",
-                    border_radius=12,
-                    border=ft.border.all(1, "#EEF2F7"),
-                    clip_behavior=ft.ClipBehavior.HARD_EDGE,
-                    content=ft.Column(
-                        controls=recent_all_cards(20),
-                        spacing=0,
-                    ),
-                )
-            ]
+            recent_table.controls = [recent_table_view(20)]
             return
 
         recent_toggle_text.value = "查看全部"
         recent_toggle_icon.name = ft.Icons.OPEN_IN_NEW
-
-        recent_table.controls = [
-            ft.Container(
-                bgcolor="#FFFFFF",
-                border_radius=12,
-                border=ft.border.all(1, "#EEF2F7"),
-                clip_behavior=ft.ClipBehavior.HARD_EDGE,
-                content=ft.Column(
-                    controls=[
-                        ft.Container(
-                            padding=ft.padding.symmetric(horizontal=12, vertical=10),
-                            bgcolor="#FAFAFB",
-                            content=ft.Row(
-                                controls=[
-                                    ft.Text("時間", size=12, color=TEXT_SUB, width=80),
-                                    ft.Text("類型", size=12, color=TEXT_SUB, width=52),
-                                    ft.Text("原料", size=12, color=TEXT_SUB, expand=True),
-                                    ft.Text("數量", size=12, color=TEXT_SUB, width=60, text_align=ft.TextAlign.RIGHT),
-                                ],
-                            ),
-                        ),
-                        *recent_rows(5),
-                    ],
-                    spacing=0,
-                ),
-            )
-        ]
+        recent_table.controls = [recent_table_view(5)]
 
     def refresh_recent_panel(update_now=True):
         _apply_recent_panel()
@@ -1700,6 +1681,10 @@ def FeedContent(page: ft.Page):
             show_snack("請選擇乾燥塔。", RED)
             return False
 
+        if not current_user_name:
+            show_snack("無法取得目前登入者，請重新登入後再送出。", RED)
+            return False
+
         return True
 
     def submit_feed(e):
@@ -1749,7 +1734,7 @@ def FeedContent(page: ft.Page):
                     quantity_bags=qty,
                     operator_name=current_user_name,
                     note=str(note_field.value or ""),
-                    created_by_user_id=page.session_data.get("user_id") if hasattr(page, "session_data") else None,
+                    created_by_user_id=current_user_id,
                     created_by_name=current_user_name,
                 )
 
@@ -1797,7 +1782,7 @@ def FeedContent(page: ft.Page):
                     feed_date=str(date_field.value or ""),
                     machine_code=str(machine_dropdown.value or ""),
                     operator_name=str(operator_dropdown.value or current_user_name),
-                    created_by_user_id=page.session_data.get("user_id") if hasattr(page, "session_data") else None,
+                    created_by_user_id=current_user_id,
                     created_by_name=current_user_name,
                 )
 
