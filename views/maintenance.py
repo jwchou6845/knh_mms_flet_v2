@@ -23,7 +23,7 @@ from services.maintenance_service import (
 
 
 # ============================================================
-# KNH MMS - 機台保養紀錄 maintenance.py v2.8 mobile filter buttons and extension form labels
+# KNH MMS - 機台保養紀錄 maintenance.py v2.9 header status and mobile action order
 # Flet 0.84 + Python + Supabase
 # ============================================================
 
@@ -990,46 +990,82 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
     def build_header() -> ft.Control:
         """
         內容區頁首。
-        不放狀態膠囊，手機版使用 Column / expand 讓副標題可自然換行，避免螢幕縮小後遮蔽。
+        版型對齊 feed.py：圖示 + 主標題 + 副標題，下方顯示資料同步膠囊。
+        手機版不使用左右狀態膠囊，避免壓縮或遮蔽標題文字。
         """
-        return ft.Container(
-            bgcolor="#FFFFFF",
-            border=ft.border.all(1, BORDER),
-            border_radius=18,
-            padding=16,
-            content=ft.Row(
-                spacing=12,
-                vertical_alignment=ft.CrossAxisAlignment.START,
-                controls=[
-                    ft.Container(
-                        width=46,
-                        height=46,
-                        border_radius=14,
-                        bgcolor=BLUE_SOFT,
-                        alignment=ft.Alignment(0, 0),
-                        content=ft.Icon(ft.Icons.CLEANING_SERVICES_OUTLINED, size=26, color=BLUE_BTN),
+        has_error = bool(state.get("error_message"))
+        status_text = "資料同步失敗" if has_error else "資料已同步"
+        status_color = RED if has_error else GREEN
+        status_bg = RED_SOFT if has_error else GREEN_SOFT
+        status_border = "#FCA5A5" if has_error else "#A7F3D0"
+        status_icon = ft.Icons.ERROR_OUTLINE if has_error else ft.Icons.CHECK_CIRCLE_OUTLINE
+
+        title_row = ft.Row(
+            spacing=14,
+            vertical_alignment=ft.CrossAxisAlignment.START,
+            controls=[
+                ft.Container(
+                    width=58,
+                    height=58,
+                    border_radius=16,
+                    bgcolor=BLUE_SOFT,
+                    alignment=ft.Alignment(0, 0),
+                    content=ft.Icon(
+                        ft.Icons.CLEANING_SERVICES_OUTLINED,
+                        size=31,
+                        color="#334155",
                     ),
-                    ft.Column(
-                        expand=True,
-                        spacing=5,
-                        controls=[
-                            ft.Text(
-                                "機台保養紀錄",
-                                size=24,
-                                weight=ft.FontWeight.BOLD,
-                                color=TEXT,
-                                max_lines=2,
-                            ),
-                            ft.Text(
-                                "記錄清潔、耗材更換與保養週期設定，協助追蹤設備維護狀態。",
-                                size=13,
-                                color=TEXT_MUTED,
-                                max_lines=3,
-                            ),
-                        ],
+                ),
+                ft.Column(
+                    expand=True,
+                    spacing=5,
+                    controls=[
+                        ft.Text(
+                            "機台保養紀錄",
+                            size=26,
+                            weight=ft.FontWeight.BOLD,
+                            color=TEXT,
+                            max_lines=2,
+                        ),
+                        ft.Text(
+                            "記錄清潔、耗材更換與保養週期設定，協助追蹤設備維護狀態。",
+                            size=14,
+                            color=TEXT_MUTED,
+                            max_lines=3,
+                        ),
+                    ],
+                ),
+            ],
+        )
+
+        status_badge = ft.Container(
+            height=42,
+            border_radius=21,
+            bgcolor=status_bg,
+            border=ft.border.all(1, status_border),
+            alignment=ft.Alignment(0, 0),
+            content=ft.Row(
+                spacing=8,
+                alignment=ft.MainAxisAlignment.CENTER,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[
+                    ft.Icon(status_icon, size=20, color=status_color),
+                    ft.Text(
+                        status_text,
+                        size=16,
+                        color=status_color,
+                        weight=ft.FontWeight.BOLD,
                     ),
                 ],
             ),
+        )
+
+        return ft.Column(
+            spacing=14,
+            controls=[
+                title_row,
+                ft.Row(controls=[ft.Container(expand=True, content=status_badge)]),
+            ],
         )
 
     # =========================
@@ -2852,6 +2888,7 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
                 controls=[
                     build_header(),
                     build_error_banner(),
+                    build_summary_cards(is_mobile=True),
                     ft.Container(
                         content=stable_filled_button(
                             "新增保養紀錄",
@@ -2861,7 +2898,6 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
                             height=54,
                         ),
                     ),
-                    build_summary_cards(is_mobile=True),
                     build_type_tabs(),
                     build_filter_bar(),
                     build_today_tasks(),
