@@ -349,8 +349,6 @@ def FeedContent(page: ft.Page):
 
         if value not in ("", None):
             field_kwargs["value"] = value
-        else:
-            field_kwargs["value"] = ""
 
         return ft.Column(
             controls=[
@@ -735,18 +733,24 @@ def FeedContent(page: ft.Page):
                 ),
             ),
             actions=[
-                ft.TextButton(content="取消", on_click=close_dlg),
-                ft.Button(
-                    content="儲存",
-                    icon=ft.Icons.SAVE_OUTLINED,
-                    bgcolor=theme["button"],
-                    color="white",
-                    icon_color="white",
+                ft.TextButton("取消", on_click=close_dlg),
+                ft.Container(
+                    width=96,
                     height=42,
-                    style=ft.ButtonStyle(
-                        shape=ft.RoundedRectangleBorder(radius=10),
-                    ),
+                    border_radius=10,
+                    bgcolor=theme["button"],
+                    alignment=ft.Alignment(0, 0),
                     on_click=save_dlg,
+                    content=ft.Row(
+                        controls=[
+                            ft.Icon(ft.Icons.SAVE_OUTLINED, size=18, color="white"),
+                            ft.Text("儲存", size=14, color="white", weight=ft.FontWeight.W_600),
+                        ],
+                        alignment=ft.MainAxisAlignment.CENTER,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        spacing=7,
+                        tight=True,
+                    ),
                 ),
             ],
             actions_alignment=ft.MainAxisAlignment.END,
@@ -863,18 +867,23 @@ def FeedContent(page: ft.Page):
                             ],
                             spacing=5,
                         ),
-                        ft.Button(
-                            content="編輯",
-                            icon=ft.Icons.EDIT_OUTLINED,
+                        ft.Container(
                             height=36,
+                            border_radius=18,
                             bgcolor=theme["soft"],
-                            color=theme["color"],
-                            icon_color=theme["color"],
-                            style=ft.ButtonStyle(
-                                shape=ft.RoundedRectangleBorder(radius=18),
-                                side=ft.BorderSide(1, theme["border"]),
-                            ),
+                            border=ft.border.all(1, theme["border"]),
+                            alignment=ft.Alignment(0, 0),
                             on_click=lambda e, it=item: open_dryer_edit_dialog(it),
+                            content=ft.Row(
+                                controls=[
+                                    ft.Icon(ft.Icons.EDIT_OUTLINED, size=16, color=theme["color"]),
+                                    ft.Text("編輯", size=13, color=theme["color"], weight=ft.FontWeight.W_600),
+                                ],
+                                alignment=ft.MainAxisAlignment.CENTER,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                spacing=6,
+                                tight=True,
+                            ),
                         ),
                     ],
                     spacing=11,
@@ -1126,44 +1135,60 @@ def FeedContent(page: ft.Page):
             return "送出母粒紀錄"
         return "送出回用料紀錄"
 
-    submit_button = ft.Button(
-        content="送出新料紀錄",
-        icon=ft.Icons.SEND_ROUNDED,
-        height=58,
-        disabled=True,
-        bgcolor=DISABLED,
+    submit_button_icon = ft.Icon(ft.Icons.SEND_ROUNDED, color="white", size=22)
+    submit_button_text = ft.Text(
+        "送出新料紀錄",
         color="white",
-        icon_color="white",
-        elevation=0,
-        style=ft.ButtonStyle(
-            shape=ft.RoundedRectangleBorder(radius=12),
+        size=17,
+        weight=ft.FontWeight.BOLD,
+    )
+
+    submit_button = ft.Container(
+        height=58,
+        border_radius=12,
+        bgcolor=DISABLED,
+        opacity=0.75,
+        alignment=ft.Alignment(0, 0),
+        on_click=None,
+        content=ft.Row(
+            controls=[submit_button_icon, submit_button_text],
+            alignment=ft.MainAxisAlignment.CENTER,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            spacing=10,
         ),
-        on_click=lambda e: submit_feed(e),
+        shadow=ft.BoxShadow(
+            spread_radius=0,
+            blur_radius=10,
+            color="#12000000",
+            offset=ft.Offset(0, 4),
+        ),
     )
 
     def refresh_submit_button(update_now=False):
         base, hover, press = get_submit_colors()
 
-        submit_button.content = submit_button_label()
-        submit_button.icon = ft.Icons.HOURGLASS_TOP if submitting["value"] else ft.Icons.SEND_ROUNDED
-        submit_button.disabled = submitting["value"] or not data_loaded["done"]
+        disabled = submitting["value"] or not data_loaded["done"]
+        submit_button_text.value = submit_button_label()
+        submit_button_icon.name = ft.Icons.HOURGLASS_TOP if submitting["value"] else ft.Icons.SEND_ROUNDED
 
-        if submitting["value"] or not data_loaded["done"]:
+        if disabled:
             bg = DISABLED
+            submit_button.opacity = 0.78
+            submit_button.on_click = None
         elif submit_state["pressed"]:
             bg = press
+            submit_button.opacity = 1
+            submit_button.on_click = lambda e: submit_feed(e)
         elif submit_state["hover"]:
             bg = hover
+            submit_button.opacity = 1
+            submit_button.on_click = lambda e: submit_feed(e)
         else:
             bg = base
+            submit_button.opacity = 1
+            submit_button.on_click = lambda e: submit_feed(e)
 
         submit_button.bgcolor = bg
-        submit_button.color = "white"
-        submit_button.icon_color = "white"
-        submit_button.elevation = 0
-        submit_button.style = ft.ButtonStyle(
-            shape=ft.RoundedRectangleBorder(radius=12),
-        )
 
         if update_now:
             update_page()
@@ -1533,7 +1558,7 @@ def FeedContent(page: ft.Page):
 
             # 從母粒切回新料時，清掉母粒自動帶入的批號，讓新料恢復 hint 狀態
             if str(batch_field.value or "").startswith("MB"):
-                batch_field.value = None
+                batch_field.value = ""
 
             if new_materials:
                 keys = sorted(new_materials.keys())
@@ -1689,7 +1714,7 @@ def FeedContent(page: ft.Page):
                 show_snack(result.message, GREEN)
 
                 if mode == "new":
-                    batch_field.value = None
+                    batch_field.value = ""
                 else:
                     batch_field.value = f"MB{now_taipei().strftime('%Y%m%d')}"
 
