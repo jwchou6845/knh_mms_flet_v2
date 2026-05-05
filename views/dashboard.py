@@ -933,7 +933,7 @@ def DashboardContent(page: ft.Page):
             ),
             ft.Container(height=20),
             custom_ui_bar_chart(
-                title="即時新料庫存狀況",
+                title="即時庫存",
                 data_list=new_stock_data,
                 max_val=max_new_stock,
                 legend_items=[
