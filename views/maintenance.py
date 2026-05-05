@@ -23,7 +23,7 @@ from services.maintenance_service import (
 
 
 # ============================================================
-# KNH MMS - 機台保養紀錄 maintenance.py v2.9 header status and mobile action order
+# KNH MMS - 機台保養紀錄 maintenance.py v2.9.1 softer sync badge
 # Flet 0.84 + Python + Supabase
 # ============================================================
 
@@ -995,8 +995,8 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
         """
         has_error = bool(state.get("error_message"))
         status_text = "資料同步失敗" if has_error else "資料已同步"
-        status_color = RED if has_error else GREEN
-        status_bg = RED_SOFT if has_error else GREEN_SOFT
+        status_color = RED if has_error else "#10B981"
+        status_bg = RED_SOFT if has_error else "#ECFDF5"
         status_border = "#FCA5A5" if has_error else "#A7F3D0"
         status_icon = ft.Icons.ERROR_OUTLINE if has_error else ft.Icons.CHECK_CIRCLE_OUTLINE
 
@@ -1039,8 +1039,8 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
         )
 
         status_badge = ft.Container(
-            height=42,
-            border_radius=21,
+            height=36,
+            border_radius=18,
             bgcolor=status_bg,
             border=ft.border.all(1, status_border),
             alignment=ft.Alignment(0, 0),
@@ -1049,12 +1049,12 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
                 alignment=ft.MainAxisAlignment.CENTER,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 controls=[
-                    ft.Icon(status_icon, size=20, color=status_color),
+                    ft.Icon(status_icon, size=17, color=status_color),
                     ft.Text(
                         status_text,
-                        size=16,
+                        size=13,
                         color=status_color,
-                        weight=ft.FontWeight.BOLD,
+                        weight=ft.FontWeight.W_600,
                     ),
                 ],
             ),
