@@ -1,7 +1,6 @@
 # views/feed.py
 import flet as ft
 import threading
-import time
 
 from services.feed_service import (
     load_feed_page_data,
@@ -41,6 +40,14 @@ def FeedContent(page: ft.Page):
         "hover": False,
         "pressed": False,
     }
+
+    # 背景載入保護：避免切離 /feed 或重建頁面後，舊 thread 回來更新舊控制項。
+    is_alive = {"value": True}
+    view_token = object()
+    load_guard = {"token": view_token}
+
+    if hasattr(page, "session_data") and isinstance(page.session_data, dict):
+        page.session_data["_feed_view_token"] = view_token
 
     if hasattr(page, "session_data"):
         current_user_name = page.session_data.get("user_name", "周正偉")
@@ -91,19 +98,33 @@ def FeedContent(page: ft.Page):
     RED_BORDER = "#FECACA"
 
     # =====================================================
-    # 2. 安全更新工具
+    # 2. 更新與工具
     # =====================================================
-    def safe_update(control):
-        try:
-            control.update()
-        except Exception:
-            pass
+    def update_page():
+        """
+        集中更新頁面。
+        一般互動流程只在最後呼叫一次 page.update()；
+        背景 thread 不逐一 control.update()，避免手機 Web 產生大量 WebSocket/render 訊號。
+        """
+        page.update()
 
-    def safe_page_update():
-        try:
-            page.update()
-        except Exception:
-            pass
+    def is_current_feed_view(token=None) -> bool:
+        if not is_alive.get("value", False):
+            return False
+
+        if token is not None and load_guard.get("token") is not token:
+            return False
+
+        if hasattr(page, "session_data") and isinstance(page.session_data, dict):
+            if page.session_data.get("_feed_view_token") is not view_token:
+                return False
+
+        # 現行 main.py 以 route 切頁；此條件保留，但不作為唯一保護。
+        current_route = getattr(page, "route", None)
+        if current_route and current_route != "/feed":
+            return False
+
+        return True
 
     def show_snack(message: str, color: str):
         snack = ft.SnackBar(
@@ -113,7 +134,7 @@ def FeedContent(page: ft.Page):
         )
         page.overlay.append(snack)
         snack.open = True
-        safe_page_update()
+        update_page()
 
     def get_str(value, default=""):
         if isinstance(value, list):
@@ -241,7 +262,7 @@ def FeedContent(page: ft.Page):
         ),
     )
 
-    def set_status(text, theme="blue", loading=False):
+    def set_status(text, theme="blue", loading=False, update_now=True):
         if theme == "green":
             bg = GREEN_SOFT
             border = GREEN_BORDER
@@ -281,7 +302,8 @@ def FeedContent(page: ft.Page):
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
         )
 
-        safe_update(status_badge)
+        if update_now:
+            update_page()
 
     # =====================================================
     # 4. 共用 UI 元件
@@ -302,25 +324,30 @@ def FeedContent(page: ft.Page):
         )
 
     def text_input(label, icon_name, value=None, hint="", required=False, multiline=False):
+        # 不傳 value=None，避免 Flet Web 把空值視為已有值而讓 hint_text 不顯示。
+        field_kwargs = dict(
+            hint_text=hint,
+            hint_style=ft.TextStyle(size=14, color="#64748B"),
+            multiline=multiline,
+            min_lines=2 if multiline else 1,
+            max_lines=3 if multiline else 1,
+            border_radius=12,
+            border_color=BORDER,
+            focused_border_color=BLUE,
+            bgcolor=INPUT_BG,
+            filled=True,
+            text_size=15,
+            height=94 if multiline else 52,
+            content_padding=ft.padding.symmetric(horizontal=14, vertical=12),
+        )
+
+        if value not in ("", None):
+            field_kwargs["value"] = value
+
         return ft.Column(
             controls=[
                 field_label(icon_name, label, required=required),
-                ft.TextField(
-                    value=value if value not in ("", None) else None,
-                    hint_text=hint,
-                    hint_style=ft.TextStyle(size=14, color="#94A3B8"),
-                    multiline=multiline,
-                    min_lines=2 if multiline else 1,
-                    max_lines=3 if multiline else 1,
-                    border_radius=12,
-                    border_color=BORDER,
-                    focused_border_color=BLUE,
-                    bgcolor=INPUT_BG,
-                    filled=True,
-                    text_size=15,
-                    height=94 if multiline else 52,
-                    content_padding=ft.padding.symmetric(horizontal=14, vertical=12),
-                ),
+                ft.TextField(**field_kwargs),
             ],
             spacing=7,
             expand=True,
@@ -586,7 +613,7 @@ def FeedContent(page: ft.Page):
             label="目前塔內原料",
             value="" if item.get("material") == "未填寫" else item.get("material", ""),
             hint_text="例如：PET308A-南紡",
-            hint_style=ft.TextStyle(size=14, color="#94A3B8"),
+            hint_style=ft.TextStyle(size=14, color="#64748B"),
             border_radius=12,
             border_color=BORDER,
             focused_border_color=BLUE,
@@ -598,7 +625,7 @@ def FeedContent(page: ft.Page):
             label="內存比例 %",
             value=f"{parse_percent_1_decimal(item.get('percent', 0), 0.0):.1f}",
             hint_text="0.0 ~ 100.0",
-            hint_style=ft.TextStyle(size=14, color="#94A3B8"),
+            hint_style=ft.TextStyle(size=14, color="#64748B"),
             keyboard_type=ft.KeyboardType.TEXT,
             border_radius=12,
             border_color=BORDER,
@@ -611,7 +638,7 @@ def FeedContent(page: ft.Page):
             label="備註",
             value="" if item.get("note") == "無備註" else item.get("note", ""),
             hint_text="例如：停機前未清空",
-            hint_style=ft.TextStyle(size=14, color="#94A3B8"),
+            hint_style=ft.TextStyle(size=14, color="#64748B"),
             multiline=True,
             min_lines=2,
             max_lines=3,
@@ -626,7 +653,7 @@ def FeedContent(page: ft.Page):
 
         def close_dlg(e=None):
             dlg.open = False
-            safe_page_update()
+            update_page()
 
         def save_dlg(e=None):
             if saving["value"]:
@@ -702,20 +729,8 @@ def FeedContent(page: ft.Page):
             actions=[
                 ft.TextButton("取消", on_click=close_dlg),
                 ft.ElevatedButton(
-                    content=ft.Row(
-                        controls=[
-                            ft.Icon(ft.Icons.SAVE_OUTLINED, size=18, color="white"),
-                            ft.Text(
-                                "儲存",
-                                size=14,
-                                color="white",
-                                weight=ft.FontWeight.W_600,
-                            ),
-                        ],
-                        alignment=ft.MainAxisAlignment.CENTER,
-                        spacing=8,
-                        tight=True,
-                    ),
+                    text="儲存",
+                    icon=ft.Icons.SAVE_OUTLINED,
                     style=ft.ButtonStyle(
                         bgcolor=theme["button"],
                         color="white",
@@ -729,7 +744,7 @@ def FeedContent(page: ft.Page):
 
         page.overlay.append(dlg)
         dlg.open = True
-        safe_page_update()
+        update_page()
 
     def dryer_status_card(item: dict):
         tower_code = item.get("tower_code", "-")
@@ -838,27 +853,17 @@ def FeedContent(page: ft.Page):
                             ],
                             spacing=5,
                         ),
-                        ft.Container(
+                        ft.ElevatedButton(
+                            text="編輯",
+                            icon=ft.Icons.EDIT_OUTLINED,
                             height=36,
-                            border_radius=18,
-                            bgcolor=theme["soft"],
-                            border=ft.border.all(1, theme["border"]),
-                            alignment=ft.Alignment(0, 0),
-                            on_click=lambda e, it=item: open_dryer_edit_dialog(it),
-                            content=ft.Row(
-                                controls=[
-                                    ft.Icon(ft.Icons.EDIT_OUTLINED, size=16, color=theme["color"]),
-                                    ft.Text(
-                                        "編輯",
-                                        size=13,
-                                        color=theme["color"],
-                                        weight=ft.FontWeight.W_600,
-                                    ),
-                                ],
-                                spacing=5,
-                                alignment=ft.MainAxisAlignment.CENTER,
-                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                            style=ft.ButtonStyle(
+                                bgcolor=theme["soft"],
+                                color=theme["color"],
+                                shape=ft.RoundedRectangleBorder(radius=18),
+                                side=ft.BorderSide(1, theme["border"]),
                             ),
+                            on_click=lambda e, it=item: open_dryer_edit_dialog(it),
                         ),
                     ],
                     spacing=11,
@@ -866,7 +871,7 @@ def FeedContent(page: ft.Page):
             ),
         )
 
-    def refresh_dryer_status_panel():
+    def _apply_dryer_status_panel():
         dryer_status_grid.controls = []
 
         if not dryer_status_items:
@@ -888,9 +893,11 @@ def FeedContent(page: ft.Page):
                 dryer_status_grid.controls.append(dryer_status_card(item))
 
         dryer_updated_text.value = f"更新：{dryer_latest_updated['value']}"
-        safe_update(dryer_status_grid)
-        safe_update(dryer_updated_text)
-        safe_update(dryer_memo_panel)
+
+    def refresh_dryer_status_panel(update_now=True):
+        _apply_dryer_status_panel()
+        if update_now:
+            update_page()
 
     # =====================================================
     # 7. 打料類型選擇卡
@@ -953,7 +960,7 @@ def FeedContent(page: ft.Page):
             ),
         )
 
-    def rebuild_mode_cards():
+    def _apply_mode_cards():
         mode_cards_row.controls = [
             mode_card(
                 "new",
@@ -983,7 +990,11 @@ def FeedContent(page: ft.Page):
                 ORANGE_BORDER,
             ),
         ]
-        safe_update(mode_cards_row)
+
+    def rebuild_mode_cards(update_now=True):
+        _apply_mode_cards()
+        if update_now:
+            update_page()
 
     # =====================================================
     # 8. 表單控制項
@@ -1031,7 +1042,7 @@ def FeedContent(page: ft.Page):
 
         current = max(1, current + delta)
         qty_value.value = str(current)
-        safe_update(qty_value)
+        update_page()
 
     qty_control = ft.Column(
         controls=[
@@ -1083,40 +1094,6 @@ def FeedContent(page: ft.Page):
     )
     note_field = note_input_group.controls[1]
 
-    submit_icon = ft.Icon(ft.Icons.SEND_ROUNDED, color="white", size=22)
-    submit_text = ft.Text("送出新料紀錄", color="white", size=17, weight=ft.FontWeight.BOLD)
-
-    submit_loading = ft.ProgressRing(
-        width=20,
-        height=20,
-        stroke_width=2.5,
-        color="white",
-        visible=False,
-    )
-
-    submit_box = ft.Container(
-        height=58,
-        border_radius=12,
-        bgcolor=BLUE_BTN,
-        alignment=ft.Alignment(0, 0),
-        content=ft.Row(
-            controls=[
-                submit_icon,
-                submit_text,
-                submit_loading,
-            ],
-            alignment=ft.MainAxisAlignment.CENTER,
-            spacing=10,
-        ),
-        shadow=ft.BoxShadow(
-            spread_radius=0,
-            blur_radius=10,
-            color="#12000000",
-            offset=ft.Offset(0, 4),
-        ),
-    )
-
-
     def get_submit_colors():
         mode = active_mode["value"]
 
@@ -1128,90 +1105,78 @@ def FeedContent(page: ft.Page):
 
         return ORANGE_BTN, ORANGE_BTN_HOVER, ORANGE_BTN_PRESS
 
+    def submit_button_label():
+        if submitting["value"]:
+            return "寫入中..."
 
-    def refresh_submit_button():
+        if active_mode["value"] == "new":
+            return "送出新料紀錄"
+        if active_mode["value"] == "aux":
+            return "送出母粒紀錄"
+        return "送出回用料紀錄"
+
+    submit_button = ft.ElevatedButton(
+        text="送出新料紀錄",
+        icon=ft.Icons.SEND_ROUNDED,
+        height=58,
+        disabled=True,
+        style=ft.ButtonStyle(
+            bgcolor=DISABLED,
+            color="white",
+            shape=ft.RoundedRectangleBorder(radius=12),
+            elevation=0,
+        ),
+        on_click=lambda e: submit_feed(e),
+    )
+
+    def refresh_submit_button(update_now=False):
         base, hover, press = get_submit_colors()
 
-        if submitting["value"]:
-            submit_box.bgcolor = DISABLED
-            submit_box.opacity = 0.92
-            submit_icon.visible = False
-            submit_loading.visible = True
-            submit_text.value = "寫入中..."
+        submit_button.text = submit_button_label()
+        submit_button.icon = ft.Icons.HOURGLASS_TOP if submitting["value"] else ft.Icons.SEND_ROUNDED
+        submit_button.disabled = submitting["value"] or not data_loaded["done"]
 
-        elif not data_loaded["done"]:
-            submit_box.bgcolor = DISABLED
-            submit_box.opacity = 0.75
-            submit_icon.visible = True
-            submit_loading.visible = False
-
-            if active_mode["value"] == "new":
-                submit_text.value = "送出新料紀錄"
-            elif active_mode["value"] == "aux":
-                submit_text.value = "送出母粒紀錄"
-            else:
-                submit_text.value = "送出回用料紀錄"
-
+        if submitting["value"] or not data_loaded["done"]:
+            bg = DISABLED
+        elif submit_state["pressed"]:
+            bg = press
+        elif submit_state["hover"]:
+            bg = hover
         else:
-            submit_box.opacity = 1
-            submit_icon.visible = True
-            submit_loading.visible = False
+            bg = base
 
-            if active_mode["value"] == "new":
-                submit_text.value = "送出新料紀錄"
-            elif active_mode["value"] == "aux":
-                submit_text.value = "送出母粒紀錄"
-            else:
-                submit_text.value = "送出回用料紀錄"
+        submit_button.style = ft.ButtonStyle(
+            bgcolor=bg,
+            color="white",
+            shape=ft.RoundedRectangleBorder(radius=12),
+            elevation=0,
+        )
 
-            if submit_state["pressed"]:
-                submit_box.bgcolor = press
-            elif submit_state["hover"]:
-                submit_box.bgcolor = hover
-            else:
-                submit_box.bgcolor = base
-
-        try:
-            submit_box.update()
-        except Exception:
-            pass
-
+        if update_now:
+            update_page()
 
     def submit_hover(e):
         if submitting["value"] or not data_loaded["done"]:
             return
 
         submit_state["hover"] = e.data == "true"
-        refresh_submit_button()
-
+        refresh_submit_button(update_now=True)
 
     def submit_tap_down(e):
         if submitting["value"] or not data_loaded["done"]:
             return
 
         submit_state["pressed"] = True
-        refresh_submit_button()
-
+        refresh_submit_button(update_now=True)
 
     def submit_tap_cancel(e):
         if submitting["value"] or not data_loaded["done"]:
             return
 
         submit_state["pressed"] = False
-        refresh_submit_button()
+        refresh_submit_button(update_now=True)
 
-
-    # 手機 Web / VM 模式：GestureDetector.on_tap_up 偶發不觸發，
-    # 會造成按鈕呈現像「卡死」。改用 Container.on_click，
-    # 與 login.py 的穩定修正版一致。
-    # 注意：submit_feed 會在後面才定義，這裡必須使用 lambda 延遲解析，
-    # 否則 FeedContent 建立畫面時會出現：
-    # cannot access local variable 'submit_feed' where it is not associated with a value
-    submit_button = ft.Container(
-        content=submit_box,
-        on_click=lambda e: submit_feed(e),
-        on_hover=submit_hover,
-    )
+    submit_button.on_hover = submit_hover
 
     form_title_icon = ft.Icon(ft.Icons.INVENTORY_2_OUTLINED, size=26, color=BLUE)
     form_title_text = ft.Text("領用新料作業", size=20, color=TEXT_MAIN, weight=ft.FontWeight.BOLD)
@@ -1339,7 +1304,7 @@ def FeedContent(page: ft.Page):
 
         return rows
 
-    def refresh_recent_panel():
+    def _apply_recent_panel():
         recent_table.controls = [
             ft.Container(
                 bgcolor="#FFFFFF",
@@ -1367,11 +1332,51 @@ def FeedContent(page: ft.Page):
             )
         ]
 
-        safe_update(recent_table)
+    def refresh_recent_panel(update_now=True):
+        _apply_recent_panel()
+        if update_now:
+            update_page()
 
     def close_dialog(dlg):
         dlg.open = False
-        safe_page_update()
+        update_page()
+
+    def recent_full_row(item: dict, is_header=False):
+        bg = "#FAFAFB" if is_header else "#FFFFFF"
+        border = None if is_header else ft.border.only(bottom=ft.BorderSide(1, "#EEF2F7"))
+        text_color = TEXT_SUB if is_header else TEXT_MAIN
+        weight = ft.FontWeight.W_600 if is_header else None
+
+        return ft.Container(
+            width=860,
+            bgcolor=bg,
+            padding=ft.padding.symmetric(horizontal=12, vertical=11),
+            border=border,
+            content=ft.Row(
+                controls=[
+                    ft.Text(item.get("date", "日期"), size=13, color=TEXT_SUB, width=105, weight=weight),
+                    ft.Text(item.get("time", "時間"), size=13, color=TEXT_SUB, width=70, weight=weight),
+                    ft.Text(
+                        item.get("type", "類型"),
+                        size=13,
+                        color=item.get("tag_color", TEXT_SUB) if not is_header else TEXT_SUB,
+                        width=85,
+                        weight=weight,
+                    ),
+                    ft.Text(item.get("material", "原料"), size=13, color=text_color, width=380, weight=weight),
+                    ft.Text(
+                        str(item.get("qty", "數量")),
+                        size=13,
+                        color=text_color,
+                        width=90,
+                        text_align=ft.TextAlign.RIGHT,
+                        weight=weight,
+                    ),
+                    ft.Text(item.get("operator", "人員"), size=13, color=text_color, width=100, weight=weight),
+                ],
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+        )
 
     def open_all_recent(e):
         all_rows = ft.Column(spacing=0, scroll=ft.ScrollMode.AUTO)
@@ -1379,45 +1384,32 @@ def FeedContent(page: ft.Page):
         if not recent_records:
             all_rows.controls.append(
                 ft.Container(
+                    width=860,
                     padding=20,
                     content=ft.Text("目前尚無可顯示的打料紀錄。", size=14, color=TEXT_SUB),
                 )
             )
         else:
-            for item in recent_records[:40]:
-                all_rows.controls.append(
-                    ft.Container(
-                        padding=ft.padding.symmetric(horizontal=12, vertical=12),
-                        border=ft.border.only(bottom=ft.BorderSide(1, "#EEF2F7")),
-                        content=ft.Row(
-                            controls=[
-                                ft.Text(item.get("date", "-"), size=13, color=TEXT_SUB, width=96),
-                                ft.Text(item.get("time", "-"), size=13, color=TEXT_SUB, width=60),
-                                ft.Text(item.get("type", "-"), size=13, color=item.get("tag_color", BLUE), width=70),
-                                ft.Text(item.get("material", "-"), size=13, color=TEXT_MAIN, expand=True),
-                                ft.Text(
-                                    str(item.get("qty", "")),
-                                    size=13,
-                                    color=TEXT_MAIN,
-                                    width=80,
-                                    text_align=ft.TextAlign.RIGHT,
-                                ),
-                            ],
-                        ),
-                    )
+            all_rows.controls.append(
+                recent_full_row(
+                    {"date": "日期", "time": "時間", "type": "類型", "material": "原料", "qty": "數量", "operator": "人員"},
+                    is_header=True,
                 )
+            )
+            for item in recent_records[:40]:
+                all_rows.controls.append(recent_full_row(item))
 
         dlg = ft.AlertDialog(
             modal=True,
             title=ft.Text("全部打料紀錄", weight=ft.FontWeight.BOLD),
             content=ft.Container(
-                width=min((page.width or 860) * 0.92, 760),
-                height=min((page.height or 760) * 0.72, 420),
+                width=min((page.width or 860) * 0.92, 780),
+                height=min((page.height or 760) * 0.72, 440),
                 content=ft.Row(
                     scroll=ft.ScrollMode.AUTO,
                     controls=[
                         ft.Container(
-                            width=760,
+                            width=880,
                             content=all_rows,
                         ),
                     ],
@@ -1430,7 +1422,7 @@ def FeedContent(page: ft.Page):
 
         page.overlay.append(dlg)
         dlg.open = True
-        safe_page_update()
+        update_page()
 
     recent_panel = ft.Container(
         bgcolor="#FBF7FF",
@@ -1449,20 +1441,8 @@ def FeedContent(page: ft.Page):
                             spacing=10,
                         ),
                         ft.TextButton(
-                            content=ft.Row(
-                                controls=[
-                                    ft.Text(
-                                        "查看全部",
-                                        size=14,
-                                        color=PURPLE,
-                                        weight=ft.FontWeight.W_600,
-                                    ),
-                                    ft.Icon(ft.Icons.OPEN_IN_NEW, size=17, color=PURPLE),
-                                ],
-                                alignment=ft.MainAxisAlignment.CENTER,
-                                spacing=5,
-                                tight=True,
-                            ),
+                            text="查看全部",
+                            icon=ft.Icons.OPEN_IN_NEW,
                             style=ft.ButtonStyle(color=PURPLE),
                             on_click=open_all_recent,
                         ),
@@ -1521,10 +1501,10 @@ def FeedContent(page: ft.Page):
     # =====================================================
     def switch_mode(mode):
         active_mode["value"] = mode
-        rebuild_mode_cards()
-        refresh_form_by_mode()
+        rebuild_mode_cards(update_now=False)
+        refresh_form_by_mode(update_now=True)
 
-    def refresh_form_by_mode():
+    def refresh_form_by_mode(update_now=True):
         mode = active_mode["value"]
 
         batch_input_group.visible = mode != "rec"
@@ -1609,17 +1589,10 @@ def FeedContent(page: ft.Page):
             operator_dropdown.value = current_user_name
             form_card.border = ft.border.all(1, ORANGE_BORDER)
 
-        refresh_submit_button()
+        refresh_submit_button(update_now=False)
 
-        safe_update(form_card)
-        safe_update(form_fields_area)
-        safe_update(batch_input_group)
-        safe_update(material_input_group)
-        safe_update(date_input_group)
-        safe_update(qty_control)
-        safe_update(machine_input_group)
-        safe_update(operator_input_group)
-        safe_update(note_input_group)
+        if update_now:
+            update_page()
 
     # =====================================================
     # 13. 送出邏輯
@@ -1627,8 +1600,8 @@ def FeedContent(page: ft.Page):
     def set_submitting(value: bool):
         submitting["value"] = value
         submit_state["pressed"] = False
-        refresh_submit_button()
-        safe_page_update()
+        refresh_submit_button(update_now=False)
+        update_page()
 
     def validate_common():
         if not data_loaded["done"]:
@@ -1650,7 +1623,7 @@ def FeedContent(page: ft.Page):
             return
 
         submit_state["pressed"] = False
-        refresh_submit_button()
+        refresh_submit_button(update_now=True)
 
         mode = active_mode["value"]
 
@@ -1710,9 +1683,7 @@ def FeedContent(page: ft.Page):
                 qty_value.value = "1"
                 note_field.value = ""
 
-                safe_update(batch_field)
-                safe_update(qty_value)
-                safe_update(note_field)
+                update_page()
 
             # =====================================================
             # B. 回用料
@@ -1757,9 +1728,10 @@ def FeedContent(page: ft.Page):
                     rec_materials.pop(material_dropdown.value)
 
             reload_feed_data_after_submit()
-            refresh_form_by_mode()
-            refresh_recent_panel()
-            refresh_dryer_status_panel()
+            refresh_form_by_mode(update_now=False)
+            refresh_recent_panel(update_now=False)
+            refresh_dryer_status_panel(update_now=False)
+            update_page()
 
         except Exception as ex:
             show_snack(f"寫入失敗：{ex}", RED)
@@ -1806,88 +1778,76 @@ def FeedContent(page: ft.Page):
         else:
             show_snack(result.message, RED)
 
-    def load_bg_data():
-        try:
-            time.sleep(0.5)
-            set_status("資料同步中", loading=True)
-
-            result = load_feed_page_data()
-
-            if not result.ok:
-                data_loaded["done"] = False
-                set_status("資料同步失敗", theme="red")
-                show_snack(result.message, RED)
-                print("feed load data error:", result.message)
-                return
-
-            apply_feed_data(result.data)
-
-            dryer_result = load_dryer_status()
-            if dryer_result.ok:
-                apply_dryer_status_data(dryer_result.data)
-            else:
-                print("dryer status load error:", dryer_result.message)
-
-            data_loaded["done"] = True
-
-            refresh_dryer_status_panel()
-            rebuild_mode_cards()
-            refresh_form_by_mode()
-            refresh_recent_panel()
-
-            set_status("資料已同步", theme="green")
-
-        except Exception as ex:
-            data_loaded["done"] = False
-            set_status("資料同步失敗", theme="red")
-            show_snack(f"資料同步失敗：{ex}", RED)
-            print("feed load data error:", ex)
-
     def load_initial_data_once():
         """
-        VM / 手機 Web 穩定版：
-        這裡刻意不使用 threading.Timer / threading.Thread 直接更新 Flet 控制項。
-        原本背景執行緒在「乾燥塔內存備忘」載入後會接續呼叫多個 update，
-        手機瀏覽器上容易讓後續按鈕事件變得不穩或像卡死。
-        
-        第一版先同步載入資料，犧牲一點點進頁速度，換取互動穩定性。
+        非阻塞背景載入版：
+        - FeedContent 建構時不阻塞 UI。
+        - 背景 thread 只讀 Supabase 資料。
+        - 套用 UI 前檢查 token / route / alive。
+        - 控制項屬性集中修改，最後只呼叫一次 page.update()。
         """
-        try:
-            set_status("資料同步中", loading=True)
+        current_token = object()
+        load_guard["token"] = current_token
 
-            result = load_feed_page_data()
-            if result.ok:
-                apply_feed_data(result.data)
-                data_loaded["done"] = True
-            else:
+        if hasattr(page, "session_data") and isinstance(page.session_data, dict):
+            page.session_data["_feed_view_token"] = view_token
+
+        def _run():
+            try:
+                feed_result = load_feed_page_data()
+                dryer_result = load_dryer_status()
+
+                if not is_current_feed_view(current_token):
+                    return
+
+                if feed_result.ok:
+                    apply_feed_data(feed_result.data)
+                    data_loaded["done"] = True
+                else:
+                    data_loaded["done"] = False
+                    print("feed load data error:", feed_result.message)
+
+                if dryer_result.ok:
+                    apply_dryer_status_data(dryer_result.data)
+                else:
+                    print("dryer status load error:", dryer_result.message)
+
+                refresh_dryer_status_panel(update_now=False)
+                rebuild_mode_cards(update_now=False)
+                refresh_form_by_mode(update_now=False)
+                refresh_recent_panel(update_now=False)
+                set_status(
+                    "資料已同步" if data_loaded["done"] else "資料同步失敗",
+                    theme="green" if data_loaded["done"] else "red",
+                    update_now=False,
+                )
+
+                if is_current_feed_view(current_token):
+                    update_page()
+
+            except Exception as ex:
                 data_loaded["done"] = False
-                print("feed load data error:", result.message)
+                print("feed initial load error:", ex)
 
-            dryer_result = load_dryer_status()
-            if dryer_result.ok:
-                apply_dryer_status_data(dryer_result.data)
-            else:
-                print("dryer status load error:", dryer_result.message)
+                if is_current_feed_view(current_token):
+                    set_status("資料同步失敗", theme="red", update_now=False)
+                    refresh_submit_button(update_now=False)
+                    update_page()
 
-            set_status("資料已同步" if data_loaded["done"] else "資料同步失敗", theme="green" if data_loaded["done"] else "red")
+        threading.Thread(target=_run, daemon=True).start()
 
-        except Exception as ex:
-            data_loaded["done"] = False
-            set_status("資料同步失敗", theme="red")
-            print("feed initial load error:", ex)
-
+    # 初始 UI：先用空資料渲染，避免 Supabase 查詢阻塞主 UI thread。
+    rebuild_mode_cards(update_now=False)
+    refresh_recent_panel(update_now=False)
+    refresh_dryer_status_panel(update_now=False)
+    refresh_form_by_mode(update_now=False)
+    set_status("資料同步中", loading=True, update_now=False)
     load_initial_data_once()
-
-    # 初始 UI
-    rebuild_mode_cards()
-    refresh_recent_panel()
-    refresh_dryer_status_panel()
-    refresh_form_by_mode()
 
     # =====================================================
     # 15. 最終畫面
     # =====================================================
-    return ft.Column(
+    root = ft.Column(
         controls=[
             header,
             dryer_memo_panel,
@@ -1897,3 +1857,8 @@ def FeedContent(page: ft.Page):
         ],
         spacing=18,
     )
+
+    # 目前以 token + session + route 三重檢查避免舊 thread 更新。
+    # 若未來 main.py / shell 增加顯式離頁 hook，可在切離 /feed 時把 is_alive["value"] 設為 False。
+    root.data = {"view": "feed", "token": str(id(view_token))}
+    return root
