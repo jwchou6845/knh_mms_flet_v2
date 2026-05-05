@@ -1286,8 +1286,17 @@ def FeedContent(page: ft.Page):
     )
 
     recent_table = ft.Column(spacing=0)
+    recent_show_all = {"value": False}
 
-    def recent_rows(limit=3):
+    recent_toggle_text = ft.Text(
+        "查看全部",
+        size=14,
+        color=PURPLE,
+        weight=ft.FontWeight.W_600,
+    )
+    recent_toggle_icon = ft.Icon(ft.Icons.OPEN_IN_NEW, size=17, color=PURPLE)
+
+    def recent_rows(limit=5):
         rows = []
 
         for item in recent_records[:limit]:
@@ -1342,7 +1351,116 @@ def FeedContent(page: ft.Page):
 
         return rows
 
+    def recent_detail_card(item: dict):
+        return ft.Container(
+            padding=ft.padding.symmetric(horizontal=12, vertical=12),
+            border=ft.border.only(bottom=ft.BorderSide(1, "#EEF2F7")),
+            content=ft.Column(
+                controls=[
+                    ft.Row(
+                        controls=[
+                            ft.Container(
+                                width=54,
+                                height=26,
+                                border_radius=13,
+                                bgcolor=item.get("tag_bg", BLUE_SOFT),
+                                alignment=ft.Alignment(0, 0),
+                                content=ft.Text(
+                                    item.get("type", "-"),
+                                    size=12,
+                                    color=item.get("tag_color", BLUE),
+                                    weight=ft.FontWeight.W_600,
+                                ),
+                            ),
+                            ft.Text(
+                                f"{item.get('date', '-')} {item.get('time', '-')}",
+                                size=13,
+                                color=TEXT_SUB,
+                                expand=True,
+                                text_align=ft.TextAlign.RIGHT,
+                            ),
+                        ],
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    ft.Text(
+                        item.get("material", "-"),
+                        size=14,
+                        color=TEXT_MAIN,
+                        weight=ft.FontWeight.W_600,
+                        max_lines=2,
+                        overflow=ft.TextOverflow.ELLIPSIS,
+                    ),
+                    ft.Row(
+                        controls=[
+                            ft.Text(f"數量：{item.get('qty', '-')}", size=13, color=TEXT_SUB, expand=True),
+                            ft.Text(f"人員：{item.get('operator', '-')}", size=13, color=TEXT_SUB),
+                        ],
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                ],
+                spacing=6,
+            ),
+        )
+
+    def recent_all_cards(limit=20):
+        rows = []
+
+        if not recent_records:
+            rows.append(
+                ft.Container(
+                    padding=16,
+                    content=ft.Text("目前尚無可顯示的打料紀錄。", size=13, color=TEXT_SUB),
+                )
+            )
+            return rows
+
+        rows.append(
+            ft.Container(
+                padding=ft.padding.symmetric(horizontal=12, vertical=10),
+                bgcolor="#FAFAFB",
+                content=ft.Row(
+                    controls=[
+                        ft.Icon(ft.Icons.INFO_OUTLINE, size=16, color=TEXT_SUB),
+                        ft.Text(
+                            f"顯示最近 {min(limit, len(recent_records))} 筆紀錄",
+                            size=12,
+                            color=TEXT_SUB,
+                            weight=ft.FontWeight.W_600,
+                        ),
+                    ],
+                    spacing=6,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+            )
+        )
+
+        for item in recent_records[:limit]:
+            rows.append(recent_detail_card(item))
+
+        return rows
+
     def _apply_recent_panel():
+        if recent_show_all["value"]:
+            recent_toggle_text.value = "收合"
+            recent_toggle_icon.name = ft.Icons.EXPAND_LESS
+
+            recent_table.controls = [
+                ft.Container(
+                    bgcolor="#FFFFFF",
+                    border_radius=12,
+                    border=ft.border.all(1, "#EEF2F7"),
+                    clip_behavior=ft.ClipBehavior.HARD_EDGE,
+                    content=ft.Column(
+                        controls=recent_all_cards(20),
+                        spacing=0,
+                    ),
+                )
+            ]
+            return
+
+        recent_toggle_text.value = "查看全部"
+        recent_toggle_icon.name = ft.Icons.OPEN_IN_NEW
+
         recent_table.controls = [
             ft.Container(
                 bgcolor="#FFFFFF",
@@ -1363,7 +1481,7 @@ def FeedContent(page: ft.Page):
                                 ],
                             ),
                         ),
-                        *recent_rows(3),
+                        *recent_rows(5),
                     ],
                     spacing=0,
                 ),
@@ -1375,92 +1493,9 @@ def FeedContent(page: ft.Page):
         if update_now:
             update_page()
 
-    def close_dialog(dlg):
-        dlg.open = False
-        update_page()
-
-    def recent_full_row(item: dict, is_header=False):
-        bg = "#FAFAFB" if is_header else "#FFFFFF"
-        border = None if is_header else ft.border.only(bottom=ft.BorderSide(1, "#EEF2F7"))
-        text_color = TEXT_SUB if is_header else TEXT_MAIN
-        weight = ft.FontWeight.W_600 if is_header else None
-
-        return ft.Container(
-            width=860,
-            bgcolor=bg,
-            padding=ft.padding.symmetric(horizontal=12, vertical=11),
-            border=border,
-            content=ft.Row(
-                controls=[
-                    ft.Text(item.get("date", "日期"), size=13, color=TEXT_SUB, width=105, weight=weight),
-                    ft.Text(item.get("time", "時間"), size=13, color=TEXT_SUB, width=70, weight=weight),
-                    ft.Text(
-                        item.get("type", "類型"),
-                        size=13,
-                        color=item.get("tag_color", TEXT_SUB) if not is_header else TEXT_SUB,
-                        width=85,
-                        weight=weight,
-                    ),
-                    ft.Text(item.get("material", "原料"), size=13, color=text_color, width=380, weight=weight),
-                    ft.Text(
-                        str(item.get("qty", "數量")),
-                        size=13,
-                        color=text_color,
-                        width=90,
-                        text_align=ft.TextAlign.RIGHT,
-                        weight=weight,
-                    ),
-                    ft.Text(item.get("operator", "人員"), size=13, color=text_color, width=100, weight=weight),
-                ],
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            ),
-        )
-
-    def open_all_recent(e):
-        all_rows = ft.Column(spacing=0, scroll=ft.ScrollMode.AUTO)
-
-        if not recent_records:
-            all_rows.controls.append(
-                ft.Container(
-                    width=860,
-                    padding=20,
-                    content=ft.Text("目前尚無可顯示的打料紀錄。", size=14, color=TEXT_SUB),
-                )
-            )
-        else:
-            all_rows.controls.append(
-                recent_full_row(
-                    {"date": "日期", "time": "時間", "type": "類型", "material": "原料", "qty": "數量", "operator": "人員"},
-                    is_header=True,
-                )
-            )
-            for item in recent_records[:40]:
-                all_rows.controls.append(recent_full_row(item))
-
-        dlg = ft.AlertDialog(
-            modal=True,
-            title=ft.Text("全部打料紀錄", weight=ft.FontWeight.BOLD),
-            content=ft.Container(
-                width=min((page.width or 860) * 0.92, 780),
-                height=min((page.height or 760) * 0.72, 440),
-                content=ft.Row(
-                    scroll=ft.ScrollMode.AUTO,
-                    controls=[
-                        ft.Container(
-                            width=880,
-                            content=all_rows,
-                        ),
-                    ],
-                ),
-            ),
-            actions=[
-                ft.TextButton(content="關閉", on_click=lambda ev: close_dialog(dlg)),
-            ],
-        )
-
-        page.overlay.append(dlg)
-        dlg.open = True
-        update_page()
+    def toggle_all_recent(e=None):
+        recent_show_all["value"] = not recent_show_all["value"]
+        refresh_recent_panel(update_now=True)
 
     recent_panel = ft.Container(
         bgcolor="#FBF7FF",
@@ -1478,14 +1513,25 @@ def FeedContent(page: ft.Page):
                             ],
                             spacing=10,
                         ),
-                        ft.TextButton(
-                            content="查看全部",
-                            icon=ft.Icons.OPEN_IN_NEW,
-                            style=ft.ButtonStyle(color=PURPLE),
-                            on_click=open_all_recent,
+                        ft.Container(
+                            height=36,
+                            padding=ft.padding.symmetric(horizontal=12),
+                            border_radius=18,
+                            bgcolor="#FFFFFF",
+                            border=ft.border.all(1, PURPLE_BORDER),
+                            alignment=ft.Alignment(0, 0),
+                            on_click=toggle_all_recent,
+                            content=ft.Row(
+                                controls=[recent_toggle_text, recent_toggle_icon],
+                                spacing=5,
+                                alignment=ft.MainAxisAlignment.CENTER,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                tight=True,
+                            ),
                         ),
                     ],
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 ),
                 recent_table,
             ],
