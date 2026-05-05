@@ -727,9 +727,9 @@ def FeedContent(page: ft.Page):
                 ),
             ),
             actions=[
-                ft.TextButton("取消", on_click=close_dlg),
+                ft.TextButton(content="取消", on_click=close_dlg),
                 ft.ElevatedButton(
-                    text="儲存",
+                    content="儲存",
                     icon=ft.Icons.SAVE_OUTLINED,
                     style=ft.ButtonStyle(
                         bgcolor=theme["button"],
@@ -854,7 +854,7 @@ def FeedContent(page: ft.Page):
                             spacing=5,
                         ),
                         ft.ElevatedButton(
-                            text="編輯",
+                            content="編輯",
                             icon=ft.Icons.EDIT_OUTLINED,
                             height=36,
                             style=ft.ButtonStyle(
@@ -1116,7 +1116,7 @@ def FeedContent(page: ft.Page):
         return "送出回用料紀錄"
 
     submit_button = ft.ElevatedButton(
-        text="送出新料紀錄",
+        content="送出新料紀錄",
         icon=ft.Icons.SEND_ROUNDED,
         height=58,
         disabled=True,
@@ -1132,7 +1132,7 @@ def FeedContent(page: ft.Page):
     def refresh_submit_button(update_now=False):
         base, hover, press = get_submit_colors()
 
-        submit_button.text = submit_button_label()
+        submit_button.content = submit_button_label()
         submit_button.icon = ft.Icons.HOURGLASS_TOP if submitting["value"] else ft.Icons.SEND_ROUNDED
         submit_button.disabled = submitting["value"] or not data_loaded["done"]
 
@@ -1416,7 +1416,7 @@ def FeedContent(page: ft.Page):
                 ),
             ),
             actions=[
-                ft.TextButton("關閉", on_click=lambda ev: close_dialog(dlg)),
+                ft.TextButton(content="關閉", on_click=lambda ev: close_dialog(dlg)),
             ],
         )
 
@@ -1441,7 +1441,7 @@ def FeedContent(page: ft.Page):
                             spacing=10,
                         ),
                         ft.TextButton(
-                            text="查看全部",
+                            content="查看全部",
                             icon=ft.Icons.OPEN_IN_NEW,
                             style=ft.ButtonStyle(color=PURPLE),
                             on_click=open_all_recent,
