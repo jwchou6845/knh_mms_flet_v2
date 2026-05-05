@@ -341,8 +341,16 @@ def FeedContent(page: ft.Page):
             content_padding=ft.padding.symmetric(horizontal=14, vertical=12),
         )
 
+        # Flet 0.84 / 手機 Web：部分情境 hint_text 仍可能不顯示。
+        # 加上 label 作為欄位內提示備援，避免空白欄位看不到輸入提示。
+        if hint:
+            field_kwargs["label"] = hint
+            field_kwargs["label_style"] = ft.TextStyle(size=14, color="#64748B")
+
         if value not in ("", None):
             field_kwargs["value"] = value
+        else:
+            field_kwargs["value"] = ""
 
         return ft.Column(
             controls=[
@@ -728,12 +736,14 @@ def FeedContent(page: ft.Page):
             ),
             actions=[
                 ft.TextButton(content="取消", on_click=close_dlg),
-                ft.ElevatedButton(
+                ft.Button(
                     content="儲存",
                     icon=ft.Icons.SAVE_OUTLINED,
+                    bgcolor=theme["button"],
+                    color="white",
+                    icon_color="white",
+                    height=42,
                     style=ft.ButtonStyle(
-                        bgcolor=theme["button"],
-                        color="white",
                         shape=ft.RoundedRectangleBorder(radius=10),
                     ),
                     on_click=save_dlg,
@@ -853,13 +863,14 @@ def FeedContent(page: ft.Page):
                             ],
                             spacing=5,
                         ),
-                        ft.ElevatedButton(
+                        ft.Button(
                             content="編輯",
                             icon=ft.Icons.EDIT_OUTLINED,
                             height=36,
+                            bgcolor=theme["soft"],
+                            color=theme["color"],
+                            icon_color=theme["color"],
                             style=ft.ButtonStyle(
-                                bgcolor=theme["soft"],
-                                color=theme["color"],
                                 shape=ft.RoundedRectangleBorder(radius=18),
                                 side=ft.BorderSide(1, theme["border"]),
                             ),
@@ -1115,16 +1126,17 @@ def FeedContent(page: ft.Page):
             return "送出母粒紀錄"
         return "送出回用料紀錄"
 
-    submit_button = ft.ElevatedButton(
+    submit_button = ft.Button(
         content="送出新料紀錄",
         icon=ft.Icons.SEND_ROUNDED,
         height=58,
         disabled=True,
+        bgcolor=DISABLED,
+        color="white",
+        icon_color="white",
+        elevation=0,
         style=ft.ButtonStyle(
-            bgcolor=DISABLED,
-            color="white",
             shape=ft.RoundedRectangleBorder(radius=12),
-            elevation=0,
         ),
         on_click=lambda e: submit_feed(e),
     )
@@ -1145,11 +1157,12 @@ def FeedContent(page: ft.Page):
         else:
             bg = base
 
+        submit_button.bgcolor = bg
+        submit_button.color = "white"
+        submit_button.icon_color = "white"
+        submit_button.elevation = 0
         submit_button.style = ft.ButtonStyle(
-            bgcolor=bg,
-            color="white",
             shape=ft.RoundedRectangleBorder(radius=12),
-            elevation=0,
         )
 
         if update_now:
