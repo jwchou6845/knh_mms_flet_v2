@@ -165,54 +165,156 @@ def LoginView(page: ft.Page):
             content_padding=ft.padding.symmetric(horizontal=14, vertical=12),
         )
 
-    def primary_button(label, icon_name, on_click):
-        # Flet 0.84 on this VM: Button does not accept text=/icon= kwargs.
-        # Use content=Row(...) for compatibility.
-        return ft.ElevatedButton(
-            content=ft.Row(
-                controls=[
-                    ft.Icon(icon_name, size=20, color="white"),
-                    ft.Text(
-                        label,
-                        size=17,
-                        color="white",
-                        weight=ft.FontWeight.BOLD,
-                    ),
-                ],
-                alignment=ft.MainAxisAlignment.CENTER,
-                spacing=10,
-            ),
-            height=56,
-            bgcolor=MUTED_BLUE,
-            color="white",
-            on_click=on_click,
-            style=ft.ButtonStyle(
-                shape=ft.RoundedRectangleBorder(radius=12),
-                elevation=0,
-            ),
+    def _button_content(label, icon_name, text_color, text_size=16, icon_size=20):
+        return ft.Row(
+            controls=[
+                ft.Icon(icon_name, size=icon_size, color=text_color),
+                ft.Text(
+                    label,
+                    size=text_size,
+                    color=text_color,
+                    weight=ft.FontWeight.BOLD,
+                    max_lines=1,
+                    overflow=ft.TextOverflow.ELLIPSIS,
+                ),
+            ],
+            alignment=ft.MainAxisAlignment.CENTER,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            spacing=9,
+            tight=True,
         )
 
-    def secondary_button(label, icon_name, on_click):
-        return ft.OutlinedButton(
-            content=ft.Row(
-                controls=[
-                    ft.Icon(icon_name, size=19, color="#2563A9"),
-                    ft.Text(
-                        label,
-                        size=15,
-                        color="#2563A9",
-                        weight=ft.FontWeight.W_600,
-                    ),
-                ],
-                alignment=ft.MainAxisAlignment.CENTER,
-                spacing=8,
+    def stable_filled_button(
+        label,
+        icon_name,
+        on_click,
+        bg=None,
+        fg="#FFFFFF",
+        height=56,
+        expand=False,
+    ):
+        btn = ft.Container(
+            height=height,
+            expand=expand,
+            border_radius=12,
+            bgcolor=bg or MUTED_BLUE,
+            alignment=ft.Alignment(0, 0),
+            padding=ft.padding.symmetric(horizontal=14),
+            ink=True,
+            content=_button_content(label, icon_name, fg),
+            shadow=ft.BoxShadow(
+                spread_radius=0,
+                blur_radius=12,
+                color="#12000000",
+                offset=ft.Offset(0, 4),
             ),
-            height=52,
-            on_click=on_click,
-            style=ft.ButtonStyle(
-                shape=ft.RoundedRectangleBorder(radius=12),
-                side=ft.BorderSide(1, "#2563A9"),
-            ),
+        )
+        btn.disabled = False
+        btn.data = {
+            "label": label,
+            "icon": icon_name,
+            "bg": bg or MUTED_BLUE,
+            "fg": fg,
+            "height": height,
+            "variant": "filled",
+        }
+
+        def handle_click(e):
+            if getattr(btn, "disabled", False):
+                return
+            if callable(on_click):
+                on_click(e)
+
+        btn.on_click = handle_click
+        return btn
+
+    def stable_outline_button(
+        label,
+        icon_name,
+        on_click,
+        fg="#2563A9",
+        border_color="#B0D0FF",
+        height=52,
+        expand=False,
+    ):
+        btn = ft.Container(
+            height=height,
+            expand=expand,
+            border_radius=12,
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, border_color),
+            alignment=ft.Alignment(0, 0),
+            padding=ft.padding.symmetric(horizontal=14),
+            ink=True,
+            content=_button_content(label, icon_name, fg, text_size=15, icon_size=19),
+        )
+        btn.disabled = False
+        btn.data = {
+            "label": label,
+            "icon": icon_name,
+            "bg": "#FFFFFF",
+            "fg": fg,
+            "border": border_color,
+            "height": height,
+            "variant": "outline",
+        }
+
+        def handle_click(e):
+            if getattr(btn, "disabled", False):
+                return
+            if callable(on_click):
+                on_click(e)
+
+        btn.on_click = handle_click
+        return btn
+
+    def set_stable_button_loading(button, label="處理中...", fg="#FFFFFF"):
+        button.disabled = True
+        button.opacity = 0.86
+        if isinstance(getattr(button, "data", None), dict):
+            button.bgcolor = "#94A3B8" if button.data.get("variant") == "filled" else "#F1F5F9"
+        button.content = ft.Row(
+            controls=[
+                ft.ProgressRing(width=18, height=18, stroke_width=2.4, color=fg),
+                ft.Text(label, size=15, color=fg, weight=ft.FontWeight.BOLD),
+            ],
+            alignment=ft.MainAxisAlignment.CENTER,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            spacing=9,
+            tight=True,
+        )
+        try:
+            button.update()
+        except Exception:
+            page.update()
+
+    def set_stable_button_normal(button):
+        data = button.data if isinstance(getattr(button, "data", None), dict) else {}
+        button.disabled = False
+        button.opacity = 1
+        button.bgcolor = data.get("bg", MUTED_BLUE)
+        if data.get("variant") == "outline":
+            button.border = ft.border.all(1, data.get("border", "#B0D0FF"))
+        button.content = _button_content(
+            data.get("label", "確認"),
+            data.get("icon", ft.Icons.CHECK_CIRCLE_OUTLINE),
+            data.get("fg", "#FFFFFF"),
+            text_size=15 if data.get("variant") == "outline" else 16,
+            icon_size=19 if data.get("variant") == "outline" else 20,
+        )
+        try:
+            button.update()
+        except Exception:
+            page.update()
+
+    def field_group(label, control, icon_name=None, required=False):
+        return ft.Column(
+            tight=True,
+            spacing=7,
+            controls=[
+                label_row(icon_name or ft.Icons.EDIT_OUTLINED, label + (" *" if required else "")),
+                control,
+            ],
         )
 
     # =====================================================
@@ -479,6 +581,7 @@ def LoginView(page: ft.Page):
 
     reset_reason = ft.TextField(
         value="忘記密碼，申請管理員協助重設。",
+        hint_text="請說明申請原因",
         multiline=True,
         min_lines=2,
         max_lines=3,
@@ -488,28 +591,27 @@ def LoginView(page: ft.Page):
         filled=True,
         bgcolor=INPUT_BG,
         text_size=14,
+        content_padding=ft.padding.symmetric(horizontal=14, vertical=12),
     )
 
-    def dialog_field(label, control):
-        return ft.Column(
-            tight=True,
-            spacing=5,
-            controls=[
-                ft.Text(
-                    label,
-                    size=13,
-                    color=TEXT_MAIN,
-                    weight=ft.FontWeight.W_600,
-                ),
-                control,
-            ],
-        )
+    reset_state = {"submitting": False}
+    reset_dialog = None
+    reset_submit_btn = None
+
+    def dialog_field(label, control, icon_name):
+        return field_group(label, control, icon_name, required=True if label in ["員工編號", "員工姓名"] else False)
 
     def close_reset_dialog(e=None):
-        reset_dialog.open = False
-        page.update()
+        nonlocal reset_dialog
+        if reset_dialog:
+            reset_dialog.open = False
+            page.update()
 
-    def submit_reset_request(e):
+    def submit_reset_request(e=None):
+        nonlocal reset_submit_btn
+        if reset_state["submitting"]:
+            return
+
         emp = (reset_employee.value or "").strip()
         name = (reset_name.value or "").strip()
         contact = (reset_contact.value or "").strip()
@@ -522,6 +624,10 @@ def LoginView(page: ft.Page):
         if not name:
             show_snack("請填寫員工姓名。", ERROR)
             return
+
+        reset_state["submitting"] = True
+        if reset_submit_btn:
+            set_stable_button_loading(reset_submit_btn, "送出中...")
 
         try:
             result = submit_password_reset_request(
@@ -542,14 +648,37 @@ def LoginView(page: ft.Page):
             show_snack(f"送出失敗：{ex}", ERROR)
             print("reset request error:", ex)
 
+        finally:
+            reset_state["submitting"] = False
+            if reset_submit_btn:
+                set_stable_button_normal(reset_submit_btn)
+
+    reset_submit_btn = stable_filled_button(
+        "送出申請",
+        ft.Icons.SEND_OUTLINED,
+        submit_reset_request,
+        bg=FOCUS_BLUE,
+        height=50,
+        expand=True,
+    )
+
+    reset_cancel_btn = stable_outline_button(
+        "取消",
+        ft.Icons.CLOSE,
+        close_reset_dialog,
+        height=50,
+        expand=True,
+    )
+
     reset_dialog = ft.AlertDialog(
         modal=True,
         title=ft.Text(
             "密碼重設申請",
             weight=ft.FontWeight.BOLD,
+            color=TEXT_MAIN,
         ),
         content=ft.Container(
-            width=min(360, card_width),
+            width=min(380, card_width),
             content=ft.Column(
                 controls=[
                     ft.Text(
@@ -557,44 +686,35 @@ def LoginView(page: ft.Page):
                         size=13,
                         color=TEXT_SUB,
                     ),
-                    ft.Container(height=8),
-                    dialog_field("員工編號", reset_employee),
-                    dialog_field("員工姓名", reset_name),
-                    dialog_field("聯絡方式", reset_contact),
-                    dialog_field("申請原因", reset_reason),
+                    ft.Container(height=4),
+                    dialog_field("員工編號", reset_employee, ft.Icons.BADGE_OUTLINED),
+                    dialog_field("員工姓名", reset_name, ft.Icons.PERSON_OUTLINE),
+                    dialog_field("聯絡方式", reset_contact, ft.Icons.PHONE_OUTLINED),
+                    field_group("申請原因", reset_reason, ft.Icons.NOTES_OUTLINED),
+                    ft.Row(
+                        spacing=10,
+                        controls=[
+                            ft.Container(expand=True, content=reset_cancel_btn),
+                            ft.Container(expand=True, content=reset_submit_btn),
+                        ],
+                    ),
                 ],
-                spacing=10,
+                spacing=11,
                 tight=True,
+                scroll=ft.ScrollMode.AUTO,
             ),
         ),
-        actions=[
-            ft.TextButton("取消", on_click=close_reset_dialog),
-            ft.ElevatedButton(
-                content=ft.Row(
-                    controls=[
-                        ft.Icon(ft.Icons.SEND_OUTLINED, size=18, color="white"),
-                        ft.Text("送出申請", size=14, color="white", weight=ft.FontWeight.W_600),
-                    ],
-                    spacing=6,
-                    alignment=ft.MainAxisAlignment.CENTER,
-                    tight=True,
-                ),
-                bgcolor=FOCUS_BLUE,
-                color="white",
-                on_click=submit_reset_request,
-                style=ft.ButtonStyle(
-                    shape=ft.RoundedRectangleBorder(radius=10),
-                ),
-            ),
-        ],
+        actions=[],
         actions_alignment=ft.MainAxisAlignment.END,
     )
 
-    def open_reset_dialog(e):
+    def open_reset_dialog(e=None):
         reset_employee.value = employee_field.value or ""
         reset_name.value = ""
         reset_contact.value = ""
         reset_reason.value = "忘記密碼，申請管理員協助重設。"
+        reset_state["submitting"] = False
+        set_stable_button_normal(reset_submit_btn)
 
         if reset_dialog not in page.overlay:
             page.overlay.append(reset_dialog)
@@ -633,7 +753,7 @@ def LoginView(page: ft.Page):
                     alignment=ft.Alignment(-1, 0),
                 ),
                 login_button,
-                secondary_button(
+                stable_outline_button(
                     "聯絡管理員 / 忘記密碼",
                     ft.Icons.HEADSET_MIC_OUTLINED,
                     open_reset_dialog,
@@ -755,7 +875,7 @@ def LoginView(page: ft.Page):
     # =====================================================
     def show_change_password(user: dict, current_hash: str):
         new_password = input_field(
-            "請輸入新密碼",
+            "至少 6 碼，請勿使用預設密碼",
             ft.Icons.LOCK_RESET_OUTLINED,
             password=True,
         )
@@ -774,17 +894,35 @@ def LoginView(page: ft.Page):
             weight=ft.FontWeight.W_500,
         )
 
+        change_state = {"submitting": False}
+
         def set_change_error(message: str):
             change_error.value = message
             change_error.visible = True
-            safe_update(change_error)
             page.update()
 
-        def confirm_change(e):
+        def clear_change_error():
+            change_error.value = ""
+            change_error.visible = False
+
+        def back_to_login(e=None):
+            change_state["submitting"] = False
+            password_field.value = ""
+            content_holder.content = build_page_content(
+                login_card,
+                footer_visible=True,
+            )
+            set_login_loading(False)
+            page.update()
+
+        def confirm_change(e=None):
+            if change_state["submitting"]:
+                return
+
             pwd1 = (new_password.value or "").strip()
             pwd2 = (confirm_password.value or "").strip()
 
-            change_error.visible = False
+            clear_change_error()
 
             if len(pwd1) < 6:
                 set_change_error("新密碼至少需要 6 碼。")
@@ -799,6 +937,12 @@ def LoginView(page: ft.Page):
             if new_hash == current_hash:
                 set_change_error("新密碼不可與預設密碼相同。")
                 return
+
+            change_state["submitting"] = True
+            set_stable_button_loading(change_submit_btn, "更新中...")
+            change_back_btn.disabled = True
+            change_back_btn.opacity = 0.55
+            page.update()
 
             try:
                 result = change_password_first_login(
@@ -836,13 +980,40 @@ def LoginView(page: ft.Page):
                 set_change_error(f"密碼修改失敗：{ex}")
                 print("change password error:", ex)
 
+            finally:
+                change_state["submitting"] = False
+                set_stable_button_normal(change_submit_btn)
+                change_back_btn.disabled = False
+                change_back_btn.opacity = 1
+                try:
+                    page.update()
+                except Exception:
+                    pass
+
+        change_submit_btn = stable_filled_button(
+            "確認修改並登入",
+            ft.Icons.CHECK_CIRCLE_OUTLINE,
+            confirm_change,
+            bg=MUTED_BLUE,
+            height=56,
+            expand=True,
+        )
+
+        change_back_btn = stable_outline_button(
+            "返回登入",
+            ft.Icons.ARROW_BACK,
+            back_to_login,
+            height=52,
+            expand=True,
+        )
+
         change_card = ft.Container(
             width=card_width,
             bgcolor=CARD,
             border_radius=24,
             padding=ft.padding.symmetric(
                 horizontal=24,
-                vertical=26,
+                vertical=24 if is_short else 28,
             ),
             border=ft.border.all(1, "#E5EDF7"),
             shadow=ft.BoxShadow(
@@ -871,17 +1042,19 @@ def LoginView(page: ft.Page):
                         color=TEXT_SUB,
                         text_align=ft.TextAlign.CENTER,
                     ),
-                    ft.Container(height=10),
-                    new_password,
-                    confirm_password,
+                    ft.Container(height=8),
+                    field_group("新密碼", new_password, ft.Icons.LOCK_RESET_OUTLINED, required=True),
+                    field_group("再次輸入新密碼", confirm_password, ft.Icons.LOCK_OUTLINE, required=True),
                     ft.Container(
                         content=change_error,
                         alignment=ft.Alignment(-1, 0),
                     ),
-                    primary_button(
-                        "確認修改並登入",
-                        ft.Icons.CHECK_CIRCLE_OUTLINE,
-                        confirm_change,
+                    ft.Row(
+                        spacing=10,
+                        controls=[
+                            ft.Container(expand=True, content=change_back_btn),
+                            ft.Container(expand=True, content=change_submit_btn),
+                        ],
                     ),
                 ],
                 horizontal_alignment=ft.CrossAxisAlignment.CENTER,
