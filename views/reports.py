@@ -5,9 +5,12 @@
 
 from __future__ import annotations
 
+import csv
 import os
 import threading
 from datetime import datetime
+from io import StringIO
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlsplit
 from zoneinfo import ZoneInfo
@@ -69,8 +72,10 @@ def ReportsContent(page: ft.Page):
 
     export_state = {
         "filename": "",
+        "path": "",
         "url_path": "",
         "url": "",
+        "csv_content": "",
         "expires_after_days": None,
         "cleanup": {},
     }
@@ -433,7 +438,30 @@ def ReportsContent(page: ft.Page):
         except Exception as ex:
             show_msg(f"無法自動開啟下載連結：{ex}", RED)
             return
-        show_msg("目前環境不支援自動開啟，請長按下方完整網址後在瀏覽器開啟。", ORANGE)
+        show_msg("目前環境不支援自動開啟，請使用下方 CSV 內容文字框手動複製。", ORANGE)
+
+    def build_csv_text_from_report(report_data: dict[str, Any]) -> str:
+        columns = report_data.get("columns") or []
+        rows = report_data.get("rows") or []
+        if not columns:
+            return ""
+
+        buffer = StringIO()
+        writer = csv.DictWriter(buffer, fieldnames=columns, extrasaction="ignore")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({col: row.get(col, "") for col in columns})
+        return buffer.getvalue()
+
+    def read_export_csv_text(path_value: str, fallback_report_data: dict[str, Any]) -> str:
+        path_text = str(path_value or "").strip()
+        if path_text:
+            try:
+                return Path(path_text).read_text(encoding="utf-8-sig")
+            except Exception as ex:
+                print("read exported csv failed:", repr(ex))
+
+        return build_csv_text_from_report(fallback_report_data)
 
     # =====================================================
     # 3. 控制項宣告
@@ -569,21 +597,27 @@ def ReportsContent(page: ft.Page):
                 if result.ok:
                     data = result.data or {}
                     filename = str(data.get("filename") or "")
+                    path_text = str(data.get("path") or "")
                     raw_url_path = str(data.get("url_path") or data.get("asset_url_path") or "")
                     url_path = normalize_export_url_path(raw_url_path, filename)
                     url = str(data.get("url") or data.get("download_url") or "")
                     if not url:
                         url = build_absolute_url(url_path)
+
+                    csv_content = read_export_csv_text(path_text, current_report_data)
+
                     export_state.update(
                         {
                             "filename": filename,
+                            "path": path_text,
                             "url_path": url_path,
                             "url": url,
+                            "csv_content": csv_content,
                             "expires_after_days": data.get("expires_after_days"),
                             "cleanup": data.get("cleanup") or {},
                         }
                     )
-                    set_status("CSV 已匯出", "green", True)
+                    set_status("CSV 已匯出，請從下方文字框手動複製", "green", True)
                 else:
                     set_status(result.message or "CSV 匯出失敗", "red", True)
                 rebuild()
@@ -616,7 +650,7 @@ def ReportsContent(page: ft.Page):
                 "summary_text": data.get("summary_text", ""),
             }
         )
-        export_state.update({"filename": "", "url_path": "", "url": "", "expires_after_days": None, "cleanup": {}})
+        export_state.update({"filename": "", "path": "", "url_path": "", "url": "", "csv_content": "", "expires_after_days": None, "cleanup": {}})
         show_all_rows["value"] = False
         if update_now:
             rebuild()
@@ -671,7 +705,7 @@ def ReportsContent(page: ft.Page):
                 "summary_text": "請先選擇快速報表或套用篩選條件。",
             }
         )
-        export_state.update({"filename": "", "url_path": "", "url": "", "expires_after_days": None, "cleanup": {}})
+        export_state.update({"filename": "", "path": "", "url_path": "", "url": "", "csv_content": "", "expires_after_days": None, "cleanup": {}})
         set_status("", "blue", False)
         rebuild()
 
@@ -916,21 +950,21 @@ def ReportsContent(page: ft.Page):
         )
 
     def build_export_download_panel():
-        if not export_state.get("url_path"):
+        if not export_state.get("filename") and not export_state.get("csv_content"):
             return ft.Container(height=0)
 
         filename = export_state.get("filename") or "report.csv"
-        url_path = export_state.get("url_path") or ""
-        url = export_state.get("url") or url_path
         keep_days = export_state.get("expires_after_days")
         cleanup = export_state.get("cleanup") or {}
         deleted_count = cleanup.get("deleted_count") or 0
+        csv_content = export_state.get("csv_content") or ""
+        path_text = export_state.get("path") or ""
 
-        keep_text = f"此 CSV 為暫存下載檔，約保留 {keep_days} 天。" if keep_days else "此 CSV 為暫存下載檔。"
+        keep_text = f"此 CSV 為暫存檔，VM 上約保留 {keep_days} 天。" if keep_days else "此 CSV 為暫存檔。"
         cleanup_text = f"本次已清理 {deleted_count} 個舊 CSV。" if deleted_count else ""
 
-        encoded_url = url or url_path
-        markdown_link = f"[直接開啟 CSV 連結]({encoded_url})" if encoded_url else ""
+        if not csv_content:
+            csv_content = "CSV 檔案已產生，但目前無法讀取文字內容。請稍後再試，或由管理者至 VM exports 資料夾查看。"
 
         return ft.Container(
             bgcolor=GREEN_SOFT,
@@ -945,41 +979,49 @@ def ReportsContent(page: ft.Page):
                             ft.Icon(ft.Icons.CHECK_CIRCLE_OUTLINE, size=22, color=GREEN),
                             ft.Column(
                                 expand=True,
-                                spacing=3,
+                                spacing=4,
                                 controls=[
                                     ft.Text("CSV 已產生", size=16, color=GREEN, weight=ft.FontWeight.BOLD),
                                     ft.Text(filename, size=12, color=TEXT_SUB, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
-                                    ft.Text(url_path, size=12, color=TEXT_MUTED, max_lines=2, overflow=ft.TextOverflow.VISIBLE),
-                                    ft.Text(url, size=12, color=TEXT_MUTED, max_lines=3, overflow=ft.TextOverflow.VISIBLE),
                                     ft.Text(keep_text, size=12, color=TEXT_MUTED),
                                     ft.Text(cleanup_text, size=12, color=TEXT_MUTED, visible=bool(cleanup_text)),
+                                    ft.Text(f"VM 檔案位置：{path_text}", size=11, color=TEXT_MUTED, visible=bool(path_text), max_lines=2, overflow=ft.TextOverflow.VISIBLE),
                                 ],
                             ),
                         ],
                         spacing=8,
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     ),
-                    stable_button("下載 CSV", ft.Icons.DOWNLOAD_OUTLINED, lambda e: open_url(url or url_path), bg=GREEN, fg="white"),
                     ft.Container(
                         bgcolor="#FFFFFF",
                         border=ft.border.all(1, GREEN_BORDER),
                         border_radius=12,
-                        padding=10,
+                        padding=12,
                         content=ft.Column(
                             spacing=8,
                             controls=[
-                                ft.Text("如果下載按鈕沒有反應，請使用下方連結或長按網址手動複製。", size=12, color=TEXT_SUB),
-                                ft.Markdown(markdown_link) if markdown_link else ft.Container(height=0),
+                                ft.Text(
+                                    "下載路徑之後會改走 Nginx / port 80。暫時請直接從下方文字框手動複製 CSV 內容。",
+                                    size=12,
+                                    color=TEXT_SUB,
+                                ),
+                                ft.Text(
+                                    "操作方式：點進文字框 → 全選 → 複製 → 貼到記事本或 Excel；另存時副檔名使用 .csv。",
+                                    size=12,
+                                    color=TEXT_SUB,
+                                ),
                                 ft.TextField(
-                                    value=url or url_path,
+                                    value=csv_content,
                                     read_only=True,
                                     multiline=True,
-                                    min_lines=2,
-                                    max_lines=3,
+                                    min_lines=8,
+                                    max_lines=14,
                                     border_radius=10,
                                     border_color=GREEN_BORDER,
+                                    focused_border_color=GREEN,
                                     text_size=12,
                                     bgcolor="#FFFFFF",
+                                    content_padding=ft.padding.symmetric(horizontal=10, vertical=10),
                                 ),
                             ],
                         ),
