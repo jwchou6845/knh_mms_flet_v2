@@ -315,6 +315,7 @@ def ReportsContent(page: ft.Page):
             filled=True,
             text_size=14,
             height=54,
+            width=float("inf"),
             content_padding=ft.padding.symmetric(horizontal=14, vertical=12),
         )
 
@@ -331,8 +332,9 @@ def ReportsContent(page: ft.Page):
             bgcolor=INPUT_BG,
             filled=True,
             height=54,
+            width=float("inf"),
             text_size=14,
-            content_padding=ft.padding.symmetric(horizontal=14, vertical=12),
+            content_padding=ft.padding.symmetric(horizontal=12, vertical=12),
         )
 
     def set_status(message: str, theme: str = "blue", visible: bool = True):
@@ -859,7 +861,45 @@ def ReportsContent(page: ft.Page):
             )
         return ft.Container(height=0)
 
+    def compact_field(label: str, control: ft.Control, icon_name=None, required: bool = False):
+        """
+        報表中心手機版欄位容器。
+        目的：避免欄位全部直排且控制項只佔左側，造成右側大面積空白。
+        """
+        title_controls = []
+        if icon_name:
+            title_controls.append(ft.Icon(icon_name, size=17, color=TEXT_SUB))
+        title_controls.append(
+            ft.Text(
+                f"{label}{' *' if required else ''}",
+                size=14,
+                color=TEXT_MAIN,
+                weight=ft.FontWeight.BOLD,
+                max_lines=1,
+                overflow=ft.TextOverflow.ELLIPSIS,
+            )
+        )
+
+        return ft.Container(
+            content=ft.Column(
+                spacing=7,
+                controls=[
+                    ft.Row(
+                        spacing=7,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=title_controls,
+                    ),
+                    ft.Container(width=float("inf"), content=control),
+                ],
+            )
+        )
+
     def build_advanced_filter_area():
+        """
+        全條件篩選區。
+        手機版採 2 欄緊湊排列，避免欄位全部直排且右側留白；
+        桌機版自然延伸為 3 欄。欄位標題仍在外側，維持現場可讀性。
+        """
         return card_box(
             content=ft.Column(
                 spacing=15,
@@ -870,17 +910,56 @@ def ReportsContent(page: ft.Page):
                         columns=12,
                         spacing=10,
                         run_spacing=10,
-                        controls=[data_type_button("打料紀錄"), data_type_button("入庫紀錄"), data_type_button("保養紀錄"), data_type_button("交接紀錄")],
+                        controls=[
+                            data_type_button("打料紀錄"),
+                            data_type_button("入庫紀錄"),
+                            data_type_button("保養紀錄"),
+                            data_type_button("交接紀錄"),
+                        ],
                     ),
-                    labeled_textfield("日期起", date_start, ft.Icons.CALENDAR_MONTH_OUTLINED, required=True),
-                    labeled_textfield("日期迄", date_end, ft.Icons.EVENT_AVAILABLE_OUTLINED, required=True),
-                    labeled_textfield("類別", category_dd, ft.Icons.CATEGORY_OUTLINED),
-                    labeled_textfield("原料種類", material_dd, ft.Icons.SCIENCE_OUTLINED),
-                    labeled_textfield("供應商", supplier_dd, ft.Icons.DOMAIN_OUTLINED),
-                    labeled_textfield("機台 / 塔別", machine_dd, ft.Icons.PRECISION_MANUFACTURING_OUTLINED),
-                    labeled_textfield("人員", user_dd, ft.Icons.PERSON_OUTLINE),
-                    outline_button("清除條件", ft.Icons.REFRESH_OUTLINED, clear_conditions, color="#475569"),
-                    stable_button("產生查詢結果", ft.Icons.FILTER_ALT_OUTLINED, apply_advanced_conditions, bg=BLUE_BTN, fg="white"),
+                    ft.Container(
+                        bgcolor="#FFFFFF",
+                        border=ft.border.all(1, "#E5EAF2"),
+                        border_radius=16,
+                        padding=ft.padding.symmetric(horizontal=12, vertical=14),
+                        content=ft.Column(
+                            spacing=12,
+                            controls=[
+                                ft.Row(
+                                    spacing=8,
+                                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                    controls=[
+                                        ft.Icon(ft.Icons.FILTER_ALT_OUTLINED, size=20, color=TEXT_SUB),
+                                        ft.Text("查詢條件", size=15, color=TEXT_MAIN, weight=ft.FontWeight.BOLD),
+                                        ft.Text("手機版採雙欄排列", size=12, color=TEXT_MUTED),
+                                    ],
+                                ),
+                                ft.ResponsiveRow(
+                                    columns=12,
+                                    spacing=12,
+                                    run_spacing=14,
+                                    controls=[
+                                        ft.Container(col={"xs": 6, "md": 4}, content=compact_field("日期起", date_start, ft.Icons.CALENDAR_MONTH_OUTLINED, required=True)),
+                                        ft.Container(col={"xs": 6, "md": 4}, content=compact_field("日期迄", date_end, ft.Icons.EVENT_AVAILABLE_OUTLINED, required=True)),
+                                        ft.Container(col={"xs": 6, "md": 4}, content=compact_field("類別", category_dd, ft.Icons.CATEGORY_OUTLINED)),
+                                        ft.Container(col={"xs": 6, "md": 4}, content=compact_field("原料種類", material_dd, ft.Icons.SCIENCE_OUTLINED)),
+                                        ft.Container(col={"xs": 6, "md": 4}, content=compact_field("供應商", supplier_dd, ft.Icons.DOMAIN_OUTLINED)),
+                                        ft.Container(col={"xs": 6, "md": 4}, content=compact_field("機台 / 塔別", machine_dd, ft.Icons.PRECISION_MANUFACTURING_OUTLINED)),
+                                        ft.Container(col={"xs": 6, "md": 4}, content=compact_field("人員", user_dd, ft.Icons.PERSON_OUTLINE)),
+                                    ],
+                                ),
+                            ],
+                        ),
+                    ),
+                    ft.ResponsiveRow(
+                        columns=12,
+                        spacing=12,
+                        run_spacing=12,
+                        controls=[
+                            ft.Container(col={"xs": 6, "md": 6}, content=outline_button("清除條件", ft.Icons.REFRESH_OUTLINED, clear_conditions, color="#475569")),
+                            ft.Container(col={"xs": 6, "md": 6}, content=stable_button("產生查詢結果", ft.Icons.FILTER_ALT_OUTLINED, apply_advanced_conditions, bg=BLUE_BTN, fg="white")),
+                        ],
+                    ),
                 ],
             ),
         )
