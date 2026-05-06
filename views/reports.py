@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
@@ -117,6 +118,9 @@ def ReportsContent(page: ft.Page):
             page.session_data.get("_reports_view_token") is view_token
             and (not route or route == "/reports" or "reports" in route)
         )
+
+    def js_string(value: str) -> str:
+        return json.dumps(str(value or ""), ensure_ascii=False)
 
     def make_download_url(path_or_filename: str) -> str:
         """
@@ -1030,25 +1034,92 @@ def ReportsContent(page: ft.Page):
         rebuild()
 
     def open_export_file(e=None):
-        url = export_state.get("url") or make_download_url(export_state.get("url_path") or export_state.get("filename") or "")
-        if not url:
+        """
+        手機 Web 優先用瀏覽器端 JS 直接切到 CSV URL。
+        page.launch_url() 在部分 iPhone WebView 會沒有反應，因此不再作為主要流程。
+        """
+        raw_url = export_state.get("url_path") or export_state.get("url") or make_download_url(export_state.get("filename") or "")
+        if not raw_url:
             show_msg("尚未產生可下載的 CSV。", ORANGE)
             return
+
+        filename = export_state.get("filename") or "report.csv"
+        js = f"""
+(function() {{
+  const raw = {js_string(raw_url)};
+  const filename = {js_string(filename)};
+  const url = raw.startsWith('http://') || raw.startsWith('https://')
+    ? raw
+    : new URL(raw, window.location.href).href;
+
+  // 先嘗試以 a.download 觸發下載；若瀏覽器不接受，直接導向 CSV URL。
+  try {{
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.target = '_self';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => a.remove(), 500);
+  }} catch (err) {{
+    window.location.assign(url);
+  }}
+}})();
+"""
         try:
-            page.launch_url(url)
+            page.eval_js(js)
+            show_msg("已送出 CSV 下載請求；若未自動下載，請使用複製連結。", GREEN)
         except Exception as ex:
-            show_msg(f"無法開啟下載連結：{ex}", RED)
+            # eval_js 若不可用，最後才嘗試 launch_url。
+            try:
+                page.launch_url(make_download_url(raw_url))
+            except Exception:
+                show_msg(f"無法開啟下載連結：{ex}", RED)
 
     def copy_export_link(e=None):
-        url = export_state.get("url") or make_download_url(export_state.get("url_path") or export_state.get("filename") or "")
-        if not url:
+        """
+        Flet 0.84 的 Page 在目前環境沒有 set_clipboard。
+        改用瀏覽器端 navigator.clipboard / execCommand；若失敗則跳出 prompt 讓使用者手動複製。
+        """
+        raw_url = export_state.get("url_path") or export_state.get("url") or make_download_url(export_state.get("filename") or "")
+        if not raw_url:
             show_msg("尚未產生可複製的 CSV 連結。", ORANGE)
             return
+
+        js = f"""
+(async function() {{
+  const raw = {js_string(raw_url)};
+  const url = raw.startsWith('http://') || raw.startsWith('https://')
+    ? raw
+    : new URL(raw, window.location.href).href;
+
+  try {{
+    if (navigator.clipboard && navigator.clipboard.writeText) {{
+      await navigator.clipboard.writeText(url);
+      return;
+    }}
+  }} catch (err) {{}}
+
+  try {{
+    const textarea = document.createElement('textarea');
+    textarea.value = url;
+    textarea.setAttribute('readonly', '');
+    textarea.style.position = 'fixed';
+    textarea.style.left = '-9999px';
+    document.body.appendChild(textarea);
+    textarea.select();
+    document.execCommand('copy');
+    document.body.removeChild(textarea);
+  }} catch (err) {{
+    window.prompt('請複製 CSV 下載連結', url);
+  }}
+}})();
+"""
         try:
-            page.set_clipboard(url)
-            show_msg("CSV 下載連結已複製。若手機沒有自動開啟，請貼到瀏覽器網址列。", GREEN)
+            page.eval_js(js)
+            show_msg("已嘗試複製 CSV 連結；若手機未允許剪貼簿，請長按畫面上的連結手動複製。", GREEN)
         except Exception as ex:
-            show_msg(f"複製連結失敗：{ex}", RED)
+            show_msg(f"目前瀏覽器不支援自動複製：{ex}", RED)
 
     def build_export_download_panel():
         if not export_state.get("url"):
