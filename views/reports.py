@@ -79,6 +79,13 @@ def ReportsContent(page: ft.Page):
         "summary_text": "請先選擇快速報表，或切換到全條件篩選後套用條件。",
     }
 
+    export_state = {
+        "path": "",
+        "filename": "",
+        "url": "",
+        "message": "",
+    }
+
     default_filter_options = {
         "categories": ["全部", "新料", "母粒", "回用料", "清潔", "耗材更換", "異常", "待辦"],
         "material_families": ["全部", "PET", "PET308A", "PA6", "RPET", "母粒"],
@@ -424,6 +431,7 @@ def ReportsContent(page: ft.Page):
                         "summary_text": data.get("summary_text", ""),
                     }
                 )
+                export_state.update({"path": "", "filename": "", "url": "", "message": ""})
                 show_all_rows["value"] = False
                 step_state["value"] = 2
                 status_state["visible"] = True
@@ -569,7 +577,7 @@ def ReportsContent(page: ft.Page):
         if current not in normalized:
             current = "全部"
             filter_values[value_key] = current
-        return ft.Dropdown(
+        control = ft.Dropdown(
             value=current,
             options=[ft.dropdown.Option(o) for o in normalized],
             border_radius=12,
@@ -580,8 +588,11 @@ def ReportsContent(page: ft.Page):
             height=54,
             text_size=14,
             content_padding=ft.padding.symmetric(horizontal=14, vertical=12),
-            on_change=lambda e, key=value_key: on_dropdown_change(key, e.control.value),
         )
+        # Flet 0.84 在目前 VM 環境中 Dropdown 建構子不接受 on_change 參數，
+        # 必須先建立控制項再指定事件，避免進頁時直接報錯。
+        control.on_change = lambda e, key=value_key: on_dropdown_change(key, e.control.value)
+        return control
 
     def field_label(label: str, icon_name=None, required: bool = False):
         controls = []
@@ -822,6 +833,7 @@ def ReportsContent(page: ft.Page):
                 "summary_text": "請先選擇快速報表，或切換到全條件篩選後套用條件。",
             }
         )
+        export_state.update({"path": "", "filename": "", "url": "", "message": ""})
         show_all_rows["value"] = False
         step_state["value"] = 1
         status_state["visible"] = False
@@ -853,8 +865,21 @@ def ReportsContent(page: ft.Page):
                 loading_state["value"] = False
 
                 if result.ok:
+                    data = result.data or {}
+                    filename = str(data.get("filename") or "").strip()
+                    path = str(data.get("path") or "").strip()
+                    # ft.run(main, assets_dir=".") 時，專案根目錄下的 exports/ 可用相對 URL 存取。
+                    download_url = f"/exports/{filename}" if filename else ""
+                    export_state.update(
+                        {
+                            "path": path,
+                            "filename": filename,
+                            "url": download_url,
+                            "message": result.message or "CSV 已匯出。",
+                        }
+                    )
                     status_state["visible"] = True
-                    status_state["message"] = "CSV 已匯出"
+                    status_state["message"] = "CSV 已匯出，可點擊下載" if download_url else "CSV 已匯出"
                     status_state["theme"] = "green"
                     rebuild()
                     show_msg(result.message, GREEN)
@@ -963,6 +988,55 @@ def ReportsContent(page: ft.Page):
         show_all_rows["value"] = not show_all_rows["value"]
         rebuild()
 
+    def open_export_file(e=None):
+        url = export_state.get("url") or ""
+        if not url:
+            show_msg("尚未產生可下載的 CSV。", ORANGE)
+            return
+        try:
+            page.launch_url(url)
+        except Exception as ex:
+            show_msg(f"無法開啟下載連結：{ex}", RED)
+
+    def build_export_download_panel():
+        if not export_state.get("url"):
+            return ft.Container(height=0)
+
+        filename = export_state.get("filename") or "report.csv"
+        return ft.Container(
+            bgcolor=GREEN_SOFT,
+            border=ft.border.all(1, GREEN_BORDER),
+            border_radius=14,
+            padding=ft.padding.symmetric(horizontal=12, vertical=12),
+            content=ft.Column(
+                spacing=10,
+                controls=[
+                    ft.Row(
+                        controls=[
+                            ft.Icon(ft.Icons.CHECK_CIRCLE_OUTLINE, size=19, color=GREEN),
+                            ft.Column(
+                                expand=True,
+                                spacing=2,
+                                controls=[
+                                    ft.Text("CSV 已產生", size=14, color=GREEN, weight=ft.FontWeight.BOLD),
+                                    ft.Text(filename, size=12, color=TEXT_SUB, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
+                                ],
+                            ),
+                        ],
+                        spacing=8,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    stable_button(
+                        "下載 CSV",
+                        ft.Icons.DOWNLOAD_OUTLINED,
+                        open_export_file,
+                        bg=GREEN,
+                        fg="white",
+                    ),
+                ],
+            ),
+        )
+
     def build_preview_card():
         title = current_report_data.get("title") or "結果預覽"
         rows = current_report_data.get("rows") or []
@@ -1024,6 +1098,7 @@ def ReportsContent(page: ft.Page):
                             ft.Container(col={"xs": 12, "md": 6}, content=outline_button("清除結果", ft.Icons.REFRESH_OUTLINED, clear_conditions, color="#475569")),
                         ],
                     ),
+                    build_export_download_panel(),
                 ],
             ),
         )
