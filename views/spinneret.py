@@ -1,4 +1,8 @@
 # views/spinneret.py
+# KNH MMS - 噴頭組件狀態
+# Flet 0.84 + Supabase
+# 本版重點：非阻塞背景載入、離頁保護、集中 page.update()、手機 Web 穩定按鈕。
+
 import flet as ft
 import threading
 import time
@@ -8,310 +12,564 @@ from services.spinneret_service import (
     update_spinneret_status,
 )
 
+
 def SpinneretContent(page: ft.Page):
-    # ── 1. 同步抓取資料：Supabase ──
-    print("====== [系統提示] 開始同步讀取 Supabase (噴頭組件狀態) ======")
+    # =====================================================
+    # 0. 狀態資料
+    # =====================================================
+    records = []
+    status_options = []
+    spec_options = []
 
-    load_result = load_spinneret_page_data()
-    page_data = load_result.data or {}
+    data_loaded = {"done": False}
+    loading_state = {"value": True}
+    saving_ids = set()
 
-    records = page_data.get("items", [])
-    kpi_data = page_data.get("kpi", {})
-    status_options = page_data.get("status_options", [])
-    spec_options = page_data.get("spec_options", [])
+    if not hasattr(page, "session_data") or not isinstance(page.session_data, dict):
+        page.session_data = {}
 
-    if load_result.ok:
-        print(f"====== [系統提示] 成功抓取 {len(records)} 筆資料 ======")
-    else:
-        print(f"讀取噴頭狀態失敗: {load_result.message}")
+    view_token = object()
+    page.session_data["_spinneret_view_token"] = view_token
 
-    # ── 2. 狀態列 (🌟 核心修復：固定元件，只改屬性，杜絕 736 報錯) ──
-    status_icon = ft.Icon(ft.Icons.INFO_OUTLINE, color="#64748B", size=16)
-    status_text = ft.Text("", color="#64748B", size=13, weight=ft.FontWeight.BOLD)
+    def is_view_active(token=None) -> bool:
+        if token is not None and page.session_data.get("_spinneret_view_token") is not token:
+            return False
 
-    status_bar = ft.Container(
-        content=ft.Row([status_icon, status_text]),
-        padding=ft.padding.symmetric(horizontal=16, vertical=12),
-        border_radius=8,
-        visible=False,
-        width=float("inf")
-    )
+        current_route = getattr(page, "route", None)
+        if current_route and current_route != "/spinneret":
+            return False
 
-    def set_status(msg, is_error=False, is_loading=False, theme="blue"):
-        status_bar.visible = True
-        bg_color, border_color, text_color, icon_name = "#F8FAFC", "#E2E8F0", "#64748B", ft.Icons.INFO_OUTLINE
+        return True
 
-        if is_error:
-            bg_color, border_color, text_color, icon_name = "#FEF2F2", "#FECACA", "#DC2626", ft.Icons.ERROR_OUTLINE
-        elif "成功" in msg:
-            icon_name = ft.Icons.CHECK_CIRCLE_OUTLINE
-            bg_color, border_color, text_color = ("#F0FDF4", "#BBF7D0", "#16A34A") if theme == "green" else ("#E5F0FF", "#B0D0FF", "#2563EB")
-        elif is_loading:
-            icon_name = ft.Icons.SYNC
-            bg_color, border_color, text_color = ("#F0FDF4", "#BBF7D0", "#16A34A") if theme == "green" else ("#E5F0FF", "#B0D0FF", "#2563EB")
+    def page_update():
+        try:
+            page.update()
+        except Exception as ex:
+            print("spinneret page update skipped:", repr(ex))
 
-        status_bar.bgcolor = bg_color
-        status_bar.border = ft.border.all(1, border_color)
-        
-        # 🌟 只更改現有元件的屬性
-        status_icon.name = icon_name
-        status_icon.color = text_color
-        status_text.value = msg
-        status_text.color = text_color
-        
-        status_bar.update()
+    def get_session_value(key: str, default=None):
+        try:
+            if hasattr(page, "session_data") and isinstance(page.session_data, dict):
+                return page.session_data.get(key, default)
+        except Exception:
+            pass
+        return default
 
-        if "成功" in msg:
-            def auto_hide():
-                time.sleep(3)
-                status_bar.visible = False
-                try: status_bar.update()
-                except: pass
-            threading.Thread(target=auto_hide, daemon=True).start()
+    # =====================================================
+    # 1. 色彩設定
+    # =====================================================
+    TEXT_MAIN = "#111827"
+    TEXT_SUB = "#64748B"
+    BORDER = "#E2E8F0"
+    INPUT_BG = "#F8FAFC"
 
-    # ── 3. 頂部 KPI 統計數據 (🌟 新增：即時連動引擎) ──
-    lbl_kpi_total = ft.Text("0", size=20, weight=ft.FontWeight.BOLD, color="#3B82F6")
-    lbl_kpi_run = ft.Text("0", size=20, weight=ft.FontWeight.BOLD, color="#16A34A")
-    lbl_kpi_clean = ft.Text("0", size=20, weight=ft.FontWeight.BOLD, color="#EA580C")
-    lbl_kpi_standby = ft.Text("0", size=20, weight=ft.FontWeight.BOLD, color="#6366F1")
+    BLUE = "#2F80ED"
+    BLUE_SOFT = "#E5F0FF"
+    BLUE_BORDER = "#B0D0FF"
+    BLUE_BTN = "#4F7FB8"
 
-    def update_kpi_numbers():
-        kpi_data["total"] = len(records)
-        kpi_data["running"] = sum(1 for r in records if "生產" in r.get("current_status", ""))
-        kpi_data["cleaning"] = sum(
-            1 for r in records
-            if any(x in r.get("current_status", "") for x in ["燒解", "清潔"])
-        )
-        kpi_data["standby"] = sum(
-            1 for r in records
-            if r.get("current_status", "") in ["預熱爐備用中", "組裝中", "組裝完成備用中", "尚未組裝", "待下機"]
-        )
+    GREEN = "#10B981"
+    GREEN_SOFT = "#ECFDF5"
+    GREEN_BORDER = "#A7F3D0"
 
-        lbl_kpi_total.value = str(kpi_data.get("total", 0))
-        lbl_kpi_run.value = str(kpi_data.get("running", 0))
-        lbl_kpi_clean.value = str(kpi_data.get("cleaning", 0))
-        lbl_kpi_standby.value = str(kpi_data.get("standby", 0))
+    ORANGE = "#F97316"
+    ORANGE_SOFT = "#FFF7ED"
+    ORANGE_BORDER = "#FDBA74"
 
-    update_kpi_numbers() # 頁面載入時初始化算一次
+    PURPLE = "#8B5CF6"
+    PURPLE_SOFT = "#F3E8FF"
+    PURPLE_BORDER = "#D8B4FE"
 
-    def build_kpi_card(lbl_control, title, subtitle, bg_color):
-        return ft.Container(
-            padding=15, bgcolor="#FFFFFF", border_radius=12, border=ft.border.all(1, "#E2E8F0"),
-            shadow=ft.BoxShadow(spread_radius=0, blur_radius=3, color="#05000000", offset=ft.Offset(0, 1)),
-            content=ft.Row([
-                ft.Container(
-                    width=45, height=45, bgcolor=bg_color, border_radius=8,
-                    alignment=ft.Alignment(0, 0),
-                    content=lbl_control
-                ),
-                ft.Column([
-                    ft.Text(title, size=15, weight=ft.FontWeight.BOLD, color="#111827"),
-                    ft.Text(subtitle, size=11, color="#64748B")
-                ], spacing=2)
-            ], spacing=15)
+    RED = "#DC2626"
+    RED_SOFT = "#FEF2F2"
+    RED_BORDER = "#FECACA"
+
+    DISABLED = "#94A3B8"
+
+    # =====================================================
+    # 2. 共用 UI 元件
+    # =====================================================
+    def button_content(label: str, icon_name, color: str, loading: bool = False) -> ft.Row:
+        controls = []
+
+        if loading:
+            controls.append(ft.ProgressRing(width=18, height=18, stroke_width=2, color=color))
+        else:
+            controls.append(ft.Icon(icon_name, color=color, size=18))
+
+        controls.append(
+            ft.Text(
+                label,
+                color=color,
+                weight=ft.FontWeight.BOLD,
+                size=14,
+                max_lines=1,
+                overflow=ft.TextOverflow.ELLIPSIS,
+            )
         )
 
-    kpi_row = ft.ResponsiveRow([
-        ft.Column(col={"sm": 6, "xl": 3}, controls=[build_kpi_card(lbl_kpi_total, "SET 總數", "目前系統紀錄", "#EFF6FF")]),
-        ft.Column(col={"sm": 6, "xl": 3}, controls=[build_kpi_card(lbl_kpi_run, "生產中", "上機運作狀態", "#F0FDF4")]),
-        ft.Column(col={"sm": 6, "xl": 3}, controls=[build_kpi_card(lbl_kpi_clean, "清潔 / 燒解", "保養維護階段", "#FFF7ED")]),
-        ft.Column(col={"sm": 6, "xl": 3}, controls=[build_kpi_card(lbl_kpi_standby, "備用 / 待機", "等待上線或下機", "#EEF2FF")]),
-    ], spacing=15, run_spacing=15)
-
-    # ── 4. UI 元件與狀態配色 ──
-    def ui_dropdown(label, options):
-        return ft.Dropdown(
-            label=label,
-            options=[ft.dropdown.Option(o) for o in options],
-            bgcolor="#F1F5F9", border_color="#E2E8F0", border_radius=12,
-            text_size=14, content_padding=ft.padding.symmetric(horizontal=16, vertical=14),
-            expand=True
+        return ft.Row(
+            controls=controls,
+            alignment=ft.MainAxisAlignment.CENTER,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            spacing=8,
+            tight=True,
         )
 
-    def ui_button(label, icon_name, bg_color, text_color, on_click_func):
-        # VM / 手機 Web 穩定版：
-        # 這裡不要用 ElevatedButton(content=Row)，避免手機 Web 偶發按鈕文字 / 圖示不渲染。
-        # 改用 Container + Row，點擊事件直接掛在 Container 上。
-        return ft.Container(
-            height=46,
+    def stable_button(
+        label: str,
+        icon_name,
+        bg_color: str,
+        text_color: str,
+        on_click_func,
+        height: int = 46,
+        border_color: str | None = None,
+    ) -> ft.Container:
+        btn = ft.Container(
+            height=height,
             expand=True,
             border_radius=12,
             bgcolor=bg_color,
-            border=ft.border.all(1, bg_color),
+            border=ft.border.all(1, border_color or bg_color),
             alignment=ft.Alignment(0, 0),
-            on_click=on_click_func,
+            padding=ft.padding.symmetric(horizontal=12),
+            ink=True,
+            content=button_content(label, icon_name, text_color),
+        )
+        btn.disabled = False
+        btn.data = {
+            "label": label,
+            "icon": icon_name,
+            "bg": bg_color,
+            "text_color": text_color,
+            "border": border_color or bg_color,
+        }
+
+        def handle_click(e):
+            if getattr(btn, "disabled", False):
+                return
+            if callable(on_click_func):
+                on_click_func(e)
+
+        btn.on_click = handle_click
+        return btn
+
+    def set_button_loading(button: ft.Container, label: str = "寫入中..."):
+        data = button.data if isinstance(getattr(button, "data", None), dict) else {}
+        button.disabled = True
+        button.bgcolor = DISABLED
+        button.border = ft.border.all(1, DISABLED)
+        button.content = button_content(label, data.get("icon", ft.Icons.SYNC), "#FFFFFF", loading=True)
+
+    def set_button_normal(button: ft.Container):
+        data = button.data if isinstance(getattr(button, "data", None), dict) else {}
+        button.disabled = False
+        button.bgcolor = data.get("bg", BLUE_SOFT)
+        button.border = ft.border.all(1, data.get("border", data.get("bg", BLUE_BORDER)))
+        button.content = button_content(
+            data.get("label", "確認"),
+            data.get("icon", ft.Icons.CHECK),
+            data.get("text_color", BLUE),
+            loading=False,
+        )
+
+    def field_label(label: str, required: bool = False) -> ft.Text:
+        return ft.Text(
+            label + (" *" if required else ""),
+            size=13,
+            color=TEXT_MAIN,
+            weight=ft.FontWeight.W_600,
+        )
+
+    def dropdown_field(label: str, options: list[str], value: str | None = None) -> ft.Dropdown:
+        safe_options = list(options or [])
+        if not safe_options:
+            safe_options = ["無可用選項"]
+
+        dd = ft.Dropdown(
+            label=label,
+            value=value if value in safe_options else safe_options[0],
+            options=[ft.dropdown.Option(o) for o in safe_options],
+            bgcolor=INPUT_BG,
+            border_color=BORDER,
+            focused_border_color=BLUE,
+            border_radius=12,
+            text_size=14,
+            content_padding=ft.padding.symmetric(horizontal=14, vertical=12),
+            expand=True,
+            disabled=(safe_options == ["無可用選項"]),
+        )
+        return dd
+
+    def get_status_style(status_val: str):
+        status_text = str(status_val or "")
+        if "生產" in status_text:
+            return GREEN_SOFT, GREEN
+        if any(keyword in status_text for keyword in ["燒解", "清潔", "組裝"]):
+            return ORANGE_SOFT, ORANGE
+        return BLUE_SOFT, BLUE
+
+    def get_fixed_border_color(comp_name: str):
+        name_upper = str(comp_name or "").upper()
+        if "SET#1" in name_upper:
+            return "#93C5FD"
+        if "SET#2" in name_upper:
+            return "#86EFAC"
+        if "SET#3" in name_upper:
+            return "#FDBA74"
+        if "SET#4" in name_upper:
+            return "#D8B4FE"
+        return BORDER
+
+    # =====================================================
+    # 3. 頁首與狀態膠囊
+    # =====================================================
+    status_badge = ft.Container(
+        height=36,
+        padding=ft.padding.symmetric(horizontal=16),
+        border_radius=18,
+        bgcolor=BLUE_SOFT,
+        border=ft.border.all(1, BLUE_BORDER),
+        visible=True,
+        content=ft.Row(
+            controls=[
+                ft.ProgressRing(width=15, height=15, stroke_width=2, color=BLUE),
+                ft.Text("資料同步中", size=13, color=BLUE, weight=ft.FontWeight.W_600),
+            ],
+            spacing=8,
+            alignment=ft.MainAxisAlignment.CENTER,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        ),
+    )
+
+    status_hide_guard = {"token": object()}
+
+    def cancel_status_auto_hide():
+        status_hide_guard["token"] = object()
+
+    def schedule_status_auto_hide(seconds: float = 3.0):
+        current_token = object()
+        status_hide_guard["token"] = current_token
+        local_view_token = view_token
+
+        def worker():
+            time.sleep(seconds)
+
+            if status_hide_guard.get("token") is not current_token:
+                return
+
+            if not is_view_active(local_view_token):
+                return
+
+            status_badge.visible = False
+            page_update()
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_status(text: str, theme: str = "blue", loading: bool = False):
+        cancel_status_auto_hide()
+        status_badge.visible = True
+        if theme == "green":
+            bg = GREEN_SOFT
+            border = GREEN_BORDER
+            fg = GREEN
+            icon = ft.Icons.CHECK_CIRCLE_OUTLINE
+        elif theme == "red":
+            bg = RED_SOFT
+            border = RED_BORDER
+            fg = RED
+            icon = ft.Icons.ERROR_OUTLINE
+        elif theme == "orange":
+            bg = ORANGE_SOFT
+            border = ORANGE_BORDER
+            fg = ORANGE
+            icon = ft.Icons.INFO_OUTLINE
+        else:
+            bg = BLUE_SOFT
+            border = BLUE_BORDER
+            fg = BLUE
+            icon = ft.Icons.SYNC
+
+        status_badge.bgcolor = bg
+        status_badge.border = ft.border.all(1, border)
+
+        lead = (
+            ft.ProgressRing(width=15, height=15, stroke_width=2, color=fg)
+            if loading
+            else ft.Icon(icon, size=17, color=fg)
+        )
+
+        status_badge.content = ft.Row(
+            controls=[lead, ft.Text(text, size=13, color=fg, weight=ft.FontWeight.W_600)],
+            spacing=8,
+            alignment=ft.MainAxisAlignment.CENTER,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+
+    def build_header() -> ft.Control:
+        page_w = page.width or 430
+        is_mobile = page_w <= 520
+
+        title_column = ft.Column(
+            controls=[
+                ft.Text(
+                    "噴頭組件狀態",
+                    size=25 if is_mobile else 26,
+                    weight=ft.FontWeight.BOLD,
+                    color=TEXT_MAIN,
+                ),
+                ft.Text(
+                    "即時掌握各 SET 生產、待機、清潔與分配板規格。",
+                    size=13 if is_mobile else 14,
+                    color=TEXT_SUB,
+                    max_lines=2,
+                    overflow=ft.TextOverflow.ELLIPSIS,
+                ),
+                ft.Container(
+                    padding=ft.padding.only(top=6),
+                    alignment=ft.Alignment(-1, 0),
+                    content=status_badge,
+                ),
+            ],
+            spacing=4,
+            expand=True,
+        )
+
+        return ft.Row(
+            controls=[
+                ft.Container(
+                    width=54,
+                    height=54,
+                    border_radius=16,
+                    bgcolor="#EFF6FF",
+                    alignment=ft.Alignment(0, 0),
+                    content=ft.Icon(ft.Icons.MEMORY, size=30, color="#334155"),
+                ),
+                title_column,
+            ],
+            spacing=14,
+            vertical_alignment=ft.CrossAxisAlignment.START,
+            expand=True,
+        )
+
+    # =====================================================
+    # 4. KPI
+    # =====================================================
+    lbl_kpi_total = ft.Text("0", size=20, weight=ft.FontWeight.BOLD, color=BLUE)
+    lbl_kpi_run = ft.Text("0", size=20, weight=ft.FontWeight.BOLD, color=GREEN)
+    lbl_kpi_clean = ft.Text("0", size=20, weight=ft.FontWeight.BOLD, color=ORANGE)
+    lbl_kpi_standby = ft.Text("0", size=20, weight=ft.FontWeight.BOLD, color=PURPLE)
+
+    def _apply_kpi_numbers():
+        total = len(records)
+        running = sum(1 for r in records if "生產" in str(r.get("current_status", "")))
+        cleaning = sum(
+            1 for r in records
+            if any(x in str(r.get("current_status", "")) for x in ["燒解", "清潔"])
+        )
+        standby = sum(
+            1 for r in records
+            if str(r.get("current_status", "")) in [
+                "預熱爐備用中",
+                "組裝中",
+                "組裝完成備用中",
+                "尚未組裝",
+                "待下機",
+            ]
+        )
+
+        lbl_kpi_total.value = str(total)
+        lbl_kpi_run.value = str(running)
+        lbl_kpi_clean.value = str(cleaning)
+        lbl_kpi_standby.value = str(standby)
+
+    def build_kpi_card(lbl_control, title: str, subtitle: str, bg_color: str, icon_name, icon_color: str):
+        return ft.Container(
+            bgcolor="#FFFFFF",
+            border_radius=16,
+            border=ft.border.all(1, BORDER),
+            padding=14,
             content=ft.Row(
                 controls=[
-                    ft.Icon(icon_name, color=text_color, size=18),
-                    ft.Text(
-                        label,
-                        color=text_color,
-                        weight=ft.FontWeight.BOLD,
-                        size=14,
+                    ft.Container(
+                        width=50,
+                        height=50,
+                        bgcolor=bg_color,
+                        border_radius=14,
+                        alignment=ft.Alignment(0, 0),
+                        content=ft.Icon(icon_name, color=icon_color, size=25),
+                    ),
+                    ft.Column(
+                        controls=[
+                            ft.Text(title, size=13, color=TEXT_SUB),
+                            lbl_control,
+                            ft.Text(subtitle, size=11, color="#94A3B8"),
+                        ],
+                        spacing=0,
+                        expand=True,
                     ),
                 ],
-                alignment=ft.MainAxisAlignment.CENTER,
+                spacing=12,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                spacing=8,
-                tight=True,
             ),
         )
 
-    # 選項清單由 services.spinneret_service 統一提供，對應 Airtable single select 設定。
+    kpi_row = ft.ResponsiveRow(
+        controls=[
+            ft.Container(col={"xs": 6, "sm": 6, "xl": 3}, content=build_kpi_card(lbl_kpi_total, "SET 總數", "目前系統紀錄", BLUE_SOFT, ft.Icons.APPS, BLUE)),
+            ft.Container(col={"xs": 6, "sm": 6, "xl": 3}, content=build_kpi_card(lbl_kpi_run, "生產中", "上機運作狀態", GREEN_SOFT, ft.Icons.PLAY_CIRCLE_OUTLINE, GREEN)),
+            ft.Container(col={"xs": 6, "sm": 6, "xl": 3}, content=build_kpi_card(lbl_kpi_clean, "清潔 / 燒解", "保養維護階段", ORANGE_SOFT, ft.Icons.LOCAL_FIRE_DEPARTMENT_OUTLINED, ORANGE)),
+            ft.Container(col={"xs": 6, "sm": 6, "xl": 3}, content=build_kpi_card(lbl_kpi_standby, "備用 / 待機", "等待上線或下機", PURPLE_SOFT, ft.Icons.SCHEDULE_OUTLINED, PURPLE)),
+        ],
+        spacing=12,
+        run_spacing=12,
+    )
 
-    def get_status_style(status_val):
-        if "生產" in status_val: 
-            return "#F0FDF4", "#16A34A" # 綠
-        elif any(keyword in status_val for keyword in ["燒解", "清潔", "組裝"]): 
-            return "#FFF7ED", "#EA580C" # 橘
-        else: 
-            return "#E5F0FF", "#2563EB" # 藍
+    # =====================================================
+    # 5. 噴頭卡片
+    # =====================================================
+    grid_layout = ft.ResponsiveRow(spacing=16, run_spacing=16)
 
-    def get_fixed_border_color(comp_name):
-        name_upper = comp_name.upper()
-        if "SET#1" in name_upper: return "#93C5FD" # 淡藍
-        elif "SET#2" in name_upper: return "#86EFAC" # 淡綠
-        elif "SET#3" in name_upper: return "#FDBA74" # 淡橘
-        elif "SET#4" in name_upper: return "#D8B4FE" # 淡紫
-        return "#E2E8F0"
+    def update_record_locally(rec_id: str, updated_item: dict):
+        for index, item in enumerate(records):
+            if item.get("id") == rec_id:
+                merged = dict(item)
+                merged.update(updated_item or {})
+                records[index] = merged
+                return
 
-    # ── 5. 卡片生成器 ──
-    def create_spinneret_card(record):
-        rec_id = record["id"]
-
+    def create_spinneret_card(record: dict) -> ft.Control:
+        rec_id = record.get("id", "")
         comp_name = record.get("set_code", "未知組件")
         current_status = record.get("current_status", "尚未組裝")
         current_spec = record.get("plate_spec", "無")
         time_str = record.get("status_updated_at", "尚無紀錄")
         note_value = record.get("note", "")
+        is_saving = rec_id in saving_ids
 
         bg_color, txt_color = get_status_style(current_status)
         bar_color = get_fixed_border_color(comp_name)
 
-        lbl_status = ft.Text(current_status, color=txt_color, weight=ft.FontWeight.BOLD, size=13)
         pill_status = ft.Container(
-            content=lbl_status,
             bgcolor=bg_color,
             border_radius=16,
             padding=ft.padding.symmetric(horizontal=12, vertical=4),
+            content=ft.Text(current_status, color=txt_color, weight=ft.FontWeight.BOLD, size=13),
         )
 
-        lbl_spec = ft.Text(f"{current_spec}", size=14, color="#111827", weight=ft.FontWeight.W_500)
-        lbl_time = ft.Text(f"{time_str}", size=12, color="#64748B")
-
-        lbl_note = ft.Text(
-            note_value if note_value else "無備註",
-            size=12,
-            color="#64748B",
-            max_lines=2,
-            overflow=ft.TextOverflow.ELLIPSIS,
-        )
-
-        dd_status = ui_dropdown("更新目前狀態", status_options)
-        dd_status.value = current_status if current_status in status_options else status_options[0]
-
-        dd_spec = ui_dropdown("更新分配板規格", spec_options)
-        dd_spec.value = current_spec if current_spec in spec_options else spec_options[-1]
+        dd_status = dropdown_field("更新目前狀態", status_options, current_status)
+        dd_spec = dropdown_field("更新分配板規格", spec_options, current_spec)
 
         note_field = ft.TextField(
             label="備註",
-            value=note_value,
+            value=str(note_value or ""),
             hint_text="例：待確認螺絲、分配板需清潔、下次上機前再確認",
+            hint_style=ft.TextStyle(size=13, color=TEXT_SUB),
             multiline=True,
             min_lines=2,
             max_lines=3,
             border_radius=12,
-            border_color="#E2E8F0",
-            focused_border_color="#2563EB",
-            bgcolor="#F1F5F9",
+            border_color=BORDER,
+            focused_border_color=BLUE,
+            bgcolor=INPUT_BG,
             filled=True,
             text_size=14,
-            content_padding=ft.padding.symmetric(horizontal=16, vertical=12),
+            content_padding=ft.padding.symmetric(horizontal=14, vertical=12),
         )
 
-        card = ft.Container(
-            border=ft.border.Border(
-                top=ft.border.BorderSide(1, "#E2E8F0"),
-                right=ft.border.BorderSide(1, "#E2E8F0"),
-                bottom=ft.border.BorderSide(1, "#E2E8F0"),
-                left=ft.border.BorderSide(6, bar_color)
-            ),
-            border_radius=12,
-            bgcolor="#FFFFFF",
-            shadow=ft.BoxShadow(spread_radius=0, blur_radius=3, color="#05000000", offset=ft.Offset(0, 1)),
-        )
+        def start_save(e=None):
+            if rec_id in saving_ids:
+                return
 
-        def save_changes(e):
-            new_st = dd_status.value
-            new_sp = dd_spec.value
+            new_st = dd_status.value or current_status
+            new_sp = dd_spec.value or current_spec
             new_note = str(note_field.value or "").strip()
 
-            set_status(f"正在更新 {comp_name}...", is_loading=True, theme="blue")
+            if new_st == "無可用選項" or new_sp == "無可用選項":
+                _apply_status("狀態或規格選項尚未載入完成。", theme="red")
+                page_update()
+                return
 
-            try:
-                current_user_id = None
-                current_user_name = "未登入"
+            saving_ids.add(rec_id)
+            set_button_loading(btn_save, "寫入中...")
+            _apply_status(f"正在更新 {comp_name}...", theme="blue", loading=True)
+            page_update()
 
-                if hasattr(page, "session_data") and isinstance(page.session_data, dict):
-                    current_user_id = page.session_data.get("user_id")
-                    current_user_name = page.session_data.get("user_name", "未登入")
+            def worker():
+                try:
+                    result = update_spinneret_status(
+                        row_id=rec_id,
+                        current_status=new_st,
+                        plate_spec=new_sp,
+                        note=new_note,
+                        updated_by_user_id=get_session_value("user_id"),
+                        updated_by_name=get_session_value("user_name", "未登入"),
+                    )
 
-                result = update_spinneret_status(
-                    row_id=rec_id,
-                    current_status=new_st,
-                    plate_spec=new_sp,
-                    note=new_note,
-                    updated_by_user_id=current_user_id,
-                    updated_by_name=current_user_name,
-                )
+                    if not is_view_active(view_token):
+                        return
 
-                if not result.ok:
-                    set_status(result.message, is_error=True)
-                    return
+                    if not result.ok:
+                        saving_ids.discard(rec_id)
+                        set_button_normal(btn_save)
+                        _apply_status(result.message or "更新失敗。", theme="red")
+                        page_update()
+                        return
 
-                updated_item = result.data or {}
+                    updated_item = result.data or {}
+                    update_record_locally(rec_id, updated_item)
+                    saving_ids.discard(rec_id)
 
-                # 更新本機端 records 陣列，讓 KPI 可以重新計算
-                record.update(updated_item)
+                    _apply_kpi_numbers()
+                    _apply_grid()
+                    _apply_status(f"{comp_name} 更新成功", theme="green")
+                    schedule_status_auto_hide()
+                    page_update()
 
-                update_kpi_numbers()
-                kpi_row.update()
+                except Exception as ex:
+                    if not is_view_active(view_token):
+                        return
+                    saving_ids.discard(rec_id)
+                    set_button_normal(btn_save)
+                    _apply_status(f"更新失敗：{ex}", theme="red")
+                    page_update()
+                    print("spinneret save error:", repr(ex))
 
-                # 局部更新卡片 UI
-                lbl_status.value = updated_item.get("current_status", new_st)
-                new_bg, new_txt = get_status_style(lbl_status.value)
-                lbl_status.color = new_txt
-                pill_status.bgcolor = new_bg
+            threading.Thread(target=worker, daemon=True).start()
 
-                lbl_spec.value = updated_item.get("plate_spec", new_sp)
-                lbl_time.value = updated_item.get("status_updated_at", "")
-                lbl_note.value = updated_item.get("note") or "無備註"
+        btn_save = stable_button(
+            "寫入中..." if is_saving else "儲存變更",
+            ft.Icons.SAVE_OUTLINED,
+            DISABLED if is_saving else BLUE_SOFT,
+            "#FFFFFF" if is_saving else BLUE,
+            start_save,
+            height=46,
+            border_color=DISABLED if is_saving else BLUE_BORDER,
+        )
 
-                editor_panel.expanded = False
-
-                # 統一由父容器 card 執行 update，避免生命週期打架
-                card.update()
-
-                set_status(f"{comp_name} 更新成功！", theme="green")
-
-            except Exception as ex:
-                set_status(f"更新失敗: {ex}", is_error=True)
-
-        btn_save = ui_button("儲存變更", ft.Icons.SAVE_OUTLINED, "#E5F0FF", "#2563EB", save_changes)
+        if is_saving:
+            set_button_loading(btn_save, "寫入中...")
 
         editor_panel = ft.ExpansionTile(
-            title=ft.Text("變更組件狀態、規格與備註", size=13, weight=ft.FontWeight.BOLD, color="#64748B"),
+            title=ft.Text("變更組件狀態、規格與備註", size=13, weight=ft.FontWeight.BOLD, color=TEXT_SUB),
             collapsed_text_color="#94A3B8",
-            text_color="#2563EB",
+            text_color=BLUE,
             controls=[
                 ft.Container(
-                    padding=ft.padding.only(left=15, right=15, bottom=15, top=15),
+                    padding=ft.padding.only(left=14, right=14, bottom=14, top=12),
                     content=ft.Column(
                         controls=[
-                            ft.Row([dd_status, dd_spec], spacing=15),
+                            ft.ResponsiveRow(
+                                columns=12,
+                                spacing=12,
+                                run_spacing=12,
+                                controls=[
+                                    ft.Container(col={"xs": 12, "md": 6}, content=dd_status),
+                                    ft.Container(col={"xs": 12, "md": 6}, content=dd_spec),
+                                ],
+                            ),
                             note_field,
-                            ft.Container(height=5),
-                            ft.Row([btn_save]),
+                            btn_save,
                         ],
                         spacing=12,
                     ),
@@ -319,60 +577,204 @@ def SpinneretContent(page: ft.Page):
             ],
         )
 
-        card.content = ft.Column([
-            ft.Container(
-                padding=ft.padding.only(top=15, left=20, right=20, bottom=5),
-                content=ft.Column([
-                    ft.Row([
-                        ft.Icon(ft.Icons.MEMORY_OUTLINED, color="#475569", size=20),
-                        ft.Text(comp_name, size=16, weight=ft.FontWeight.BOLD, color="#111827")
-                    ], spacing=10),
-                    ft.Divider(height=15, color="#F1F5F9"),
-
-                    ft.Row([
-                        ft.Column([
-                            ft.Row([ft.Text("目前狀態：", size=13, color="#64748B", weight=ft.FontWeight.W_500), pill_status]),
-                            ft.Container(height=2),
-                            ft.Row([ft.Icon(ft.Icons.ACCESS_TIME, size=13, color="#94A3B8"), ft.Text("最後更新：", size=12, color="#64748B"), lbl_time]),
-                            ft.Container(height=2),
-                            ft.Row([ft.Icon(ft.Icons.NOTES_OUTLINED, size=13, color="#94A3B8"), ft.Text("備註：", size=12, color="#64748B"), lbl_note]),
-                        ], expand=1),
-
-                        ft.Column([
-                            ft.Row([ft.Text("分配板規格：", size=13, color="#64748B", weight=ft.FontWeight.W_500), lbl_spec])
-                        ], expand=1, alignment=ft.MainAxisAlignment.START)
-                    ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, vertical_alignment=ft.CrossAxisAlignment.START)
-                ], spacing=8)
+        return ft.Container(
+            col={"xs": 12, "md": 12, "xl": 6},
+            content=ft.Container(
+                border=ft.border.Border(
+                    top=ft.border.BorderSide(1, BORDER),
+                    right=ft.border.BorderSide(1, BORDER),
+                    bottom=ft.border.BorderSide(1, BORDER),
+                    left=ft.border.BorderSide(6, bar_color),
+                ),
+                border_radius=16,
+                bgcolor="#FFFFFF",
+                shadow=ft.BoxShadow(spread_radius=0, blur_radius=8, color="#07000000", offset=ft.Offset(0, 2)),
+                content=ft.Column(
+                    controls=[
+                        ft.Container(
+                            padding=ft.padding.only(top=16, left=18, right=18, bottom=8),
+                            content=ft.Column(
+                                controls=[
+                                    ft.Row(
+                                        controls=[
+                                            ft.Icon(ft.Icons.MEMORY_OUTLINED, color="#475569", size=21),
+                                            ft.Text(comp_name, size=17, weight=ft.FontWeight.BOLD, color=TEXT_MAIN),
+                                        ],
+                                        spacing=10,
+                                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                    ),
+                                    ft.Divider(height=16, color="#F1F5F9"),
+                                    ft.Column(
+                                        controls=[
+                                            ft.Row(
+                                                controls=[
+                                                    ft.Text("目前狀態：", size=13, color=TEXT_SUB, weight=ft.FontWeight.W_500),
+                                                    pill_status,
+                                                ],
+                                                spacing=8,
+                                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                            ),
+                                            ft.Row(
+                                                controls=[
+                                                    ft.Icon(ft.Icons.VIEW_MODULE_OUTLINED, size=14, color="#94A3B8"),
+                                                    ft.Text("分配板規格：", size=12, color=TEXT_SUB),
+                                                    ft.Text(str(current_spec or "-"), size=13, color=TEXT_MAIN, weight=ft.FontWeight.W_500),
+                                                ],
+                                                spacing=5,
+                                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                            ),
+                                            ft.Row(
+                                                controls=[
+                                                    ft.Icon(ft.Icons.ACCESS_TIME, size=14, color="#94A3B8"),
+                                                    ft.Text("最後更新：", size=12, color=TEXT_SUB),
+                                                    ft.Text(str(time_str or "-"), size=12, color=TEXT_SUB),
+                                                ],
+                                                spacing=5,
+                                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                            ),
+                                            ft.Row(
+                                                controls=[
+                                                    ft.Icon(ft.Icons.NOTES_OUTLINED, size=14, color="#94A3B8"),
+                                                    ft.Text("備註：", size=12, color=TEXT_SUB),
+                                                    ft.Text(
+                                                        str(note_value or "無備註"),
+                                                        size=12,
+                                                        color=TEXT_SUB,
+                                                        expand=True,
+                                                        max_lines=2,
+                                                        overflow=ft.TextOverflow.ELLIPSIS,
+                                                    ),
+                                                ],
+                                                spacing=5,
+                                                vertical_alignment=ft.CrossAxisAlignment.START,
+                                            ),
+                                        ],
+                                        spacing=7,
+                                    ),
+                                ],
+                                spacing=8,
+                            ),
+                        ),
+                        editor_panel,
+                    ],
+                    spacing=0,
+                ),
             ),
-            editor_panel
-        ], spacing=0)
+        )
 
-        return ft.Column(col={"sm": 12, "md": 12, "xl": 6}, controls=[card])
+    def _apply_grid():
+        grid_layout.controls = []
 
-    # ── 6. 生成佈局 ──
-    if not load_result.ok:
-        set_status(load_result.message, is_error=True)
+        if loading_state["value"]:
+            grid_layout.controls.append(
+                ft.Container(
+                    col={"xs": 12},
+                    bgcolor="#FFFFFF",
+                    border=ft.border.all(1, BORDER),
+                    border_radius=16,
+                    padding=20,
+                    content=ft.Row(
+                        controls=[
+                            ft.ProgressRing(width=18, height=18, stroke_width=2, color=BLUE),
+                            ft.Text("正在讀取噴頭組件資料...", size=14, color=TEXT_SUB),
+                        ],
+                        spacing=10,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                )
+            )
+            return
 
-    card_elements = []
-    if not records:
-        card_elements = [ft.Text("⚠️ 找不到噴頭組件資料，請確認 Supabase spinneret_sets 是否已有建檔。", color="#DC2626")]
-    else:
+        if not records:
+            grid_layout.controls.append(
+                ft.Container(
+                    col={"xs": 12},
+                    bgcolor=RED_SOFT,
+                    border=ft.border.all(1, RED_BORDER),
+                    border_radius=16,
+                    padding=18,
+                    content=ft.Text(
+                        "找不到噴頭組件資料，請確認 Supabase spinneret_sets 是否已有建檔。",
+                        color=RED,
+                        size=14,
+                        weight=ft.FontWeight.W_600,
+                    ),
+                )
+            )
+            return
+
         for rec in records:
-            card_elements.append(create_spinneret_card(rec))
+            grid_layout.controls.append(create_spinneret_card(rec))
 
-    grid_layout = ft.ResponsiveRow(controls=card_elements, spacing=20, run_spacing=20)
+    def _apply_loaded_data(data: dict):
+        records.clear()
+        records.extend(data.get("items", []) or [])
 
-    # ── 7. 最終畫面回傳 ──
-    return ft.Column([
-        ft.Row([
-            ft.Icon(ft.Icons.MEMORY, size=24, color="#374151"),
-            ft.Text("噴頭組件狀態", size=24, weight=ft.FontWeight.BOLD, color="#111827")
-        ]),
-        ft.Text("即時掌握各 SET 生產、待機、清潔與分配板規格", size=13, color="#64748B"),
-        status_bar,
-        ft.Container(height=10),
-        kpi_row, 
-        ft.Divider(height=20, color="#E2E8F0"),
-        grid_layout,
-        ft.Container(height=50)
-    ], spacing=10)
+        status_options.clear()
+        status_options.extend(data.get("status_options", []) or [])
+
+        spec_options.clear()
+        spec_options.extend(data.get("spec_options", []) or [])
+
+        data_loaded["done"] = True
+        loading_state["value"] = False
+
+    def load_initial_data_once():
+        current_token = view_token
+
+        def worker():
+            try:
+                print("====== [系統提示] 背景讀取 Supabase (噴頭組件狀態) ======")
+                result = load_spinneret_page_data()
+
+                if not is_view_active(current_token):
+                    return
+
+                if not result.ok:
+                    data_loaded["done"] = False
+                    loading_state["value"] = False
+                    _apply_status(result.message or "資料同步失敗", theme="red")
+                    _apply_grid()
+                    page_update()
+                    print("讀取噴頭狀態失敗:", result.message)
+                    return
+
+                _apply_loaded_data(result.data or {})
+                _apply_kpi_numbers()
+                _apply_grid()
+                _apply_status("資料已同步", theme="green")
+                schedule_status_auto_hide()
+                page_update()
+
+                print(f"====== [系統提示] 成功抓取 {len(records)} 筆噴頭組件資料 ======")
+
+            except Exception as ex:
+                if not is_view_active(current_token):
+                    return
+                data_loaded["done"] = False
+                loading_state["value"] = False
+                _apply_status(f"資料同步失敗：{ex}", theme="red")
+                _apply_grid()
+                page_update()
+                print("spinneret initial load error:", repr(ex))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    # =====================================================
+    # 6. 初始 UI
+    # =====================================================
+    _apply_status("資料同步中", theme="blue", loading=True)
+    _apply_kpi_numbers()
+    _apply_grid()
+    load_initial_data_once()
+
+    return ft.Column(
+        controls=[
+            build_header(),
+            kpi_row,
+            ft.Divider(height=18, color=BORDER),
+            grid_layout,
+            ft.Container(height=90),
+        ],
+        spacing=16,
+    )
