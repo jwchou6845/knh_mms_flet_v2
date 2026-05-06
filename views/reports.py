@@ -15,6 +15,7 @@ from __future__ import annotations
 import threading
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
+from urllib.parse import urlparse
 
 import flet as ft
 
@@ -113,6 +114,29 @@ def ReportsContent(page: ft.Page):
             page.session_data.get("_reports_view_token") is view_token
             and (not route or route == "/reports" or "reports" in route)
         )
+
+    def make_download_url(filename: str) -> str:
+        """
+        產生手機 Web 可開啟的 CSV 下載 URL。
+
+        Flet 的 page.launch_url() 在部分手機瀏覽器 / WebView 裡，
+        使用相對路徑例如 /exports/xxx.csv 可能不會有明顯反應。
+        這裡優先依 page.url 組成絕對 URL，失敗時才退回相對路徑。
+        """
+        clean_name = str(filename or "").strip().lstrip("/")
+        if not clean_name:
+            return ""
+
+        export_path = f"exports/{clean_name}"
+
+        page_url = str(getattr(page, "url", "") or "").strip()
+        if page_url.startswith("http://") or page_url.startswith("https://"):
+            parsed = urlparse(page_url)
+            if parsed.scheme and parsed.netloc:
+                return f"{parsed.scheme}://{parsed.netloc}/{export_path}"
+
+        return f"/{export_path}"
+
 
     # =====================================================
     # 1. 色彩設定
@@ -868,8 +892,9 @@ def ReportsContent(page: ft.Page):
                     data = result.data or {}
                     filename = str(data.get("filename") or "").strip()
                     path = str(data.get("path") or "").strip()
-                    # ft.run(main, assets_dir=".") 時，專案根目錄下的 exports/ 可用相對 URL 存取。
-                    download_url = f"/exports/{filename}" if filename else ""
+                    # ft.run(main, assets_dir=".") 時，專案根目錄下的 exports/ 可被瀏覽器讀取；
+                    # 手機 WebView 對相對 URL 反應不穩，因此這裡改成優先使用絕對 URL。
+                    download_url = make_download_url(filename) if filename else ""
                     export_state.update(
                         {
                             "path": path,
@@ -989,7 +1014,7 @@ def ReportsContent(page: ft.Page):
         rebuild()
 
     def open_export_file(e=None):
-        url = export_state.get("url") or ""
+        url = export_state.get("url") or make_download_url(export_state.get("filename") or "")
         if not url:
             show_msg("尚未產生可下載的 CSV。", ORANGE)
             return
@@ -998,11 +1023,23 @@ def ReportsContent(page: ft.Page):
         except Exception as ex:
             show_msg(f"無法開啟下載連結：{ex}", RED)
 
+    def copy_export_link(e=None):
+        url = export_state.get("url") or make_download_url(export_state.get("filename") or "")
+        if not url:
+            show_msg("尚未產生可複製的 CSV 連結。", ORANGE)
+            return
+        try:
+            page.set_clipboard(url)
+            show_msg("CSV 下載連結已複製。若手機沒有自動開啟，請貼到瀏覽器網址列。", GREEN)
+        except Exception as ex:
+            show_msg(f"複製連結失敗：{ex}", RED)
+
     def build_export_download_panel():
         if not export_state.get("url"):
             return ft.Container(height=0)
 
         filename = export_state.get("filename") or "report.csv"
+        url = export_state.get("url") or make_download_url(filename)
         return ft.Container(
             bgcolor=GREEN_SOFT,
             border=ft.border.all(1, GREEN_BORDER),
@@ -1020,18 +1057,38 @@ def ReportsContent(page: ft.Page):
                                 controls=[
                                     ft.Text("CSV 已產生", size=14, color=GREEN, weight=ft.FontWeight.BOLD),
                                     ft.Text(filename, size=12, color=TEXT_SUB, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
+                                    ft.Text(url, size=11, color=TEXT_MUTED, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
                                 ],
                             ),
                         ],
                         spacing=8,
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     ),
-                    stable_button(
-                        "下載 CSV",
-                        ft.Icons.DOWNLOAD_OUTLINED,
-                        open_export_file,
-                        bg=GREEN,
-                        fg="white",
+                    ft.ResponsiveRow(
+                        columns=12,
+                        spacing=10,
+                        run_spacing=10,
+                        controls=[
+                            ft.Container(
+                                col={"xs": 12, "md": 6},
+                                content=stable_button(
+                                    "下載 CSV",
+                                    ft.Icons.DOWNLOAD_OUTLINED,
+                                    open_export_file,
+                                    bg=GREEN,
+                                    fg="white",
+                                ),
+                            ),
+                            ft.Container(
+                                col={"xs": 12, "md": 6},
+                                content=outline_button(
+                                    "複製連結",
+                                    ft.Icons.CONTENT_COPY_OUTLINED,
+                                    copy_export_link,
+                                    color=GREEN,
+                                ),
+                            ),
+                        ],
                     ),
                 ],
             ),
