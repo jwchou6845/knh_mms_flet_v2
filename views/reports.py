@@ -80,6 +80,14 @@ def ReportsContent(page: ft.Page):
         "cleanup": {},
     }
 
+    # 手機 Web 原生 Dropdown 選單會展開成過大的全螢幕選單。
+    # 改用頁面內自製選項面板，避免遮住整個畫面。
+    select_panel_state = {"key": ""}
+
+    class SelectValue:
+        def __init__(self, value: str = "全部"):
+            self.value = value
+
     if not hasattr(page, "session_data"):
         page.session_data = {}
 
@@ -472,11 +480,11 @@ def ReportsContent(page: ft.Page):
     date_end = make_field("YYYY/MM/DD", today_text())
     report_month = make_field("YYYY-MM，例如 2026-04", month_text(-1))
 
-    category_dd = make_dropdown(filter_options.get("categories"), "全部")
-    material_dd = make_dropdown(filter_options.get("material_families"), "全部")
-    supplier_dd = make_dropdown(filter_options.get("suppliers"), "全部")
-    machine_dd = make_dropdown(filter_options.get("machines"), "全部")
-    user_dd = make_dropdown(filter_options.get("users"), "全部")
+    category_dd = SelectValue("全部")
+    material_dd = SelectValue("全部")
+    supplier_dd = SelectValue("全部")
+    machine_dd = SelectValue("全部")
+    user_dd = SelectValue("全部")
 
     # =====================================================
     # 4. 狀態與選項更新
@@ -494,24 +502,36 @@ def ReportsContent(page: ft.Page):
         else:
             control.value = opts[0]
 
+    def get_select_options(key: str) -> list[str]:
+        if key == "category":
+            return list(filter_options.get("categories", ["全部"]) or ["全部"])
+        if key == "material":
+            return list(filter_options.get("material_families", ["全部"]) or ["全部"])
+        if key == "supplier":
+            selected_family = material_dd.value or "全部"
+            supplier_map = filter_options.get("material_supplier_map", {}) or {}
+            if selected_family != "全部" and selected_family in supplier_map:
+                return list(supplier_map.get(selected_family, ["全部"]) or ["全部"])
+            return list(filter_options.get("suppliers", ["全部"]) or ["全部"])
+        if key == "machine":
+            return list(filter_options.get("machines", ["全部"]) or ["全部"])
+        if key == "user":
+            return list(filter_options.get("users", ["全部"]) or ["全部"])
+        return ["全部"]
+
+    def ensure_select_value(control: SelectValue, options: list[str]) -> None:
+        opts = list(options or ["全部"])
+        if "全部" not in opts:
+            opts.insert(0, "全部")
+        if control.value not in opts:
+            control.value = "全部" if "全部" in opts else opts[0]
+
     def apply_filter_options_to_controls():
-        update_dropdown_options(category_dd, filter_options.get("categories", ["全部"]))
-        update_dropdown_options(material_dd, filter_options.get("material_families", ["全部"]))
-        update_dropdown_options(supplier_dd, filter_options.get("suppliers", ["全部"]))
-        update_dropdown_options(machine_dd, filter_options.get("machines", ["全部"]))
-        update_dropdown_options(user_dd, filter_options.get("users", ["全部"]))
-
-    def on_material_change(e=None):
-        selected_family = material_dd.value or "全部"
-        supplier_map = filter_options.get("material_supplier_map", {}) or {}
-        if selected_family != "全部" and selected_family in supplier_map:
-            update_dropdown_options(supplier_dd, supplier_map.get(selected_family, ["全部"]), keep_value=False)
-        else:
-            update_dropdown_options(supplier_dd, filter_options.get("suppliers", ["全部"]), keep_value=True)
-        rebuild()
-
-    # Flet 0.84：不要在 Dropdown 建構子傳 on_change，避免 unexpected keyword argument。
-    material_dd.on_change = on_material_change
+        ensure_select_value(category_dd, get_select_options("category"))
+        ensure_select_value(material_dd, get_select_options("material"))
+        ensure_select_value(supplier_dd, get_select_options("supplier"))
+        ensure_select_value(machine_dd, get_select_options("machine"))
+        ensure_select_value(user_dd, get_select_options("user"))
 
     # =====================================================
     # 5. 背景任務
@@ -694,7 +714,7 @@ def ReportsContent(page: ft.Page):
         report_month.value = month_text(-1)
         category_dd.value = "全部"
         material_dd.value = "全部"
-        update_dropdown_options(supplier_dd, filter_options.get("suppliers", ["全部"]), keep_value=False)
+        supplier_dd.value = "全部"
         machine_dd.value = "全部"
         user_dd.value = "全部"
         current_report_data.clear()
@@ -894,6 +914,149 @@ def ReportsContent(page: ft.Page):
             )
         )
 
+
+    SELECT_META = {
+        "category": {"label": "類別", "icon": ft.Icons.CATEGORY_OUTLINED, "control": category_dd},
+        "material": {"label": "原料種類", "icon": ft.Icons.SCIENCE_OUTLINED, "control": material_dd},
+        "supplier": {"label": "供應商", "icon": ft.Icons.DOMAIN_OUTLINED, "control": supplier_dd},
+        "machine": {"label": "機台 / 塔別", "icon": ft.Icons.PRECISION_MANUFACTURING_OUTLINED, "control": machine_dd},
+        "user": {"label": "人員", "icon": ft.Icons.PERSON_OUTLINE, "control": user_dd},
+    }
+
+    def compact_select_field(key: str):
+        meta = SELECT_META[key]
+        control = meta["control"]
+        active = select_panel_state.get("key") == key
+        label = meta["label"]
+        icon_name = meta["icon"]
+
+        def toggle_panel(e=None):
+            select_panel_state["key"] = "" if active else key
+            rebuild()
+
+        return ft.Container(
+            content=ft.Column(
+                spacing=7,
+                controls=[
+                    ft.Row(
+                        spacing=7,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[
+                            ft.Icon(icon_name, size=17, color=TEXT_SUB),
+                            ft.Text(label, size=14, color=TEXT_MAIN, weight=ft.FontWeight.BOLD, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                        ],
+                    ),
+                    ft.Container(
+                        height=54,
+                        width=float("inf"),
+                        border_radius=12,
+                        bgcolor="#E5E7EF" if not active else BLUE_SOFT,
+                        border=ft.border.all(1, BLUE_BORDER if active else BORDER),
+                        padding=ft.padding.symmetric(horizontal=12),
+                        alignment=ft.Alignment(0, 0),
+                        ink=True,
+                        on_click=toggle_panel,
+                        content=ft.Row(
+                            spacing=8,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                            controls=[
+                                ft.Text(str(control.value or "全部"), size=14, color=TEXT_MAIN, expand=True, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                                ft.Icon(ft.Icons.KEYBOARD_ARROW_UP if active else ft.Icons.KEYBOARD_ARROW_DOWN, size=22, color="#475569"),
+                            ],
+                        ),
+                    ),
+                ],
+            )
+        )
+
+    def build_select_panel():
+        key = select_panel_state.get("key") or ""
+        if not key:
+            return ft.Container(height=0)
+
+        meta = SELECT_META.get(key)
+        if not meta:
+            return ft.Container(height=0)
+
+        control = meta["control"]
+        options = get_select_options(key)
+        if "全部" not in options:
+            options = ["全部"] + options
+
+        def choose(value: str):
+            def handler(e=None):
+                control.value = value
+                if key == "material":
+                    ensure_select_value(supplier_dd, get_select_options("supplier"))
+                select_panel_state["key"] = ""
+                rebuild()
+            return handler
+
+        option_controls = []
+        for option in options:
+            selected = option == control.value
+            option_controls.append(
+                ft.Container(
+                    height=42,
+                    border_radius=10,
+                    bgcolor=BLUE_SOFT if selected else "#FFFFFF",
+                    border=ft.border.all(1, BLUE_BORDER if selected else "#E5EAF2"),
+                    padding=ft.padding.symmetric(horizontal=12),
+                    margin=ft.margin.only(bottom=6),
+                    alignment=ft.Alignment(-1, 0),
+                    ink=True,
+                    on_click=choose(option),
+                    content=ft.Row(
+                        spacing=8,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[
+                            ft.Text(option, size=14, color=BLUE if selected else TEXT_MAIN, weight=ft.FontWeight.BOLD if selected else ft.FontWeight.W_500, expand=True, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                            ft.Icon(ft.Icons.CHECK_CIRCLE, size=18, color=BLUE, visible=selected),
+                        ],
+                    ),
+                )
+            )
+
+        panel_height = min(250, max(90, len(options) * 48))
+        return ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, BLUE_BORDER),
+            border_radius=14,
+            padding=12,
+            content=ft.Column(
+                spacing=10,
+                controls=[
+                    ft.Row(
+                        spacing=8,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[
+                            ft.Icon(meta["icon"], size=18, color=BLUE),
+                            ft.Text(f"選擇{meta['label']}", size=14, color=TEXT_MAIN, weight=ft.FontWeight.BOLD),
+                            ft.Container(expand=True),
+                            ft.Container(
+                                width=34,
+                                height=30,
+                                border_radius=10,
+                                bgcolor=SOFT,
+                                alignment=ft.Alignment(0, 0),
+                                ink=True,
+                                on_click=lambda e: (select_panel_state.update({"key": ""}), rebuild()),
+                                content=ft.Icon(ft.Icons.CLOSE, size=17, color=TEXT_SUB),
+                            ),
+                        ],
+                    ),
+                    ft.Container(
+                        height=panel_height,
+                        content=ft.Column(
+                            spacing=0,
+                            scroll=ft.ScrollMode.AUTO,
+                            controls=option_controls,
+                        ),
+                    ),
+                ],
+            ),
+        )
+
     def build_advanced_filter_area():
         """
         全條件篩選區。
@@ -941,13 +1104,14 @@ def ReportsContent(page: ft.Page):
                                     controls=[
                                         ft.Container(col={"xs": 6, "md": 4}, content=compact_field("日期起", date_start, ft.Icons.CALENDAR_MONTH_OUTLINED, required=True)),
                                         ft.Container(col={"xs": 6, "md": 4}, content=compact_field("日期迄", date_end, ft.Icons.EVENT_AVAILABLE_OUTLINED, required=True)),
-                                        ft.Container(col={"xs": 6, "md": 4}, content=compact_field("類別", category_dd, ft.Icons.CATEGORY_OUTLINED)),
-                                        ft.Container(col={"xs": 6, "md": 4}, content=compact_field("原料種類", material_dd, ft.Icons.SCIENCE_OUTLINED)),
-                                        ft.Container(col={"xs": 6, "md": 4}, content=compact_field("供應商", supplier_dd, ft.Icons.DOMAIN_OUTLINED)),
-                                        ft.Container(col={"xs": 6, "md": 4}, content=compact_field("機台 / 塔別", machine_dd, ft.Icons.PRECISION_MANUFACTURING_OUTLINED)),
-                                        ft.Container(col={"xs": 6, "md": 4}, content=compact_field("人員", user_dd, ft.Icons.PERSON_OUTLINE)),
+                                        ft.Container(col={"xs": 6, "md": 4}, content=compact_select_field("category")),
+                                        ft.Container(col={"xs": 6, "md": 4}, content=compact_select_field("material")),
+                                        ft.Container(col={"xs": 6, "md": 4}, content=compact_select_field("supplier")),
+                                        ft.Container(col={"xs": 6, "md": 4}, content=compact_select_field("machine")),
+                                        ft.Container(col={"xs": 6, "md": 4}, content=compact_select_field("user")),
                                     ],
                                 ),
+                                build_select_panel(),
                             ],
                         ),
                     ),
