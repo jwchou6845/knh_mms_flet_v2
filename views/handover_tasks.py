@@ -534,22 +534,40 @@ def HandoverTasksContent(page: ft.Page):
         )
 
     def build_info_card():
+        # 手機 Web 修正：避免 Row(wrap=True) + Text(expand=True) 在部分瀏覽器中
+        # 被渲染成大面積灰色區塊。改成 Column 結構，文字自然換行。
         return card_box(
-            content=ft.Row(
+            padding=14,
+            content=ft.Column(
+                spacing=8,
                 controls=[
-                    ft.Icon(ft.Icons.INFO_OUTLINE, color=TEXT_SUB),
+                    ft.Row(
+                        controls=[
+                            ft.Icon(ft.Icons.INFO_OUTLINE, color=TEXT_SUB, size=21),
+                            ft.Text(
+                                "使用說明",
+                                size=14,
+                                color=TEXT_MAIN,
+                                weight=ft.FontWeight.BOLD,
+                            ),
+                        ],
+                        spacing=8,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
                     ft.Text(
                         "未完成項目可標記完成；已完成紀錄會保留完成人、完成時間與處理備註。",
                         color=TEXT_SUB,
-                        size=14,
-                        expand=True,
+                        size=13,
+                        max_lines=3,
+                        overflow=ft.TextOverflow.VISIBLE,
                     ),
-                    ft.Text(f"目前使用者：{current_user}", color=TEXT_MUTED, size=13),
+                    ft.Text(
+                        f"目前使用者：{current_user}",
+                        color=TEXT_MUTED,
+                        size=12,
+                    ),
                 ],
-                spacing=12,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                wrap=True,
-            )
+            ),
         )
 
     def chip_button(label, is_active, on_click, width=None):
