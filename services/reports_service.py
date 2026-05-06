@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 import csv
 import re
+import secrets
 from zoneinfo import ZoneInfo
 
 from repositories.reports_repo import (
@@ -26,6 +27,10 @@ from repositories.reports_repo import (
 
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
+
+# 匯出檔案只作為暫存下載使用，避免 VM 長期累積 CSV。
+EXPORT_KEEP_DAYS = 3
+EXPORT_MAX_TOTAL_MB = 100
 
 
 QUICK_REPORTS = [
@@ -971,8 +976,68 @@ def build_report_filter_options() -> ServiceResult:
 
 def safe_filename(value: str) -> str:
     text = clean_text(value, "report")
-    text = re.sub(r"[\\/:*?\"<>|\\s]+", "_", text)
+    text = re.sub(r'[\\/:*?"<>|\s]+', "_", text)
     return text.strip("_") or "report"
+
+
+def cleanup_old_exports(
+    export_dir: str = "exports",
+    keep_days: int = EXPORT_KEEP_DAYS,
+    max_total_mb: int = EXPORT_MAX_TOTAL_MB,
+) -> dict[str, int | float]:
+    """
+    清理報表匯出的暫存 CSV。
+
+    規則：
+    1. 刪除超過 keep_days 天的 CSV。
+    2. 若資料夾總容量仍超過 max_total_mb，從最舊檔案開始刪。
+
+    這個函式不應讓匯出流程失敗；個別檔案刪除失敗會略過。
+    """
+    folder = Path(export_dir)
+    folder.mkdir(parents=True, exist_ok=True)
+
+    deleted_count = 0
+    deleted_bytes = 0
+
+    now_ts = now_taipei().timestamp()
+    cutoff_ts = now_ts - max(0, keep_days) * 24 * 60 * 60
+
+    csv_files = []
+
+    for file in folder.glob("*.csv"):
+        try:
+            stat = file.stat()
+            if stat.st_mtime < cutoff_ts:
+                size = stat.st_size
+                file.unlink()
+                deleted_count += 1
+                deleted_bytes += size
+            else:
+                csv_files.append((file, stat.st_mtime, stat.st_size))
+        except Exception:
+            continue
+
+    max_total_bytes = max(1, max_total_mb) * 1024 * 1024
+    total_bytes = sum(size for _, _, size in csv_files)
+
+    if total_bytes > max_total_bytes:
+        for file, _, size in sorted(csv_files, key=lambda item: item[1]):
+            if total_bytes <= max_total_bytes:
+                break
+            try:
+                file.unlink()
+                deleted_count += 1
+                deleted_bytes += size
+                total_bytes -= size
+            except Exception:
+                continue
+
+    return {
+        "deleted_count": deleted_count,
+        "deleted_bytes": deleted_bytes,
+        "remaining_bytes": max(0, total_bytes),
+    }
 
 
 def export_report_to_csv(
@@ -994,8 +1059,11 @@ def export_report_to_csv(
         folder = Path(export_dir)
         folder.mkdir(parents=True, exist_ok=True)
 
+        cleanup_info = cleanup_old_exports(export_dir=export_dir)
+
         timestamp = now_taipei().strftime("%Y%m%d_%H%M%S")
-        filename = f"{timestamp}_{safe_filename(title)}.csv"
+        random_suffix = secrets.token_hex(3)
+        filename = f"{timestamp}_{safe_filename(title)}_{random_suffix}.csv"
         path = folder / filename
 
         with path.open("w", newline="", encoding="utf-8-sig") as f:
@@ -1015,6 +1083,9 @@ def export_report_to_csv(
             data={
                 "path": str(path),
                 "filename": filename,
+                "url_path": f"/{export_dir.strip('/').strip()}" + f"/{filename}",
+                "expires_after_days": EXPORT_KEEP_DAYS,
+                "cleanup": cleanup_info,
             },
         )
 
