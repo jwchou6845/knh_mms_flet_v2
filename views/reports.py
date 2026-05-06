@@ -84,7 +84,10 @@ def ReportsContent(page: ft.Page):
         "path": "",
         "filename": "",
         "url": "",
+        "url_path": "",
         "message": "",
+        "expires_after_days": None,
+        "cleanup": {},
     }
 
     default_filter_options = {
@@ -115,19 +118,25 @@ def ReportsContent(page: ft.Page):
             and (not route or route == "/reports" or "reports" in route)
         )
 
-    def make_download_url(filename: str) -> str:
+    def make_download_url(path_or_filename: str) -> str:
         """
         產生手機 Web 可開啟的 CSV 下載 URL。
 
-        Flet 的 page.launch_url() 在部分手機瀏覽器 / WebView 裡，
-        使用相對路徑例如 /exports/xxx.csv 可能不會有明顯反應。
-        這裡優先依 page.url 組成絕對 URL，失敗時才退回相對路徑。
+        reports_service 會回傳 url_path，例如 /exports/xxx.csv。
+        舊版則只回傳 filename。這裡同時相容兩種格式。
         """
-        clean_name = str(filename or "").strip().lstrip("/")
-        if not clean_name:
+        raw = str(path_or_filename or "").strip()
+        if not raw:
             return ""
 
-        export_path = f"exports/{clean_name}"
+        if raw.startswith("http://") or raw.startswith("https://"):
+            return raw
+
+        clean = raw.lstrip("/")
+        if clean.startswith("exports/"):
+            export_path = clean
+        else:
+            export_path = f"exports/{clean}"
 
         page_url = str(getattr(page, "url", "") or "").strip()
         if page_url.startswith("http://") or page_url.startswith("https://"):
@@ -136,6 +145,7 @@ def ReportsContent(page: ft.Page):
                 return f"{parsed.scheme}://{parsed.netloc}/{export_path}"
 
         return f"/{export_path}"
+
 
 
     # =====================================================
@@ -455,7 +465,7 @@ def ReportsContent(page: ft.Page):
                         "summary_text": data.get("summary_text", ""),
                     }
                 )
-                export_state.update({"path": "", "filename": "", "url": "", "message": ""})
+                export_state.update({"path": "", "filename": "", "url": "", "url_path": "", "message": "", "expires_after_days": None, "cleanup": {}})
                 show_all_rows["value"] = False
                 step_state["value"] = 2
                 status_state["visible"] = True
@@ -857,7 +867,7 @@ def ReportsContent(page: ft.Page):
                 "summary_text": "請先選擇快速報表，或切換到全條件篩選後套用條件。",
             }
         )
-        export_state.update({"path": "", "filename": "", "url": "", "message": ""})
+        export_state.update({"path": "", "filename": "", "url": "", "url_path": "", "message": "", "expires_after_days": None, "cleanup": {}})
         show_all_rows["value"] = False
         step_state["value"] = 1
         status_state["visible"] = False
@@ -892,15 +902,21 @@ def ReportsContent(page: ft.Page):
                     data = result.data or {}
                     filename = str(data.get("filename") or "").strip()
                     path = str(data.get("path") or "").strip()
+                    url_path = str(data.get("url_path") or "").strip()
+                    expires_after_days = data.get("expires_after_days")
+                    cleanup_info = data.get("cleanup") or {}
                     # ft.run(main, assets_dir=".") 時，專案根目錄下的 exports/ 可被瀏覽器讀取；
                     # 手機 WebView 對相對 URL 反應不穩，因此這裡改成優先使用絕對 URL。
-                    download_url = make_download_url(filename) if filename else ""
+                    download_url = make_download_url(url_path or filename) if (url_path or filename) else ""
                     export_state.update(
                         {
                             "path": path,
                             "filename": filename,
+                            "url_path": url_path,
                             "url": download_url,
                             "message": result.message or "CSV 已匯出。",
+                            "expires_after_days": expires_after_days,
+                            "cleanup": cleanup_info,
                         }
                     )
                     status_state["visible"] = True
@@ -1014,7 +1030,7 @@ def ReportsContent(page: ft.Page):
         rebuild()
 
     def open_export_file(e=None):
-        url = export_state.get("url") or make_download_url(export_state.get("filename") or "")
+        url = export_state.get("url") or make_download_url(export_state.get("url_path") or export_state.get("filename") or "")
         if not url:
             show_msg("尚未產生可下載的 CSV。", ORANGE)
             return
@@ -1024,7 +1040,7 @@ def ReportsContent(page: ft.Page):
             show_msg(f"無法開啟下載連結：{ex}", RED)
 
     def copy_export_link(e=None):
-        url = export_state.get("url") or make_download_url(export_state.get("filename") or "")
+        url = export_state.get("url") or make_download_url(export_state.get("url_path") or export_state.get("filename") or "")
         if not url:
             show_msg("尚未產生可複製的 CSV 連結。", ORANGE)
             return
@@ -1039,7 +1055,11 @@ def ReportsContent(page: ft.Page):
             return ft.Container(height=0)
 
         filename = export_state.get("filename") or "report.csv"
-        url = export_state.get("url") or make_download_url(filename)
+        url = export_state.get("url") or make_download_url(export_state.get("url_path") or filename)
+        expires_days = export_state.get("expires_after_days")
+        expire_text = f"此 CSV 為暫存下載檔，約保留 {expires_days} 天。" if expires_days else "此 CSV 為暫存下載檔，之後會自動清理。"
+        cleanup = export_state.get("cleanup") or {}
+        deleted_count = cleanup.get("deleted_count", 0) if isinstance(cleanup, dict) else 0
         return ft.Container(
             bgcolor=GREEN_SOFT,
             border=ft.border.all(1, GREEN_BORDER),
@@ -1058,6 +1078,8 @@ def ReportsContent(page: ft.Page):
                                     ft.Text("CSV 已產生", size=14, color=GREEN, weight=ft.FontWeight.BOLD),
                                     ft.Text(filename, size=12, color=TEXT_SUB, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
                                     ft.Text(url, size=11, color=TEXT_MUTED, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
+                                    ft.Text(expire_text, size=11, color=TEXT_MUTED),
+                                    ft.Text(f"本次已自動清理 {deleted_count} 個舊 CSV 檔。", size=11, color=TEXT_MUTED, visible=bool(deleted_count)),
                                 ],
                             ),
                         ],
