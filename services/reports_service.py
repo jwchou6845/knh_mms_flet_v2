@@ -6,7 +6,8 @@ from pathlib import Path
 from typing import Any
 import csv
 import re
-import secrets
+import uuid
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from repositories.reports_repo import (
@@ -28,7 +29,6 @@ from repositories.reports_repo import (
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
-# 匯出檔案只作為暫存下載使用，避免 VM 長期累積 CSV。
 EXPORT_KEEP_DAYS = 3
 EXPORT_MAX_TOTAL_MB = 100
 
@@ -976,67 +976,75 @@ def build_report_filter_options() -> ServiceResult:
 
 def safe_filename(value: str) -> str:
     text = clean_text(value, "report")
-    text = re.sub(r'[\\/:*?"<>|\s]+', "_", text)
-    return text.strip("_") or "report"
+    # 保留中文，但移除 URL / Windows 檔名不安全字元，空白改為底線。
+    text = re.sub(r"[\\/:*?\"<>|\s]+", "_", text)
+    text = text.strip("._-")
+    return text or "report"
 
 
 def cleanup_old_exports(
     export_dir: str = "exports",
     keep_days: int = EXPORT_KEEP_DAYS,
     max_total_mb: int = EXPORT_MAX_TOTAL_MB,
-) -> dict[str, int | float]:
+) -> dict[str, Any]:
     """
-    清理報表匯出的暫存 CSV。
-
-    規則：
-    1. 刪除超過 keep_days 天的 CSV。
-    2. 若資料夾總容量仍超過 max_total_mb，從最舊檔案開始刪。
-
-    這個函式不應讓匯出流程失敗；個別檔案刪除失敗會略過。
+    CSV 匯出檔視為暫存下載檔：
+    1. 刪除超過 keep_days 的舊 CSV。
+    2. 若 exports 總容量超過 max_total_mb，從最舊的 CSV 開始刪。
     """
     folder = Path(export_dir)
     folder.mkdir(parents=True, exist_ok=True)
 
     deleted_count = 0
     deleted_bytes = 0
-
     now_ts = now_taipei().timestamp()
-    cutoff_ts = now_ts - max(0, keep_days) * 24 * 60 * 60
+    cutoff_ts = now_ts - (keep_days * 24 * 60 * 60)
 
-    csv_files = []
+    csv_files: list[Path] = []
 
-    for file in folder.glob("*.csv"):
+    for path in folder.glob("*.csv"):
         try:
-            stat = file.stat()
+            stat = path.stat()
             if stat.st_mtime < cutoff_ts:
                 size = stat.st_size
-                file.unlink()
+                path.unlink()
                 deleted_count += 1
                 deleted_bytes += size
             else:
-                csv_files.append((file, stat.st_mtime, stat.st_size))
+                csv_files.append(path)
         except Exception:
             continue
 
-    max_total_bytes = max(1, max_total_mb) * 1024 * 1024
-    total_bytes = sum(size for _, _, size in csv_files)
+    max_total_bytes = max_total_mb * 1024 * 1024
+
+    existing: list[tuple[float, int, Path]] = []
+    total_bytes = 0
+    for path in folder.glob("*.csv"):
+        try:
+            stat = path.stat()
+            total_bytes += stat.st_size
+            existing.append((stat.st_mtime, stat.st_size, path))
+        except Exception:
+            continue
 
     if total_bytes > max_total_bytes:
-        for file, _, size in sorted(csv_files, key=lambda item: item[1]):
+        existing.sort(key=lambda item: item[0])
+        for _, size, path in existing:
             if total_bytes <= max_total_bytes:
                 break
             try:
-                file.unlink()
+                path.unlink()
+                total_bytes -= size
                 deleted_count += 1
                 deleted_bytes += size
-                total_bytes -= size
             except Exception:
                 continue
 
     return {
         "deleted_count": deleted_count,
         "deleted_bytes": deleted_bytes,
-        "remaining_bytes": max(0, total_bytes),
+        "keep_days": keep_days,
+        "max_total_mb": max_total_mb,
     }
 
 
@@ -1047,8 +1055,14 @@ def export_report_to_csv(
     """
     將報表資料輸出成 CSV。
     使用 utf-8-sig，方便 Windows Excel 直接開啟不亂碼。
+
+    注意 Flet 目前 main.py 使用 ft.run(main, assets_dir=".")，
+    因此 exports/ 內檔案對外下載路徑應為 /assets/exports/<filename>，
+    不是 /exports/<filename>。
     """
     try:
+        cleanup_info = cleanup_old_exports(export_dir=export_dir)
+
         title = clean_text(report_data.get("title"), "report")
         columns = report_data.get("columns") or []
         rows = report_data.get("rows") or []
@@ -1059,11 +1073,9 @@ def export_report_to_csv(
         folder = Path(export_dir)
         folder.mkdir(parents=True, exist_ok=True)
 
-        cleanup_info = cleanup_old_exports(export_dir=export_dir)
-
         timestamp = now_taipei().strftime("%Y%m%d_%H%M%S")
-        random_suffix = secrets.token_hex(3)
-        filename = f"{timestamp}_{safe_filename(title)}_{random_suffix}.csv"
+        suffix = uuid.uuid4().hex[:6]
+        filename = f"{timestamp}_{safe_filename(title)}_{suffix}.csv"
         path = folder / filename
 
         with path.open("w", newline="", encoding="utf-8-sig") as f:
@@ -1077,14 +1089,18 @@ def export_report_to_csv(
             for row in rows:
                 writer.writerow({col: row.get(col, "") for col in columns})
 
+        encoded_filename = quote(filename)
+        url_path = f"/assets/{export_dir.strip('/')}/{encoded_filename}"
+
         return ServiceResult(
             ok=True,
             message=f"CSV 已匯出：{path}",
             data={
                 "path": str(path),
                 "filename": filename,
-                "url_path": f"/{export_dir.strip('/').strip()}" + f"/{filename}",
-                "expires_after_days": EXPORT_KEEP_DAYS,
+                "url_path": url_path,
+                "asset_url_path": url_path,
+                "expires_after_days": cleanup_info.get("keep_days", EXPORT_KEEP_DAYS),
                 "cleanup": cleanup_info,
             },
         )

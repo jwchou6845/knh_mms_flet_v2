@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 from datetime import datetime
 from typing import Any
@@ -366,30 +367,65 @@ def ReportsContent(page: ft.Page):
             ),
         )
 
+    def normalize_export_url_path(value: str, filename: str = "") -> str:
+        """
+        Flet 以 ft.run(main, assets_dir=".") 啟動時，專案根目錄下的 exports/
+        應以 /assets/exports/... 對外讀取，而不是 /exports/...。
+        """
+        raw = str(value or "").strip()
+
+        if raw.startswith("http://") or raw.startswith("https://"):
+            return raw
+
+        if raw.startswith("/assets/exports/"):
+            return raw
+
+        if raw.startswith("assets/exports/"):
+            return "/" + raw
+
+        if raw.startswith("/exports/"):
+            return "/assets" + raw
+
+        if raw.startswith("exports/"):
+            return "/assets/" + raw
+
+        if filename:
+            return f"/assets/exports/{quote(filename)}"
+
+        return raw if raw.startswith("/") else f"/{raw}" if raw else ""
+
+    def get_public_base_url() -> str:
+        """
+        優先使用環境變數，方便日後改走 80 port 或正式網域。
+        未設定時，先用目前 Google VM 測試網址作為 fallback。
+        """
+        for key in ["KNH_PUBLIC_BASE_URL", "PUBLIC_BASE_URL", "FLET_PUBLIC_URL"]:
+            value = str(os.getenv(key, "") or "").strip().rstrip("/")
+            if value.startswith("http://") or value.startswith("https://"):
+                return value
+
+        page_url = str(getattr(page, "url", "") or "")
+        if page_url.startswith("http://") or page_url.startswith("https://"):
+            parts = urlsplit(page_url)
+            if parts.scheme and parts.netloc:
+                return f"{parts.scheme}://{parts.netloc}"
+
+        return "http://104.198.146.124:8502"
+
     def build_absolute_url(url_path: str) -> str:
         path = str(url_path or "").strip()
         if not path:
             return ""
         if path.startswith("http://") or path.startswith("https://"):
             return path
-
         if not path.startswith("/"):
             path = "/" + path
-
-        page_url = str(getattr(page, "url", "") or "")
-        if page_url.startswith("http://") or page_url.startswith("https://"):
-            parts = urlsplit(page_url)
-            if parts.scheme and parts.netloc:
-                return f"{parts.scheme}://{parts.netloc}{path}"
-
-        return path
+        return f"{get_public_base_url()}{path}"
 
     def open_url(url: str) -> None:
         if not url:
             show_msg("尚未產生可下載的 CSV。", ORANGE)
             return
-        # 目前 VM 的 Flet Page 沒有 eval_js，也沒有 set_clipboard。
-        # 下載只嘗試 launch_url；若手機 WebView 攔截，畫面仍提供網址欄位可手動開啟。
         try:
             if hasattr(page, "launch_url"):
                 page.launch_url(url)
@@ -397,7 +433,7 @@ def ReportsContent(page: ft.Page):
         except Exception as ex:
             show_msg(f"無法自動開啟下載連結：{ex}", RED)
             return
-        show_msg("目前環境不支援自動開啟，請長按下方網址複製後在瀏覽器開啟。", ORANGE)
+        show_msg("目前環境不支援自動開啟，請長按下方完整網址後在瀏覽器開啟。", ORANGE)
 
     # =====================================================
     # 3. 控制項宣告
@@ -533,8 +569,11 @@ def ReportsContent(page: ft.Page):
                 if result.ok:
                     data = result.data or {}
                     filename = str(data.get("filename") or "")
-                    url_path = str(data.get("url_path") or (f"/exports/{quote(filename)}" if filename else ""))
-                    url = build_absolute_url(url_path)
+                    raw_url_path = str(data.get("url_path") or data.get("asset_url_path") or "")
+                    url_path = normalize_export_url_path(raw_url_path, filename)
+                    url = str(data.get("url") or data.get("download_url") or "")
+                    if not url:
+                        url = build_absolute_url(url_path)
                     export_state.update(
                         {
                             "filename": filename,
@@ -910,7 +949,8 @@ def ReportsContent(page: ft.Page):
                                 controls=[
                                     ft.Text("CSV 已產生", size=16, color=GREEN, weight=ft.FontWeight.BOLD),
                                     ft.Text(filename, size=12, color=TEXT_SUB, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
-                                    ft.Text(url_path, size=12, color=TEXT_MUTED, max_lines=3, overflow=ft.TextOverflow.VISIBLE),
+                                    ft.Text(url_path, size=12, color=TEXT_MUTED, max_lines=2, overflow=ft.TextOverflow.VISIBLE),
+                                    ft.Text(url, size=12, color=TEXT_MUTED, max_lines=3, overflow=ft.TextOverflow.VISIBLE),
                                     ft.Text(keep_text, size=12, color=TEXT_MUTED),
                                     ft.Text(cleanup_text, size=12, color=TEXT_MUTED, visible=bool(cleanup_text)),
                                 ],
