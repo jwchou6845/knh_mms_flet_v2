@@ -6,8 +6,7 @@ from pathlib import Path
 from typing import Any
 import csv
 import re
-import uuid
-from urllib.parse import quote
+import secrets
 from zoneinfo import ZoneInfo
 
 from repositories.reports_repo import (
@@ -28,9 +27,6 @@ from repositories.reports_repo import (
 
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
-
-EXPORT_KEEP_DAYS = 3
-EXPORT_MAX_TOTAL_MB = 100
 
 
 QUICK_REPORTS = [
@@ -970,82 +966,127 @@ def build_report_filter_options() -> ServiceResult:
             },
         )
 
+
+# ============================================================
+# Export path helpers
+# ============================================================
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_EXPORT_KEEP_DAYS = 3
+DEFAULT_EXPORT_MAX_MB = 100
+
+
+def resolve_export_folder(export_dir: str = "exports") -> Path:
+    """
+    取得報表匯出資料夾的絕對路徑。
+
+    systemd / VM 啟動時的 working directory 不一定是專案根目錄，
+    因此不可直接使用 Path("exports")。
+    這裡固定以 services/reports_service.py 的上層作為專案根目錄。
+    """
+    clean_dir = str(export_dir or "exports").strip().replace("\\", "/").strip("/")
+    if not clean_dir:
+        clean_dir = "exports"
+    return PROJECT_ROOT / clean_dir
+
+
+def cleanup_old_exports(
+    export_dir: str = "exports",
+    keep_days: int = DEFAULT_EXPORT_KEEP_DAYS,
+    max_total_mb: int = DEFAULT_EXPORT_MAX_MB,
+) -> dict[str, Any]:
+    """
+    清理報表暫存 CSV。
+    - 預設刪除超過 keep_days 的 CSV。
+    - 若資料夾總大小超過 max_total_mb，從最舊檔案開始刪除。
+    """
+    folder = resolve_export_folder(export_dir)
+    folder.mkdir(parents=True, exist_ok=True)
+
+    now_ts = now_taipei().timestamp()
+    cutoff_ts = now_ts - (max(1, int(keep_days)) * 24 * 60 * 60)
+    max_bytes = max(1, int(max_total_mb)) * 1024 * 1024
+
+    deleted_files: list[str] = []
+    deleted_old_count = 0
+    deleted_size_count = 0
+
+    csv_files = []
+    for file in folder.glob("*.csv"):
+        try:
+            stat = file.stat()
+            csv_files.append((file, stat.st_mtime, stat.st_size))
+        except Exception:
+            continue
+
+    # 先刪超過保留天數的舊檔。
+    remaining = []
+    for file, modified_ts, size in csv_files:
+        if modified_ts < cutoff_ts:
+            try:
+                file.unlink()
+                deleted_old_count += 1
+                deleted_files.append(file.name)
+            except Exception:
+                remaining.append((file, modified_ts, size))
+        else:
+            remaining.append((file, modified_ts, size))
+
+    # 再依總容量限制刪最舊檔案。
+    total_size = sum(size for _, _, size in remaining)
+    if total_size > max_bytes:
+        remaining.sort(key=lambda item: item[1])
+        kept = []
+        for file, modified_ts, size in remaining:
+            if total_size <= max_bytes:
+                kept.append((file, modified_ts, size))
+                continue
+            try:
+                file.unlink()
+                total_size -= size
+                deleted_size_count += 1
+                deleted_files.append(file.name)
+            except Exception:
+                kept.append((file, modified_ts, size))
+        remaining = kept
+
+    return {
+        "folder": str(folder),
+        "keep_days": keep_days,
+        "max_total_mb": max_total_mb,
+        "deleted_old_count": deleted_old_count,
+        "deleted_size_count": deleted_size_count,
+        "deleted_total_count": deleted_old_count + deleted_size_count,
+        "deleted_files": deleted_files[:20],
+    }
+
 # ============================================================
 # CSV export
 # ============================================================
 
 def safe_filename(value: str) -> str:
+    """
+    產生 URL / 下載相對安全的英文檔名片段。
+    中文報表名稱仍可在 UI 顯示，但實際 CSV 檔名避免中文與空白，降低手機瀏覽器與靜態路徑問題。
+    """
     text = clean_text(value, "report")
-    # 保留中文，但移除 URL / Windows 檔名不安全字元，空白改為底線。
-    text = re.sub(r"[\\/:*?\"<>|\s]+", "_", text)
-    text = text.strip("._-")
+    text = re.sub(r"[^A-Za-z0-9_-]+", "_", text)
+    text = re.sub(r"_+", "_", text).strip("_")
     return text or "report"
 
 
-def cleanup_old_exports(
-    export_dir: str = "exports",
-    keep_days: int = EXPORT_KEEP_DAYS,
-    max_total_mb: int = EXPORT_MAX_TOTAL_MB,
-) -> dict[str, Any]:
+def build_csv_text(columns: list[str], rows: list[dict[str, Any]]) -> str:
     """
-    CSV 匯出檔視為暫存下載檔：
-    1. 刪除超過 keep_days 的舊 CSV。
-    2. 若 exports 總容量超過 max_total_mb，從最舊的 CSV 開始刪。
+    產生 CSV 文字內容，供 reports.py 在手機版顯示文字框或除錯使用。
     """
-    folder = Path(export_dir)
-    folder.mkdir(parents=True, exist_ok=True)
+    from io import StringIO
 
-    deleted_count = 0
-    deleted_bytes = 0
-    now_ts = now_taipei().timestamp()
-    cutoff_ts = now_ts - (keep_days * 24 * 60 * 60)
-
-    csv_files: list[Path] = []
-
-    for path in folder.glob("*.csv"):
-        try:
-            stat = path.stat()
-            if stat.st_mtime < cutoff_ts:
-                size = stat.st_size
-                path.unlink()
-                deleted_count += 1
-                deleted_bytes += size
-            else:
-                csv_files.append(path)
-        except Exception:
-            continue
-
-    max_total_bytes = max_total_mb * 1024 * 1024
-
-    existing: list[tuple[float, int, Path]] = []
-    total_bytes = 0
-    for path in folder.glob("*.csv"):
-        try:
-            stat = path.stat()
-            total_bytes += stat.st_size
-            existing.append((stat.st_mtime, stat.st_size, path))
-        except Exception:
-            continue
-
-    if total_bytes > max_total_bytes:
-        existing.sort(key=lambda item: item[0])
-        for _, size, path in existing:
-            if total_bytes <= max_total_bytes:
-                break
-            try:
-                path.unlink()
-                total_bytes -= size
-                deleted_count += 1
-                deleted_bytes += size
-            except Exception:
-                continue
-
-    return {
-        "deleted_count": deleted_count,
-        "deleted_bytes": deleted_bytes,
-        "keep_days": keep_days,
-        "max_total_mb": max_total_mb,
-    }
+    buffer = StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=columns, extrasaction="ignore")
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({col: row.get(col, "") for col in columns})
+    return buffer.getvalue()
 
 
 def export_report_to_csv(
@@ -1056,13 +1097,9 @@ def export_report_to_csv(
     將報表資料輸出成 CSV。
     使用 utf-8-sig，方便 Windows Excel 直接開啟不亂碼。
 
-    注意 Flet 目前 main.py 使用 ft.run(main, assets_dir=".")，
-    因此 exports/ 內檔案對外下載路徑應為 /assets/exports/<filename>，
-    不是 /exports/<filename>。
+    重點：匯出路徑固定以專案根目錄為基準，不受 systemd / shell working directory 影響。
     """
     try:
-        cleanup_info = cleanup_old_exports(export_dir=export_dir)
-
         title = clean_text(report_data.get("title"), "report")
         columns = report_data.get("columns") or []
         rows = report_data.get("rows") or []
@@ -1070,38 +1107,40 @@ def export_report_to_csv(
         if not columns:
             return ServiceResult(ok=False, message="沒有可匯出的欄位。")
 
-        folder = Path(export_dir)
+        cleanup_info = cleanup_old_exports(export_dir=export_dir)
+
+        folder = resolve_export_folder(export_dir)
         folder.mkdir(parents=True, exist_ok=True)
 
         timestamp = now_taipei().strftime("%Y%m%d_%H%M%S")
-        suffix = uuid.uuid4().hex[:6]
-        filename = f"{timestamp}_{safe_filename(title)}_{suffix}.csv"
+        token = secrets.token_hex(3)
+        # 使用英文安全檔名；UI 仍可顯示 title。
+        filename = f"report_{timestamp}_{token}.csv"
         path = folder / filename
 
-        with path.open("w", newline="", encoding="utf-8-sig") as f:
-            writer = csv.DictWriter(
-                f,
-                fieldnames=columns,
-                extrasaction="ignore",
-            )
-            writer.writeheader()
+        csv_text = build_csv_text(columns, rows)
 
-            for row in rows:
-                writer.writerow({col: row.get(col, "") for col in columns})
+        # 寫入 utf-8-sig，Excel 開啟中文較穩。
+        path.write_text(csv_text, encoding="utf-8-sig", newline="")
 
-        encoded_filename = quote(filename)
-        url_path = f"/assets/{export_dir.strip('/')}/{encoded_filename}"
+        relative_path = f"{str(export_dir or 'exports').strip().strip('/').replace('\\\\', '/')}/{filename}"
+        url_path = f"/{relative_path}"
+        asset_url_path = f"/assets/{relative_path}"
 
         return ServiceResult(
             ok=True,
             message=f"CSV 已匯出：{path}",
             data={
                 "path": str(path),
+                "folder": str(folder),
                 "filename": filename,
+                "title": title,
+                "relative_path": relative_path,
                 "url_path": url_path,
-                "asset_url_path": url_path,
-                "expires_after_days": cleanup_info.get("keep_days", EXPORT_KEEP_DAYS),
+                "asset_url_path": asset_url_path,
+                "expires_after_days": DEFAULT_EXPORT_KEEP_DAYS,
                 "cleanup": cleanup_info,
+                "csv_text": csv_text,
             },
         )
 
