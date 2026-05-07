@@ -22,6 +22,27 @@ def get_user_by_employee_id(employee_id: str) -> dict[str, Any] | None:
     return res.data[0]
 
 
+
+
+def get_user_by_id(user_id: str) -> dict[str, Any] | None:
+    uid = str(user_id or "").strip()
+    if not uid:
+        return None
+
+    res = (
+        supabase.table(TABLE_USERS)
+        .select("*")
+        .eq("id", uid)
+        .limit(1)
+        .execute()
+    )
+
+    if not res.data:
+        return None
+
+    return res.data[0]
+
+
 def update_last_login(user_id: str, login_at: str) -> dict[str, Any] | None:
     res = (
         supabase.table(TABLE_USERS)

@@ -1,6 +1,8 @@
 # views/login.py
 # KNH MMS Login - Supabase 版（Flet 0.84）
 import flet as ft
+import json
+import threading
 
 from services.auth_service import (
     authenticate_user,
@@ -9,9 +11,11 @@ from services.auth_service import (
     submit_password_reset_request,
     hash_password,
 )
+from services.auth_session_service import create_persistent_session
 
 
 REMEMBER_EMPLOYEE_KEY = "knh_employee_id"
+SESSION_TOKEN_KEY = "knh_session_token"
 
 
 def LoginView(page: ft.Page):
@@ -92,25 +96,155 @@ def LoginView(page: ft.Page):
         snack.open = True
         page.update()
 
+    def _normalize_storage_value(value):
+        if value is None:
+            return ""
+
+        text = str(value).strip()
+        if text in ["", "null", "None", "undefined"]:
+            return ""
+
+        if len(text) >= 2 and text[0] == '"' and text[-1] == '"':
+            try:
+                return json.loads(text)
+            except Exception:
+                return text.strip('"')
+
+        return text
+
+    def browser_storage_get(key: str, callback):
+        if hasattr(page, "shared_preferences") and hasattr(page, "run_task"):
+            async def do_get():
+                try:
+                    value = await page.shared_preferences.get(key)
+                except Exception as ex:
+                    print("shared_preferences.get failed:", repr(ex))
+                    value = None
+                callback(_normalize_storage_value(value))
+
+            try:
+                page.run_task(do_get)
+                return True
+            except Exception as ex:
+                print("page.run_task shared_preferences.get failed:", repr(ex))
+
+        script = f"window.localStorage.getItem({json.dumps(key)})"
+
+        if hasattr(page, "eval_js"):
+            try:
+                page.eval_js(
+                    script,
+                    result_handler=lambda e: callback(
+                        _normalize_storage_value(getattr(e, "data", None))
+                    ),
+                )
+                return True
+            except TypeError:
+                try:
+                    value = page.eval_js(script)
+                    callback(_normalize_storage_value(value))
+                    return True
+                except Exception as ex:
+                    print("page.eval_js get failed:", repr(ex))
+            except Exception as ex:
+                print("page.eval_js get failed:", repr(ex))
+
+        if hasattr(page, "run_javascript"):
+            try:
+                value = page.run_javascript(script)
+                callback(_normalize_storage_value(value))
+                return True
+            except Exception as ex:
+                print("page.run_javascript get failed:", repr(ex))
+
+        callback("")
+        return False
+
+    def browser_storage_set(key: str, value: str):
+        try:
+            page.session_data[key] = value
+        except Exception:
+            pass
+
+        if hasattr(page, "shared_preferences") and hasattr(page, "run_task"):
+            async def do_set():
+                try:
+                    await page.shared_preferences.set(key, value)
+                except Exception as ex:
+                    print("shared_preferences.set failed:", repr(ex))
+
+            try:
+                page.run_task(do_set)
+                return True
+            except Exception as ex:
+                print("page.run_task shared_preferences.set failed:", repr(ex))
+
+        script = f"window.localStorage.setItem({json.dumps(key)}, {json.dumps(value)});"
+
+        if hasattr(page, "eval_js"):
+            try:
+                page.eval_js(script)
+                return True
+            except Exception as ex:
+                print("page.eval_js set failed:", repr(ex))
+
+        if hasattr(page, "run_javascript"):
+            try:
+                page.run_javascript(script)
+                return True
+            except Exception as ex:
+                print("page.run_javascript set failed:", repr(ex))
+
+        return False
+
+    def browser_storage_remove(key: str):
+        try:
+            page.session_data.pop(key, None)
+        except Exception:
+            pass
+
+        if hasattr(page, "shared_preferences") and hasattr(page, "run_task"):
+            async def do_remove():
+                try:
+                    await page.shared_preferences.remove(key)
+                except Exception as ex:
+                    print("shared_preferences.remove failed:", repr(ex))
+
+            try:
+                page.run_task(do_remove)
+                return True
+            except Exception as ex:
+                print("page.run_task shared_preferences.remove failed:", repr(ex))
+
+        script = f"window.localStorage.removeItem({json.dumps(key)});"
+
+        if hasattr(page, "eval_js"):
+            try:
+                page.eval_js(script)
+                return True
+            except Exception as ex:
+                print("page.eval_js remove failed:", repr(ex))
+
+        if hasattr(page, "run_javascript"):
+            try:
+                page.run_javascript(script)
+                return True
+            except Exception as ex:
+                print("page.run_javascript remove failed:", repr(ex))
+
+        return False
+
     def get_client_value(key: str, default=""):
-        # VM 目前的 Flet Page 沒有 client_storage，這裡改用 session_data 暫存，
-        # 避免換頁 / 重新建頁時出現 Page has no attribute client_storage。
         try:
             return page.session_data.get(key, default)
         except Exception:
             return default
 
     def set_client_value(key: str, value):
-        try:
-            page.session_data[key] = value
-        except Exception:
-            pass
+        browser_storage_set(key, str(value or ""))
 
     def remove_client_value(key: str):
-        try:
-            page.session_data.pop(key, None)
-        except Exception:
-            pass
+        browser_storage_remove(key)
 
     def save_login_session(user: dict):
         user_id = str(user.get("id", "")).strip()
@@ -129,6 +263,31 @@ def LoginView(page: ft.Page):
         page.session_data["can_access_spinneret"] = bool(user.get("can_access_spinneret", False))
         page.session_data["can_access_maintenance"] = bool(user.get("can_access_maintenance", False))
         page.session_data["quick_shortcuts"] = user.get("quick_shortcuts") or []
+
+    def create_and_store_persistent_session(user: dict):
+        try:
+            result = create_persistent_session(
+                user,
+                user_agent=str(getattr(page, "client_user_agent", "") or ""),
+                ip_address=str(getattr(page, "client_ip", "") or ""),
+            )
+
+            if not result.ok:
+                print("create persistent session failed:", result.message)
+                return
+
+            data = result.data or {}
+            token = str(data.get("session_token") or "").strip()
+            if not token:
+                print("create persistent session failed: no token")
+                return
+
+            page.session_data["session_token"] = token
+            browser_storage_set(SESSION_TOKEN_KEY, token)
+            print("PERSISTENT SESSION CREATED")
+
+        except Exception as ex:
+            print("create persistent session error:", repr(ex))
 
 
     # =====================================================
@@ -528,6 +687,7 @@ def LoginView(page: ft.Page):
 
             print("LOGIN STEP 4: save session")
             save_login_session(user)
+            create_and_store_persistent_session(user)
 
             print("LOGIN STEP 5: save last login")
             last_login_result = save_user_last_login(user.get("id", ""))
@@ -958,6 +1118,7 @@ def LoginView(page: ft.Page):
 
                 updated_user = result.data or user
                 save_login_session(updated_user)
+                create_and_store_persistent_session(updated_user)
 
                 last_login_result = save_user_last_login(updated_user.get("id", ""))
                 if not last_login_result.ok:
@@ -1073,6 +1234,31 @@ def LoginView(page: ft.Page):
         login_card,
         footer_visible=True,
     )
+
+    def load_remembered_employee_from_browser():
+        def on_loaded(value):
+            employee_id = _normalize_storage_value(value)
+            if not employee_id:
+                return
+
+            if not (employee_field.value or "").strip():
+                employee_field.value = employee_id
+            remember_checkbox.value = True
+            try:
+                employee_field.update()
+                remember_checkbox.update()
+            except Exception:
+                try:
+                    page.update()
+                except Exception:
+                    pass
+
+        browser_storage_get(REMEMBER_EMPLOYEE_KEY, on_loaded)
+
+    try:
+        threading.Timer(0.35, load_remembered_employee_from_browser).start()
+    except Exception:
+        pass
 
     # =====================================================
     # 背景與表單鎖定畫布
