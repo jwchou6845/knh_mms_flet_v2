@@ -1,5 +1,7 @@
 import flet as ft
 import base64
+import threading
+import time
 
 from services.dashboard_service import load_dashboard_page_data
 from services.handover_service import (
@@ -23,35 +25,90 @@ def DashboardContent(page: ft.Page):
     """
 
     # =====================================================
-    # Supabase Dashboard Data
+    # View lifecycle / 非阻塞載入狀態
     # =====================================================
-    dashboard_result = load_dashboard_page_data()
-    dashboard_data = dashboard_result.data
+    if not hasattr(page, "session_data"):
+        page.session_data = {}
 
-    current_ym = dashboard_data.get("current_ym", "")
-    current_time_str = dashboard_data.get("current_time", "")
-    new_stock_data = dashboard_data.get("new_stock_data", [])
-    recycled_stock_data = dashboard_data.get("recycled_stock_data", [])
-    alert_items = dashboard_data.get("alert_items", [])
-    usage_summary = dashboard_data.get(
-        "usage_summary",
-        {
-            "新料": {},
-            "母粒": {},
-            "回用料": {},
-        },
-    )
-    maintenance_summary = dashboard_data.get(
-        "maintenance_summary",
-        {
-            "total": 0,
-            "overdue": 0,
-            "today": 0,
-            "abnormal": 0,
-            "preview": [],
-            "error": "",
-        },
-    )
+    view_token = object()
+    page.session_data["_dashboard_view_token"] = view_token
+
+    DEFAULT_USAGE_SUMMARY = {"新料": {}, "母粒": {}, "回用料": {}}
+    DEFAULT_MAINTENANCE_SUMMARY = {
+        "total": 0,
+        "overdue": 0,
+        "today": 0,
+        "abnormal": 0,
+        "preview": [],
+        "error": "",
+    }
+    DEFAULT_HANDOVER_SUMMARY = {
+        "total": 0,
+        "high": 0,
+        "abnormal": 0,
+        "todo": 0,
+        "completed_outgoing": 0,
+        "completed_preview": [],
+        "preview": [],
+        "error": "",
+    }
+
+    def default_dashboard_data():
+        return {
+            "current_ym": "同步中",
+            "current_time": "同步中",
+            "new_stock_data": [],
+            "recycled_stock_data": [],
+            "alert_items": [],
+            "usage_summary": {"新料": {}, "母粒": {}, "回用料": {}},
+            "maintenance_summary": dict(DEFAULT_MAINTENANCE_SUMMARY),
+        }
+
+    state = {
+        "loading": True,
+        "loaded": False,
+        "dashboard_error": "",
+        "sync_visible": True,
+        "sync_theme": "blue",
+        "sync_message": "首頁資料同步中",
+        "dashboard_data": default_dashboard_data(),
+        "handover_summary": dict(DEFAULT_HANDOVER_SUMMARY),
+    }
+
+    def is_active_view():
+        route = str(getattr(page, "route", "") or "")
+        return (
+            page.session_data.get("_dashboard_view_token") is view_token
+            and (not route or route == "/" or route == "/dashboard" or "dashboard" in route)
+        )
+
+    def safe_page_update():
+        try:
+            page.update()
+        except Exception as ex:
+            print("dashboard page.update failed:", repr(ex))
+
+    def get_dashboard_data():
+        return state.get("dashboard_data") or default_dashboard_data()
+
+    def get_usage_summary():
+        return get_dashboard_data().get("usage_summary") or DEFAULT_USAGE_SUMMARY
+
+    def set_sync_status(message: str, theme: str = "blue", visible: bool = True):
+        state["sync_message"] = message
+        state["sync_theme"] = theme
+        state["sync_visible"] = visible
+
+    def schedule_sync_hide(delay_seconds: int = 3):
+        def worker():
+            time.sleep(delay_seconds)
+            if not is_active_view():
+                return
+            if state.get("sync_theme") == "green":
+                state["sync_visible"] = False
+                rebuild()
+
+        threading.Thread(target=worker, daemon=True).start()
 
     # =====================================================
     # 交接待辦摘要：Supabase
@@ -405,6 +462,26 @@ def DashboardContent(page: ft.Page):
             has_error=has_error,
         )
 
+    def resolve_handover_summary_border(summary):
+        """
+        首頁兩張待辦摘要卡的外框顏色以交接待辦摘要為基準。
+        這裡只統一外框視覺層級；保養卡本身的 icon / 數字色仍保留保養語意。
+        """
+        if bool(summary.get("error")):
+            return "#FECACA"
+
+        total = int(summary.get("total", 0) or 0)
+        high = int(summary.get("high", 0) or 0)
+        completed_outgoing = int(summary.get("completed_outgoing", 0) or 0)
+
+        if total > 0:
+            return "#FECACA" if high > 0 else "#FDBA74"
+
+        if completed_outgoing > 0:
+            return "#BFDBFE"
+
+        return "#A7F3D0"
+
     def maintenance_summary_card(summary):
         has_error = bool(summary.get("error"))
         total = int(summary.get("total", 0))
@@ -430,6 +507,10 @@ def DashboardContent(page: ft.Page):
             title = "保養待辦摘要"
             subtitle = "目前沒有需要立即處理的保養項目。"
             icon = ft.Icons.CHECK_CIRCLE_OUTLINE
+
+        if not has_error:
+            # 與交接待辦摘要外框顏色保持一致，避免首頁兩張摘要卡視覺層級不一致。
+            theme_border = resolve_handover_summary_border(state.get("handover_summary") or DEFAULT_HANDOVER_SUMMARY)
 
         preview_controls = []
         for item in summary.get("preview", []):
@@ -570,7 +651,7 @@ def DashboardContent(page: ft.Page):
     # =====================================================
     def stat_card(title, value, unit, trend, is_up=True, theme_color="#2F80ED", history_data=None):
         if not history_data or len(history_data) < 2:
-            history_data = [10, 15, 12, 18, 14, 22, 20]
+            history_data = [0, 0, 0, 0, 0, 0, 0]
 
         mini_sparkline = sparkline_image(history_data, theme_color)
 
@@ -754,7 +835,7 @@ def DashboardContent(page: ft.Page):
     def build_cards(category, theme_color):
         cards = []
 
-        for name, data in usage_summary.get(category, {}).items():
+        for name, data in get_usage_summary().get(category, {}).items():
             this_m = float(data.get("this_month", 0))
             last_m = float(data.get("last_month", 0))
 
@@ -771,6 +852,8 @@ def DashboardContent(page: ft.Page):
 
             if last_m == 0 and this_m > 0:
                 trend_str = "▲ 新啟用"
+            elif last_m > 0 and this_m == 0:
+                trend_str = "▼ 本月未用"
 
             history = data.get("history", [])
             if not history:
@@ -793,174 +876,266 @@ def DashboardContent(page: ft.Page):
 
         return cards
 
-    handover_summary = load_handover_task_summary()
+    def sync_status_banner():
+        if not state.get("sync_visible"):
+            return ft.Container(height=0)
 
-    cards_new = build_cards("新料", "#2F80ED")
-    cards_mb = build_cards("母粒", "#9C27B0")
-    cards_recyc = build_cards("回用料", "#10B981")
+        theme = state.get("sync_theme", "blue")
+        if theme == "green":
+            bg, border, fg, icon = "#ECFDF5", "#A7F3D0", "#10B981", ft.Icons.CHECK_CIRCLE_OUTLINE
+        elif theme == "red":
+            bg, border, fg, icon = "#FEF2F2", "#FECACA", "#DC2626", ft.Icons.ERROR_OUTLINE
+        else:
+            bg, border, fg, icon = "#E5F0FF", "#BFDBFE", "#2563EB", ft.Icons.SYNC
 
-    max_new_stock = max([item[1] for item in new_stock_data]) * 1.2 if new_stock_data else 20
-    max_recycled_stock = max([item[1] for item in recycled_stock_data]) * 1.2 if recycled_stock_data else 9000
-
-    alert_count = len(alert_items)
-    alert_controls = [
-        ft.Row(
-            [
-                ft.Container(
-                    width=50,
-                    height=50,
-                    bgcolor="#FFFFFF",
-                    border_radius=14,
-                    shadow=ft.BoxShadow(spread_radius=0, blur_radius=3, color="#0A000000", offset=ft.Offset(0, 1)),
-                    content=ft.Icon(
-                        ft.Icons.NOTIFICATIONS_ACTIVE,
-                        color="#EF4444" if alert_count > 0 else "#10B981",
-                    ),
-                    alignment=ft.Alignment(0, 0),
-                ),
-                ft.Column(
-                    [
-                        ft.Text(
-                            "低水位警示" if alert_count > 0 else "庫存安全",
-                            size=18,
-                            weight=ft.FontWeight.BOLD,
-                            color="#111827",
-                        ),
-                        ft.Text(
-                            f"目前有 {alert_count} 項原料低於安全庫存"
-                            if alert_count > 0
-                            else "所有原料皆在安全水位之上",
-                            size=13,
-                            color="#6B7280",
-                        ),
-                    ],
-                    spacing=2,
-                ),
-            ],
-            spacing=15,
-        ),
-        ft.Container(height=5),
-    ]
-
-    if alert_count > 0:
-        for item in alert_items:
-            alert_controls.append(
-                ft.Container(
-                    padding=14,
-                    bgcolor="#FFFFFF",
-                    border_radius=12,
-                    content=ft.Row(
-                        [
-                            ft.Row(
-                                [
-                                    ft.Icon(ft.Icons.CIRCLE, size=8, color="#EF4444"),
-                                    ft.Text(item["name"], size=15),
-                                ]
-                            ),
-                            ft.Text(f"{item['qty']} 包", weight="bold", color="#EF4444", size=15),
-                        ],
-                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                    ),
-                )
-            )
-
-    alert_section = ft.Container(
-        padding=20,
-        bgcolor="#FEF2F2" if alert_count > 0 else "#F0FDF4",
-        border_radius=22,
-        border=ft.border.all(1, "#FECACA" if alert_count > 0 else "#BBF7D0"),
-        content=ft.Column(alert_controls, spacing=12),
-    )
-
-    error_banner = None
-    if not dashboard_result.ok:
-        error_banner = ft.Container(
-            padding=14,
-            bgcolor="#FEF2F2",
-            border=ft.border.all(1, "#FECACA"),
-            border_radius=14,
+        return ft.Container(
+            height=36,
+            padding=ft.padding.symmetric(horizontal=14),
+            border_radius=18,
+            bgcolor=bg,
+            border=ft.border.all(1, border),
+            alignment=ft.Alignment(0, 0),
             content=ft.Row(
                 controls=[
-                    ft.Icon(ft.Icons.ERROR_OUTLINE, color="#DC2626", size=20),
-                    ft.Text(dashboard_result.message, color="#DC2626", size=13),
+                    ft.Icon(icon, size=17, color=fg),
+                    ft.Text(str(state.get("sync_message") or ""), size=13, color=fg, weight=ft.FontWeight.W_600),
                 ],
-                spacing=10,
+                spacing=8,
+                alignment=ft.MainAxisAlignment.CENTER,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
         )
 
-    controls = []
+    def build_dashboard_controls():
+        dashboard_data = get_dashboard_data()
+        current_ym = dashboard_data.get("current_ym", "")
+        current_time_str = dashboard_data.get("current_time", "")
+        new_stock_data = dashboard_data.get("new_stock_data", []) or []
+        recycled_stock_data = dashboard_data.get("recycled_stock_data", []) or []
+        alert_items = dashboard_data.get("alert_items", []) or []
+        maintenance_summary = dashboard_data.get("maintenance_summary") or dict(DEFAULT_MAINTENANCE_SUMMARY)
+        handover_summary = state.get("handover_summary") or dict(DEFAULT_HANDOVER_SUMMARY)
 
-    if error_banner:
-        controls.append(error_banner)
-        controls.append(ft.Container(height=10))
+        cards_new = build_cards("新料", "#2F80ED")
+        cards_mb = build_cards("母粒", "#9C27B0")
+        cards_recyc = build_cards("回用料", "#10B981")
 
-    controls.extend(
-        [
-            handover_summary_card(handover_summary),
-            ft.Container(height=10),
-            maintenance_summary_card(maintenance_summary),
-            ft.Container(height=10),
-            alert_section,
-            ft.Container(height=10),
-            usage_section(
-                icon=ft.Icons.QUERY_STATS,
-                title="本月新料用量",
-                bg_color="#E5F0FF",
-                border_color="#B0D0FF",
-                theme_color="#2F80ED",
-                current_month=current_ym,
-                cards=cards_new,
-            ),
-            ft.Container(height=10),
-            usage_section(
-                icon=ft.Icons.COLOR_LENS_OUTLINED,
-                title="本月母粒用量",
-                bg_color="#F0E5FF",
-                border_color="#D3B0FF",
-                theme_color="#9C27B0",
-                current_month=current_ym,
-                cards=cards_mb,
-            ),
-            ft.Container(height=10),
-            usage_section(
-                icon=ft.Icons.RECYCLING,
-                title="本月回用料用量",
-                bg_color="#F0FDF4",
-                border_color="#BBF7D0",
-                theme_color="#10B981",
-                current_month=current_ym,
-                cards=cards_recyc,
-            ),
-            ft.Container(height=20),
-            custom_ui_bar_chart(
-                title="即時庫存",
-                data_list=new_stock_data,
-                max_val=max_new_stock,
-                legend_items=[
-                    ("未結晶", "#3B82F6"),
-                    ("N/A", "#10B981"),
-                    ("已結晶", "#F59E0B"),
-                    ("警示", "#EF4444"),
+        # 用實際最大值計算長條比例；不再先乘 1.2，避免最大值長條永遠只到約 83%。
+        max_new_stock = max([item[1] for item in new_stock_data]) if new_stock_data else 20
+        max_recycled_stock = max([item[1] for item in recycled_stock_data]) if recycled_stock_data else 9000
+
+        alert_count = len(alert_items)
+        alert_controls = [
+            ft.Row(
+                [
+                    ft.Container(
+                        width=50,
+                        height=50,
+                        bgcolor="#FFFFFF",
+                        border_radius=14,
+                        shadow=ft.BoxShadow(spread_radius=0, blur_radius=3, color="#0A000000", offset=ft.Offset(0, 1)),
+                        content=ft.Icon(
+                            ft.Icons.NOTIFICATIONS_ACTIVE,
+                            color="#EF4444" if alert_count > 0 else "#10B981",
+                        ),
+                        alignment=ft.Alignment(0, 0),
+                    ),
+                    ft.Column(
+                        [
+                            ft.Text(
+                                "低水位警示" if alert_count > 0 else "庫存安全",
+                                size=18,
+                                weight=ft.FontWeight.BOLD,
+                                color="#111827",
+                            ),
+                            ft.Text(
+                                f"目前有 {alert_count} 項原料低於安全庫存"
+                                if alert_count > 0
+                                else "所有原料皆在安全水位之上",
+                                size=13,
+                                color="#6B7280",
+                            ),
+                        ],
+                        spacing=2,
+                    ),
                 ],
-                update_time=current_time_str,
-                unit="包",
+                spacing=15,
             ),
-            ft.Container(height=15),
-            custom_ui_bar_chart(
-                title="即時回用料庫存",
-                data_list=recycled_stock_data,
-                max_val=max_recycled_stock,
-                legend_items=[
-                    ("PET", "#2563EB"),
-                    ("PA6", "#38BDF8"),
-                    ("PET-308A", "#EF4444"),
-                    ("RPET", "#F472B6"),
-                ],
-                update_time=current_time_str,
-                unit="KG",
-            ),
-            ft.Container(height=80),
+            ft.Container(height=5),
         ]
-    )
 
-    return ft.Column(controls, spacing=0)
+        if alert_count > 0:
+            for item in alert_items:
+                alert_controls.append(
+                    ft.Container(
+                        padding=14,
+                        bgcolor="#FFFFFF",
+                        border_radius=12,
+                        content=ft.Row(
+                            [
+                                ft.Row(
+                                    [
+                                        ft.Icon(ft.Icons.CIRCLE, size=8, color="#EF4444"),
+                                        ft.Text(item["name"], size=15),
+                                    ]
+                                ),
+                                ft.Text(f"{item['qty']} 包", weight="bold", color="#EF4444", size=15),
+                            ],
+                            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                        ),
+                    )
+                )
+
+        alert_section = ft.Container(
+            padding=20,
+            bgcolor="#FEF2F2" if alert_count > 0 else "#F0FDF4",
+            border_radius=22,
+            border=ft.border.all(1, "#FECACA" if alert_count > 0 else "#BBF7D0"),
+            content=ft.Column(alert_controls, spacing=12),
+        )
+
+        error_banner = None
+        dashboard_error = str(state.get("dashboard_error") or "").strip()
+        if dashboard_error:
+            error_banner = ft.Container(
+                padding=14,
+                bgcolor="#FEF2F2",
+                border=ft.border.all(1, "#FECACA"),
+                border_radius=14,
+                content=ft.Row(
+                    controls=[
+                        ft.Icon(ft.Icons.ERROR_OUTLINE, color="#DC2626", size=20),
+                        ft.Text(dashboard_error, color="#DC2626", size=13, expand=True),
+                    ],
+                    spacing=10,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+            )
+
+        controls = []
+
+        controls.append(sync_status_banner())
+
+        if error_banner:
+            controls.append(error_banner)
+            controls.append(ft.Container(height=10))
+
+        controls.extend(
+            [
+                handover_summary_card(handover_summary),
+                ft.Container(height=10),
+                maintenance_summary_card(maintenance_summary),
+                ft.Container(height=10),
+                alert_section,
+                ft.Container(height=10),
+                usage_section(
+                    icon=ft.Icons.QUERY_STATS,
+                    title="本月新料用量",
+                    bg_color="#E5F0FF",
+                    border_color="#B0D0FF",
+                    theme_color="#2F80ED",
+                    current_month=current_ym,
+                    cards=cards_new,
+                ),
+                ft.Container(height=10),
+                usage_section(
+                    icon=ft.Icons.COLOR_LENS_OUTLINED,
+                    title="本月母粒用量",
+                    bg_color="#F0E5FF",
+                    border_color="#D3B0FF",
+                    theme_color="#9C27B0",
+                    current_month=current_ym,
+                    cards=cards_mb,
+                ),
+                ft.Container(height=10),
+                usage_section(
+                    icon=ft.Icons.RECYCLING,
+                    title="本月回用料用量",
+                    bg_color="#F0FDF4",
+                    border_color="#BBF7D0",
+                    theme_color="#10B981",
+                    current_month=current_ym,
+                    cards=cards_recyc,
+                ),
+                ft.Container(height=20),
+                custom_ui_bar_chart(
+                    title="即時庫存",
+                    data_list=new_stock_data,
+                    max_val=max_new_stock,
+                    legend_items=[
+                        ("未結晶", "#3B82F6"),
+                        ("N/A", "#10B981"),
+                        ("已結晶", "#F59E0B"),
+                        ("警示", "#EF4444"),
+                    ],
+                    update_time=current_time_str,
+                    unit="包",
+                ),
+                ft.Container(height=15),
+                custom_ui_bar_chart(
+                    title="即時回用料庫存",
+                    data_list=recycled_stock_data,
+                    max_val=max_recycled_stock,
+                    legend_items=[
+                        ("PET", "#2563EB"),
+                        ("PA6", "#38BDF8"),
+                        ("PET-308A", "#EF4444"),
+                        ("RPET", "#F472B6"),
+                    ],
+                    update_time=current_time_str,
+                    unit="KG",
+                ),
+                ft.Container(height=80),
+            ]
+        )
+
+        return ft.Column(controls, spacing=0)
+
+    main_host = ft.Container(content=build_dashboard_controls())
+
+    def rebuild():
+        main_host.content = build_dashboard_controls()
+        safe_page_update()
+
+    def start_dashboard_load():
+        def worker():
+            try:
+                dashboard_result = load_dashboard_page_data()
+                loaded_dashboard_data = dashboard_result.data or default_dashboard_data()
+                dashboard_error = "" if dashboard_result.ok else dashboard_result.message
+
+                loaded_handover_summary = load_handover_task_summary()
+
+                if not is_active_view():
+                    return
+
+                state["dashboard_data"] = loaded_dashboard_data
+                state["handover_summary"] = loaded_handover_summary
+                state["dashboard_error"] = dashboard_error
+                state["loading"] = False
+                state["loaded"] = bool(dashboard_result.ok)
+
+                if dashboard_error:
+                    set_sync_status("首頁資料同步失敗", "red", True)
+                else:
+                    set_sync_status("首頁資料已同步", "green", True)
+
+                rebuild()
+
+                if not dashboard_error:
+                    schedule_sync_hide(3)
+
+            except Exception as ex:
+                if not is_active_view():
+                    return
+                state["dashboard_error"] = f"首頁資料載入失敗：{ex}"
+                state["loading"] = False
+                state["loaded"] = False
+                set_sync_status("首頁資料同步失敗", "red", True)
+                rebuild()
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    start_dashboard_load()
+
+    return main_host
