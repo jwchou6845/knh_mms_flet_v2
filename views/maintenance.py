@@ -9,6 +9,8 @@
 # 7. 依權限限制新增 / 編輯項目
 
 import flet as ft
+import threading
+import time
 from datetime import date
 
 from services.maintenance_service import (
@@ -23,7 +25,7 @@ from services.maintenance_service import (
 
 
 # ============================================================
-# KNH MMS - 機台保養紀錄 maintenance.py v2.9.1 softer sync badge
+# KNH MMS - 機台保養紀錄 maintenance.py v2.9.2 nonblocking sync guard
 # Flet 0.84 + Python + Supabase
 # ============================================================
 
@@ -407,7 +409,10 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
                 "abnormal_count": 0,
             },
         },
-        "loading": False,
+        "loading": True,
+        "sync_status": "loading",
+        "sync_message": "資料同步中",
+        "sync_badge_visible": True,
         "error_message": "",
         "active_extension_form": None,
         "inline_record_item_id": None,
@@ -441,6 +446,47 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
         content=root_stack,
     )
     modal_ref = {"control": None}
+
+    # 基礎離頁保護：背景 thread 回來時，如果使用者已切離 /maintenance，就不再更新舊畫面。
+    view_token = f"maintenance-{time.time_ns()}"
+    if hasattr(page, "session_data") and isinstance(page.session_data, dict):
+        page.session_data["_maintenance_view_token"] = view_token
+
+    def is_active_view() -> bool:
+        if hasattr(page, "session_data") and isinstance(page.session_data, dict):
+            if page.session_data.get("_maintenance_view_token") != view_token:
+                return False
+
+        route = str(getattr(page, "route", "") or "")
+        if route and route != "/maintenance":
+            return False
+
+        return True
+
+    def safe_page_update() -> None:
+        if not is_active_view():
+            return
+        try:
+            page.update()
+        except Exception:
+            pass
+
+    def set_sync_state(status: str, message: str, visible: bool = True) -> None:
+        state["sync_status"] = status
+        state["sync_message"] = message
+        state["sync_badge_visible"] = visible
+        state["loading"] = status == "loading"
+
+    def hide_sync_badge_later(delay_seconds: float = 3.0) -> None:
+        def worker():
+            time.sleep(delay_seconds)
+            if not is_active_view():
+                return
+            if state.get("sync_status") == "success":
+                state["sync_badge_visible"] = False
+                rebuild()
+
+        threading.Thread(target=worker, daemon=True).start()
 
     # =========================
     # 資料載入 / 重建畫面
@@ -539,17 +585,30 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
         show_snack(result.message or "讀取保養紀錄失敗。", success=False)
         return False
 
-    def load_data():
+    def load_data(update_sync_state: bool = True) -> bool:
         result = load_maintenance_page_data()
 
+        data = result.data if isinstance(result.data, dict) else None
+
         if result.ok:
-            state["data"] = result.data
+            if data is not None:
+                state["data"] = data
             state["error_message"] = ""
-        else:
-            state["data"] = result.data
-            state["error_message"] = result.message
+            if update_sync_state:
+                set_sync_state("success", "資料已同步", visible=True)
+            return True
+
+        if data is not None:
+            state["data"] = data
+        state["error_message"] = result.message
+        if update_sync_state:
+            set_sync_state("error", "資料同步失敗", visible=True)
+        return False
 
     def rebuild():
+        if not is_active_view():
+            return
+
         width = page.width or 390
 
         if width < MOBILE_WIDTH:
@@ -560,14 +619,28 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
         try:
             main_host.update()
         except Exception:
-            try:
-                page.update()
-            except Exception:
-                pass
+            safe_page_update()
+
+    def start_background_load(show_loading: bool = True):
+        if show_loading:
+            set_sync_state("loading", "資料同步中", visible=True)
+
+        def worker():
+            if show_loading and is_active_view():
+                rebuild()
+
+            ok = load_data(update_sync_state=True)
+            if not is_active_view():
+                return
+
+            rebuild()
+            if ok:
+                hide_sync_badge_later(3.0)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def refresh():
-        load_data()
-        rebuild()
+        start_background_load(show_loading=True)
 
     # =========================
     # 表單共用選項
@@ -990,15 +1063,30 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
     def build_header() -> ft.Control:
         """
         內容區頁首。
-        版型對齊 feed.py：圖示 + 主標題 + 副標題，下方顯示資料同步膠囊。
-        手機版不使用左右狀態膠囊，避免壓縮或遮蔽標題文字。
+        版型對齊目前各頁：圖示 + 主標題 + 副標題，下方顯示資料同步膠囊。
+        同步完成後膠囊會自動隱藏，避免標題區與後續內容間距過大。
         """
-        has_error = bool(state.get("error_message"))
-        status_text = "資料同步失敗" if has_error else "資料已同步"
-        status_color = RED if has_error else "#10B981"
-        status_bg = RED_SOFT if has_error else "#ECFDF5"
-        status_border = "#FCA5A5" if has_error else "#A7F3D0"
-        status_icon = ft.Icons.ERROR_OUTLINE if has_error else ft.Icons.CHECK_CIRCLE_OUTLINE
+        sync_status = str(state.get("sync_status") or "success")
+        sync_message = str(state.get("sync_message") or "資料已同步")
+        show_badge = bool(state.get("sync_badge_visible"))
+
+        if sync_status == "loading":
+            status_color = BLUE_BTN
+            status_bg = BLUE_SOFT
+            status_border = BLUE_BORDER
+            status_icon_control = ft.ProgressRing(width=15, height=15, stroke_width=2, color=status_color)
+        elif sync_status == "error" or bool(state.get("error_message")):
+            status_color = RED
+            status_bg = RED_SOFT
+            status_border = "#FCA5A5"
+            status_icon_control = ft.Icon(ft.Icons.ERROR_OUTLINE, size=17, color=status_color)
+            sync_message = "資料同步失敗"
+            show_badge = True
+        else:
+            status_color = "#10B981"
+            status_bg = "#ECFDF5"
+            status_border = "#A7F3D0"
+            status_icon_control = ft.Icon(ft.Icons.CHECK_CIRCLE_OUTLINE, size=17, color=status_color)
 
         title_row = ft.Row(
             spacing=14,
@@ -1038,34 +1126,35 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
             ],
         )
 
-        status_badge = ft.Container(
-            height=36,
-            border_radius=18,
-            bgcolor=status_bg,
-            border=ft.border.all(1, status_border),
-            alignment=ft.Alignment(0, 0),
-            content=ft.Row(
-                spacing=8,
-                alignment=ft.MainAxisAlignment.CENTER,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                controls=[
-                    ft.Icon(status_icon, size=17, color=status_color),
-                    ft.Text(
-                        status_text,
-                        size=13,
-                        color=status_color,
-                        weight=ft.FontWeight.W_600,
-                    ),
-                ],
-            ),
-        )
+        controls = [title_row]
+
+        if show_badge:
+            status_badge = ft.Container(
+                height=34,
+                border_radius=17,
+                bgcolor=status_bg,
+                border=ft.border.all(1, status_border),
+                alignment=ft.Alignment(0, 0),
+                content=ft.Row(
+                    spacing=7,
+                    alignment=ft.MainAxisAlignment.CENTER,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    controls=[
+                        status_icon_control,
+                        ft.Text(
+                            sync_message,
+                            size=12,
+                            color=status_color,
+                            weight=ft.FontWeight.W_600,
+                        ),
+                    ],
+                ),
+            )
+            controls.append(ft.Container(content=status_badge))
 
         return ft.Column(
-            spacing=14,
-            controls=[
-                title_row,
-                ft.Row(controls=[ft.Container(expand=True, content=status_badge)]),
-            ],
+            spacing=10 if show_badge else 0,
+            controls=controls,
         )
 
     # =========================
@@ -2975,9 +3064,8 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
     # 初始化
     # =========================
 
-    load_data()
-
     width = page.width or 390
     main_host.content = build_mobile_layout() if width < MOBILE_WIDTH else build_desktop_layout()
+    start_background_load(show_loading=True)
 
     return root
