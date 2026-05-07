@@ -1,12 +1,14 @@
 # views/reports.py
 # KNH MMS 報表中心 - Flet 0.84 + Supabase
 # 重點：快速報表一鍵產生、全條件篩選、查看全部、CSV 匯出下載
-# 注意：本檔避免使用 page.eval_js() / page.set_clipboard()，以符合目前 VM Flet 環境。
+# 注意：本檔避免使用 page.eval_js() / page.set_clipboard()，CSV 下載優先嘗試 page.download()，失敗則保留文字內容備援。
 
 from __future__ import annotations
 
+import base64
 import csv
 import os
+import re
 import threading
 from datetime import datetime
 from io import StringIO
@@ -626,9 +628,7 @@ def ReportsContent(page: ft.Page):
                     if not url:
                         url = build_absolute_url(url_path)
 
-                    csv_content = str(data.get("csv_text") or "")
-                    if not csv_content:
-                        csv_content = read_export_csv_text(path_text, current_report_data)
+                    csv_content = str(data.get("csv_text") or "") or read_export_csv_text(path_text, current_report_data)
 
                     export_state.update(
                         {
@@ -641,10 +641,25 @@ def ReportsContent(page: ft.Page):
                             "cleanup": data.get("cleanup") or {},
                         }
                     )
-                    set_status("CSV 已匯出，請從下方文字框手動複製", "green", True)
+                    set_status("CSV 已匯出，正在嘗試開啟下載連結", "green", True)
+                    rebuild()
+
+                    # Flet 0.84 Web：桌機 Chrome / Android Chrome 有機會直接下載；
+                    # iOS Safari 可能改成開啟純文字或無反應，因此下方仍保留 CSV 內容文字框備援。
+                    download_target = url or url_path
+                    if download_target and hasattr(page, "launch_url"):
+                        try:
+                            page.launch_url(download_target, web_window_name="_blank")
+                        except TypeError:
+                            try:
+                                page.launch_url(download_target)
+                            except Exception as dl_ex:
+                                print("reports launch_url download failed:", repr(dl_ex))
+                        except Exception as dl_ex:
+                            print("reports launch_url download failed:", repr(dl_ex))
                 else:
                     set_status(result.message or "CSV 匯出失敗", "red", True)
-                rebuild()
+                    rebuild()
             except Exception as ex:
                 if not is_active_view():
                     return
@@ -1201,76 +1216,15 @@ def ReportsContent(page: ft.Page):
         filename = export_state.get("filename") or "report.csv"
         keep_days = export_state.get("expires_after_days")
         cleanup = export_state.get("cleanup") or {}
-        deleted_count = cleanup.get("deleted_total_count") or cleanup.get("deleted_count") or 0
+        deleted_count = cleanup.get("deleted_count") or 0
         csv_content = export_state.get("csv_content") or ""
         path_text = export_state.get("path") or ""
-        url = export_state.get("url") or ""
-        url_path = export_state.get("url_path") or ""
 
         keep_text = f"此 CSV 為暫存檔，VM 上約保留 {keep_days} 天。" if keep_days else "此 CSV 為暫存檔。"
         cleanup_text = f"本次已清理 {deleted_count} 個舊 CSV。" if deleted_count else ""
 
         if not csv_content:
             csv_content = "CSV 檔案已產生，但目前無法讀取文字內容。請稍後再試，或由管理者至 VM exports 資料夾查看。"
-
-        download_hint = (
-            "已恢復下載測試按鈕。若按鈕或連結仍打不開，代表 Flet 目前沒有對外提供 exports 靜態檔案；"
-            "屆時仍需等 80 port / Nginx 打通 /exports/。"
-        )
-
-        url_controls = []
-        if url:
-            url_controls.append(
-                ft.ResponsiveRow(
-                    columns=12,
-                    spacing=10,
-                    run_spacing=10,
-                    controls=[
-                        ft.Container(
-                            col={"xs": 12, "md": 6},
-                            content=stable_button(
-                                "下載 CSV",
-                                ft.Icons.FILE_DOWNLOAD_OUTLINED,
-                                lambda e, target=url: open_url(target),
-                                bg=GREEN,
-                                fg="white",
-                                height=48,
-                            ),
-                        ),
-                        ft.Container(
-                            col={"xs": 12, "md": 6},
-                            content=outline_button(
-                                "直接開啟連結",
-                                ft.Icons.OPEN_IN_NEW_OUTLINED,
-                                lambda e, target=url: open_url(target),
-                                color=GREEN,
-                                height=48,
-                            ),
-                        ),
-                    ],
-                )
-            )
-            url_controls.append(
-                ft.Column(
-                    spacing=7,
-                    controls=[
-                        ft.Text("下載網址", size=13, color=TEXT_MAIN, weight=ft.FontWeight.BOLD),
-                        ft.TextField(
-                            value=url,
-                            read_only=True,
-                            multiline=True,
-                            min_lines=2,
-                            max_lines=3,
-                            border_radius=10,
-                            border_color=GREEN_BORDER,
-                            focused_border_color=GREEN,
-                            text_size=12,
-                            bgcolor="#FFFFFF",
-                            content_padding=ft.padding.symmetric(horizontal=10, vertical=8),
-                        ),
-                    ],
-                )
-            )
 
         return ft.Container(
             bgcolor=GREEN_SOFT,
@@ -1292,7 +1246,6 @@ def ReportsContent(page: ft.Page):
                                     ft.Text(keep_text, size=12, color=TEXT_MUTED),
                                     ft.Text(cleanup_text, size=12, color=TEXT_MUTED, visible=bool(cleanup_text)),
                                     ft.Text(f"VM 檔案位置：{path_text}", size=11, color=TEXT_MUTED, visible=bool(path_text), max_lines=2, overflow=ft.TextOverflow.VISIBLE),
-                                    ft.Text(f"URL path：{url_path}", size=11, color=TEXT_MUTED, visible=bool(url_path), max_lines=2, overflow=ft.TextOverflow.VISIBLE),
                                 ],
                             ),
                         ],
@@ -1305,13 +1258,50 @@ def ReportsContent(page: ft.Page):
                         border_radius=12,
                         padding=12,
                         content=ft.Column(
-                            spacing=10,
+                            spacing=8,
                             controls=[
-                                ft.Text(download_hint, size=12, color=TEXT_SUB),
-                                *url_controls,
-                                ft.Divider(height=14, color="#D1FAE5"),
                                 ft.Text(
-                                    "下載失敗時的備援：下方保留完整 CSV 內容。手機版大量文字不易複製，建議優先測試上方下載按鈕；桌機可使用文字框全選複製。",
+                                    "CSV 已產生，系統會先嘗試開啟下載連結；若手機瀏覽器未觸發下載，可改用下方 CSV 內容備援。",
+                                    size=12,
+                                    color=TEXT_SUB,
+                                ),
+                                ft.Text(
+                                    f"下載網址：{export_state.get('url') or export_state.get('url_path') or '-'}",
+                                    size=11,
+                                    color=TEXT_MUTED,
+                                    max_lines=3,
+                                    overflow=ft.TextOverflow.VISIBLE,
+                                ),
+                                ft.ResponsiveRow(
+                                    columns=12,
+                                    spacing=10,
+                                    run_spacing=10,
+                                    controls=[
+                                        ft.Container(
+                                            col={"xs": 12, "md": 6},
+                                            content=stable_button(
+                                                "下載 CSV",
+                                                ft.Icons.DOWNLOAD_OUTLINED,
+                                                lambda e: open_url(export_state.get("url") or export_state.get("url_path") or ""),
+                                                bg=GREEN,
+                                                fg="white",
+                                                height=44,
+                                            ),
+                                        ),
+                                        ft.Container(
+                                            col={"xs": 12, "md": 6},
+                                            content=outline_button(
+                                                "直接開啟連結",
+                                                ft.Icons.OPEN_IN_NEW_OUTLINED,
+                                                lambda e: open_url(export_state.get("url") or export_state.get("url_path") or ""),
+                                                color=GREEN,
+                                                height=44,
+                                            ),
+                                        ),
+                                    ],
+                                ),
+                                ft.Text(
+                                    "備援操作：點進文字框 → 全選 → 複製 → 貼到記事本或 Excel；另存時副檔名使用 .csv。",
                                     size=12,
                                     color=TEXT_SUB,
                                 ),
