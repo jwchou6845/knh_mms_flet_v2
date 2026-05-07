@@ -162,6 +162,7 @@ def HandoverContent(page: ft.Page):
     # 3. 共用 UI
     # =====================================================
     def field_label(icon_name, label, required=False):
+        # 手機 Web 避免 Row(wrap=True) 造成灰色大區塊，改用固定 Row + Text expand 自然換行。
         return ft.Row(
             controls=[
                 ft.Icon(icon_name, size=18, color=TEXT_SUB),
@@ -172,11 +173,11 @@ def HandoverContent(page: ft.Page):
                     weight=ft.FontWeight.W_600,
                     max_lines=2,
                     overflow=ft.TextOverflow.VISIBLE,
+                    expand=True,
                 ),
             ],
             spacing=8,
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            wrap=True,
         )
 
     def make_text_field(value="", hint="", multiline=False):
@@ -213,43 +214,32 @@ def HandoverContent(page: ft.Page):
         )
 
     def title_header():
-        return ft.Column(
-            spacing=10,
-            controls=[
-                ft.Row(
-                    controls=[
-                        ft.Container(
-                            width=54,
-                            height=54,
-                            border_radius=16,
-                            bgcolor=BLUE_SOFT,
-                            alignment=ft.Alignment(0, 0),
-                            content=ft.Icon(ft.Icons.DESCRIPTION_OUTLINED, size=30, color=BLUE),
-                        ),
-                        ft.Column(
-                            expand=True,
-                            controls=[
-                                ft.Text("交接班表單", size=28, weight=ft.FontWeight.BOLD, color=TEXT_MAIN),
-                                ft.Text(
-                                    "班別、機台狀態、異常與待辦一次完成。",
-                                    size=14,
-                                    color=TEXT_SUB,
-                                    max_lines=3,
-                                    overflow=ft.TextOverflow.VISIBLE,
-                                ),
-                            ],
-                            spacing=4,
-                        ),
-                    ],
-                    spacing=16,
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                    wrap=True,
-                ),
-                ft.Row(
-                    controls=[status_badge],
-                    alignment=ft.MainAxisAlignment.START,
-                ),
-            ],
+        # 手機 Web 對 Row(wrap=True) + expand 文字欄偶爾會渲染成灰色大區塊。
+        # 這裡改成保守的垂直標題結構，保留同一套 icon / 主標 / 副標風格。
+        return ft.Container(
+            bgcolor=BG,
+            content=ft.Column(
+                spacing=10,
+                controls=[
+                    ft.Container(
+                        width=54,
+                        height=54,
+                        border_radius=16,
+                        bgcolor=BLUE_SOFT,
+                        alignment=ft.Alignment(0, 0),
+                        content=ft.Icon(ft.Icons.DESCRIPTION_OUTLINED, size=30, color=BLUE),
+                    ),
+                    ft.Text("交接班表單", size=28, weight=ft.FontWeight.BOLD, color=TEXT_MAIN),
+                    ft.Text(
+                        "班別、機台狀態、異常與待辦一次完成。",
+                        size=14,
+                        color=TEXT_SUB,
+                        max_lines=3,
+                        overflow=ft.TextOverflow.VISIBLE,
+                    ),
+                    status_badge,
+                ],
+            ),
         )
 
     # =====================================================
@@ -668,10 +658,10 @@ def HandoverContent(page: ft.Page):
                             size=14,
                             max_lines=3,
                             overflow=ft.TextOverflow.VISIBLE,
+                            expand=True,
                         ),
                     ],
                     spacing=10,
-                    wrap=True,
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 ),
                 ft.Text(f"填單人：{current_user}", color=TEXT_MUTED, size=13),
@@ -818,7 +808,6 @@ def HandoverContent(page: ft.Page):
                         ),
                     ],
                     spacing=8,
-                    wrap=True,
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 ),
             ],
