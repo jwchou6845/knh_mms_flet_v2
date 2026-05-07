@@ -1,7 +1,7 @@
 # views/reports.py
 # KNH MMS 報表中心 - Flet 0.84 + Supabase
-# 重點：快速報表一鍵產生、全條件篩選、查看全部、CSV 匯出下載
-# 注意：本檔避免使用 page.eval_js() / page.set_clipboard()，CSV 下載優先嘗試 page.download()，失敗則保留文字內容備援。
+# 重點：快速報表一鍵產生、全條件篩選、查看全部、CSV 匯出與內容顯示
+# 注意：目前 VM / Flet Web 尚未打通正式 CSV 下載；先以頁面文字框顯示 CSV 內容作為穩定收尾。
 
 from __future__ import annotations
 
@@ -641,22 +641,8 @@ def ReportsContent(page: ft.Page):
                             "cleanup": data.get("cleanup") or {},
                         }
                     )
-                    set_status("CSV 已匯出，正在嘗試開啟下載連結", "green", True)
+                    set_status("CSV 已匯出，內容已顯示於下方文字框", "green", True)
                     rebuild()
-
-                    # Flet 0.84 Web：桌機 Chrome / Android Chrome 有機會直接下載；
-                    # iOS Safari 可能改成開啟純文字或無反應，因此下方仍保留 CSV 內容文字框備援。
-                    download_target = url or url_path
-                    if download_target and hasattr(page, "launch_url"):
-                        try:
-                            page.launch_url(download_target, web_window_name="_blank")
-                        except TypeError:
-                            try:
-                                page.launch_url(download_target)
-                            except Exception as dl_ex:
-                                print("reports launch_url download failed:", repr(dl_ex))
-                        except Exception as dl_ex:
-                            print("reports launch_url download failed:", repr(dl_ex))
                 else:
                     set_status(result.message or "CSV 匯出失敗", "red", True)
                     rebuild()
@@ -1261,47 +1247,17 @@ def ReportsContent(page: ft.Page):
                             spacing=8,
                             controls=[
                                 ft.Text(
-                                    "CSV 已產生，系統會先嘗試開啟下載連結；若手機瀏覽器未觸發下載，可改用下方 CSV 內容備援。",
+                                    "CSV 已產生；目前 VM / Flet Web 尚未打通穩定下載路徑，因此先顯示 CSV 內容供備援使用。",
                                     size=12,
                                     color=TEXT_SUB,
                                 ),
                                 ft.Text(
-                                    f"下載網址：{export_state.get('url') or export_state.get('url_path') or '-'}",
-                                    size=11,
-                                    color=TEXT_MUTED,
-                                    max_lines=3,
-                                    overflow=ft.TextOverflow.VISIBLE,
-                                ),
-                                ft.ResponsiveRow(
-                                    columns=12,
-                                    spacing=10,
-                                    run_spacing=10,
-                                    controls=[
-                                        ft.Container(
-                                            col={"xs": 12, "md": 6},
-                                            content=stable_button(
-                                                "下載 CSV",
-                                                ft.Icons.DOWNLOAD_OUTLINED,
-                                                lambda e: open_url(export_state.get("url") or export_state.get("url_path") or ""),
-                                                bg=GREEN,
-                                                fg="white",
-                                                height=44,
-                                            ),
-                                        ),
-                                        ft.Container(
-                                            col={"xs": 12, "md": 6},
-                                            content=outline_button(
-                                                "直接開啟連結",
-                                                ft.Icons.OPEN_IN_NEW_OUTLINED,
-                                                lambda e: open_url(export_state.get("url") or export_state.get("url_path") or ""),
-                                                color=GREEN,
-                                                height=44,
-                                            ),
-                                        ),
-                                    ],
+                                    "正式下載功能將在之後改走 80 port / Nginx，打通 /exports/ 靜態下載路徑後再啟用。",
+                                    size=12,
+                                    color=TEXT_SUB,
                                 ),
                                 ft.Text(
-                                    "備援操作：點進文字框 → 全選 → 複製 → 貼到記事本或 Excel；另存時副檔名使用 .csv。",
+                                    "桌機操作建議：點進文字框 → Ctrl+A 全選 → Ctrl+C 複製 → 貼到記事本或 Excel；另存時副檔名使用 .csv。手機使用者若不易全選，請先以頁面查看報表為主。",
                                     size=12,
                                     color=TEXT_SUB,
                                 ),
