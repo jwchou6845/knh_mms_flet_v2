@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any
 import csv
 import re
-import secrets
 from zoneinfo import ZoneInfo
 
 from repositories.reports_repo import (
@@ -173,6 +172,48 @@ def first_value(row: dict[str, Any], keys: list[str], default: Any = "") -> Any:
             return value
     return default
 
+
+def purchase_quantity_value(row: dict[str, Any]) -> Any:
+    """
+    入庫紀錄的數量欄位。
+
+    Supabase 的 purchase_records 正式欄位目前是：
+    - quantity_bags：進貨包數
+    - quantity_kg：進貨重量
+
+    舊版 reports_service.py 只抓 qty / quantity / package_qty / weight_kg，
+    因此正式資料只有 quantity_bags 時，報表會顯示 0。
+    這裡優先顯示包數；若沒有包數，再退回重量或舊欄位名稱。
+    """
+    if row.get("quantity_bags") not in [None, ""]:
+        return row.get("quantity_bags")
+
+    if row.get("quantity_kg") not in [None, ""]:
+        return row.get("quantity_kg")
+
+    return first_value(
+        row,
+        ["qty", "quantity", "package_qty", "weight_kg", "weight"],
+        0,
+    )
+
+
+def purchase_quantity_unit(row: dict[str, Any]) -> str:
+    """
+    配合 purchase_quantity_value() 顯示單位。
+    若取用包數欄位，單位固定為「包」；若只剩重量欄位，單位為 KG。
+    """
+    unit = clean_text(row.get("unit"))
+    if unit:
+        return unit
+
+    if row.get("quantity_bags") not in [None, ""]:
+        return "包"
+
+    if row.get("quantity_kg") not in [None, ""] or row.get("weight_kg") not in [None, ""]:
+        return "KG"
+
+    return "包"
 
 
 def pick_number(row: dict[str, Any], keys: list[str], default: float = 0.0) -> float:
@@ -510,8 +551,8 @@ def quick_current_month_purchase_report() -> ServiceResult:
                 "日期": format_date(first_value(row, ["purchase_date", "created_at"])),
                 "原料名稱": first_value(row, ["material_name", "name"], "-"),
                 "供應商": first_value(row, ["supplier"], "-"),
-                "數量": first_value(row, ["qty", "quantity", "package_qty", "weight_kg"], 0),
-                "單位": first_value(row, ["unit"], "包"),
+                "數量": purchase_quantity_value(row),
+                "單位": purchase_quantity_unit(row),
             }
         )
 
@@ -741,14 +782,15 @@ def build_purchase_result(rows: list[dict[str, Any]]) -> ServiceResult:
                 "類別": first_value(row, ["category", "material_category"], "-"),
                 "原料名稱": first_value(row, ["material_name", "name"], "-"),
                 "供應商": first_value(row, ["supplier"], "-"),
-                "數量": first_value(row, ["qty", "quantity", "package_qty", "weight_kg"], 0),
+                "數量": purchase_quantity_value(row),
+                "單位": purchase_quantity_unit(row),
                 "人員": first_value(row, ["created_by_name", "operator_name"], "-"),
             }
         )
 
     return build_result(
         title="入庫紀錄查詢",
-        columns=["日期", "類別", "原料名稱", "供應商", "數量", "人員"],
+        columns=["日期", "類別", "原料名稱", "供應商", "數量", "單位", "人員"],
         rows=output,
         summary_text=f"查詢到 {len(output)} 筆入庫紀錄。",
     )
@@ -970,94 +1012,10 @@ def build_report_filter_options() -> ServiceResult:
 # CSV export
 # ============================================================
 
-EXPORT_KEEP_DAYS = 3
-EXPORT_MAX_TOTAL_MB = 100
-
-
-def resolve_export_folder(export_dir: str = "exports") -> Path:
-    """
-    以專案根目錄為基準解析匯出資料夾。
-    避免 systemd / VM 工作目錄不是專案根目錄時，CSV 被寫到 /home/jwchou/exports。
-    """
-    base_dir = Path(__file__).resolve().parent.parent
-    clean_dir = str(export_dir or "exports").strip().strip("/") or "exports"
-    return base_dir / clean_dir
-
-
 def safe_filename(value: str) -> str:
     text = clean_text(value, "report")
-    text = re.sub(r'[\/:*?"<>|\s]+', "_", text)
+    text = re.sub(r"[\\/:*?\"<>|\\s]+", "_", text)
     return text.strip("_") or "report"
-
-
-def safe_ascii_filename(value: str) -> str:
-    """
-    下載用檔名盡量使用 ASCII，避免手機瀏覽器或 URL 編碼造成下載失敗。
-    畫面仍可顯示中文報表標題，實際檔名使用 report_*。
-    """
-    text = clean_text(value, "report").lower()
-    text = re.sub(r"[^a-z0-9_-]+", "_", text)
-    text = re.sub(r"_+", "_", text).strip("._-")
-    return text or "report"
-
-
-def cleanup_old_exports(
-    export_dir: str = "exports",
-    keep_days: int = EXPORT_KEEP_DAYS,
-    max_total_mb: int = EXPORT_MAX_TOTAL_MB,
-) -> dict[str, Any]:
-    folder = resolve_export_folder(export_dir)
-    folder.mkdir(parents=True, exist_ok=True)
-
-    now_ts = now_taipei().timestamp()
-    cutoff_ts = now_ts - (keep_days * 24 * 60 * 60)
-
-    deleted_count = 0
-    deleted_bytes = 0
-
-    files = []
-    for path in folder.glob("*.csv"):
-        try:
-            stat = path.stat()
-            files.append((path, stat.st_mtime, stat.st_size))
-            if stat.st_mtime < cutoff_ts:
-                deleted_bytes += stat.st_size
-                path.unlink()
-                deleted_count += 1
-        except Exception:
-            continue
-
-    # 容量上限保護：若仍超過上限，從最舊檔案開始刪。
-    try:
-        remaining = []
-        for path in folder.glob("*.csv"):
-            stat = path.stat()
-            remaining.append((path, stat.st_mtime, stat.st_size))
-
-        max_bytes = max_total_mb * 1024 * 1024
-        total_bytes = sum(item[2] for item in remaining)
-
-        if total_bytes > max_bytes:
-            for path, _mtime, size in sorted(remaining, key=lambda item: item[1]):
-                if total_bytes <= max_bytes:
-                    break
-                try:
-                    path.unlink()
-                    total_bytes -= size
-                    deleted_bytes += size
-                    deleted_count += 1
-                except Exception:
-                    continue
-    except Exception:
-        pass
-
-    return {
-        "deleted_count": deleted_count,
-        "deleted_bytes": deleted_bytes,
-        "keep_days": keep_days,
-        "max_total_mb": max_total_mb,
-        "folder": str(folder),
-    }
 
 
 def export_report_to_csv(
@@ -1067,7 +1025,6 @@ def export_report_to_csv(
     """
     將報表資料輸出成 CSV。
     使用 utf-8-sig，方便 Windows Excel 直接開啟不亂碼。
-    CSV 固定寫入專案根目錄 / exports，不依賴 process working directory。
     """
     try:
         title = clean_text(report_data.get("title"), "report")
@@ -1077,14 +1034,11 @@ def export_report_to_csv(
         if not columns:
             return ServiceResult(ok=False, message="沒有可匯出的欄位。")
 
-        cleanup = cleanup_old_exports(export_dir=export_dir)
-
-        folder = resolve_export_folder(export_dir)
+        folder = Path(export_dir)
         folder.mkdir(parents=True, exist_ok=True)
 
         timestamp = now_taipei().strftime("%Y%m%d_%H%M%S")
-        suffix = secrets.token_hex(3)
-        filename = f"report_{timestamp}_{safe_ascii_filename(title)}_{suffix}.csv"
+        filename = f"{timestamp}_{safe_filename(title)}.csv"
         path = folder / filename
 
         with path.open("w", newline="", encoding="utf-8-sig") as f:
@@ -1098,21 +1052,12 @@ def export_report_to_csv(
             for row in rows:
                 writer.writerow({col: row.get(col, "") for col in columns})
 
-        csv_text = path.read_text(encoding="utf-8-sig")
-        encoded_filename = filename  # ASCII-only; no need to quote here.
-
         return ServiceResult(
             ok=True,
             message=f"CSV 已匯出：{path}",
             data={
                 "path": str(path),
-                "folder": str(folder),
                 "filename": filename,
-                "url_path": f"/assets/exports/{encoded_filename}",
-                "asset_url_path": f"/assets/exports/{encoded_filename}",
-                "csv_text": csv_text,
-                "expires_after_days": EXPORT_KEEP_DAYS,
-                "cleanup": cleanup,
             },
         )
 
