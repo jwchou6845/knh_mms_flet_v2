@@ -214,12 +214,13 @@ def HandoverContent(page: ft.Page):
         )
 
     def title_header():
-        # 手機 Web 對 Row(wrap=True) + expand 文字欄偶爾會渲染成灰色大區塊。
-        # 這裡改成保守的垂直標題結構，保留同一套 icon / 主標 / 副標風格。
+        # 保留統一頁首格式：icon 在左，標題 / 副標題在右。
+        # 避免使用 Row(wrap=True)，以降低手機 Web 灰色大區塊風險。
         return ft.Container(
             bgcolor=BG,
-            content=ft.Column(
-                spacing=10,
+            content=ft.Row(
+                spacing=14,
+                vertical_alignment=ft.CrossAxisAlignment.START,
                 controls=[
                     ft.Container(
                         width=54,
@@ -229,15 +230,28 @@ def HandoverContent(page: ft.Page):
                         alignment=ft.Alignment(0, 0),
                         content=ft.Icon(ft.Icons.DESCRIPTION_OUTLINED, size=30, color=BLUE),
                     ),
-                    ft.Text("交接班表單", size=28, weight=ft.FontWeight.BOLD, color=TEXT_MAIN),
-                    ft.Text(
-                        "班別、機台狀態、異常與待辦一次完成。",
-                        size=14,
-                        color=TEXT_SUB,
-                        max_lines=3,
-                        overflow=ft.TextOverflow.VISIBLE,
+                    ft.Column(
+                        expand=True,
+                        spacing=8,
+                        controls=[
+                            ft.Text(
+                                "交接班表單",
+                                size=28,
+                                weight=ft.FontWeight.BOLD,
+                                color=TEXT_MAIN,
+                                max_lines=1,
+                                overflow=ft.TextOverflow.ELLIPSIS,
+                            ),
+                            ft.Text(
+                                "班別、機台狀態、異常與待辦一次完成。",
+                                size=14,
+                                color=TEXT_SUB,
+                                max_lines=3,
+                                overflow=ft.TextOverflow.VISIBLE,
+                            ),
+                            status_badge,
+                        ],
                     ),
-                    status_badge,
                 ],
             ),
         )
