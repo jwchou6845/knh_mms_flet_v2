@@ -139,6 +139,11 @@ def InventoryContent(page: ft.Page):
         width=float("inf"),
     )
 
+    # 用外層 slot 控制狀態膠囊是否參與版面。
+    # 只把 status_bar.visible=False 時，手機 Web 仍可能留下 Column spacing；
+    # 因此隱藏時同步隱藏 status_slot，避免頁首與下方區塊間距過大。
+    status_slot = ft.Container(content=status_bar, visible=True)
+
     def set_status(msg, is_error=False, theme="blue", auto_hide=False, loading=False):
         if not is_active_view():
             return
@@ -163,6 +168,7 @@ def InventoryContent(page: ft.Page):
             text_color = GRAY_TEXT
             icon_name = ft.Icons.INFO_OUTLINE
 
+        status_slot.visible = True
         status_bar.visible = True
         status_bar.bgcolor = bg_color
         status_bar.border = ft.border.all(1, border_color)
@@ -188,6 +194,7 @@ def InventoryContent(page: ft.Page):
         )
 
         safe_update(status_bar)
+        safe_update(status_slot)
 
         if auto_hide:
             def hide_later():
@@ -195,7 +202,8 @@ def InventoryContent(page: ft.Page):
                 if not is_active_view():
                     return
                 status_bar.visible = False
-                safe_update(status_bar)
+                status_slot.visible = False
+                safe_update(status_slot)
 
             threading.Thread(target=hide_later, daemon=True).start()
 
@@ -1092,6 +1100,7 @@ def InventoryContent(page: ft.Page):
 
     def switch_tab(tab_name):
         status_bar.visible = False
+        status_slot.visible = False
 
         if tab_name == "new":
             set_tab_visual(tab_btn_new, "供應商新料", ft.Icons.BUSINESS, "blue", True)
@@ -1105,7 +1114,7 @@ def InventoryContent(page: ft.Page):
         safe_update(tab_btn_new)
         safe_update(tab_btn_rec)
         safe_update(content_area)
-        safe_update(status_bar)
+        safe_update(status_slot)
 
     tab_btn_new.on_click = lambda e: switch_tab("new")
     tab_btn_rec.on_click = lambda e: switch_tab("rec")
@@ -1204,8 +1213,7 @@ def InventoryContent(page: ft.Page):
         content=ft.Column(
             controls=[
                 title_block(),
-                status_bar,
-                ft.Container(height=6),
+                status_slot,
                 ft.Row(
                     controls=[tab_btn_new, tab_btn_rec],
                     spacing=15,
