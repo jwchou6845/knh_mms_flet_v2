@@ -34,6 +34,19 @@ def InventoryContent(page: ft.Page):
             return page.session_data.get(key, default)
         return default
 
+    if not hasattr(page, "session_data") or not isinstance(page.session_data, dict):
+        page.session_data = {}
+
+    view_token = object()
+    page.session_data["_inventory_view_token"] = view_token
+
+    def is_active_view() -> bool:
+        route = str(getattr(page, "route", "") or "")
+        return (
+            page.session_data.get("_inventory_view_token") is view_token
+            and (not route or route == "/inventory" or "inventory" in route)
+        )
+
     # =====================================================
     # 1. 色彩設定
     # =====================================================
@@ -71,18 +84,24 @@ def InventoryContent(page: ft.Page):
     # 2. 安全更新工具
     # =====================================================
     def safe_update(control):
+        if not is_active_view():
+            return
         try:
             control.update()
-        except Exception:
-            pass
+        except Exception as ex:
+            print("inventory control.update failed:", repr(ex))
 
     def safe_page_update():
+        if not is_active_view():
+            return
         try:
             page.update()
-        except Exception:
-            pass
+        except Exception as ex:
+            print("inventory page.update failed:", repr(ex))
 
     def show_snack(message: str, success: bool = True):
+        if not is_active_view():
+            return
         snack = ft.SnackBar(
             content=ft.Text(message, color="#FFFFFF", weight=ft.FontWeight.W_600),
             bgcolor=GREEN if success else RED,
@@ -121,6 +140,8 @@ def InventoryContent(page: ft.Page):
     )
 
     def set_status(msg, is_error=False, theme="blue", auto_hide=False, loading=False):
+        if not is_active_view():
+            return
         if is_error:
             bg_color = RED_BG
             border_color = RED_BORDER
@@ -171,6 +192,8 @@ def InventoryContent(page: ft.Page):
         if auto_hide:
             def hide_later():
                 time.sleep(3)
+                if not is_active_view():
+                    return
                 status_bar.visible = False
                 safe_update(status_bar)
 
@@ -230,6 +253,50 @@ def InventoryContent(page: ft.Page):
             ],
             spacing=6,
             expand=True,
+        )
+
+    def form_field(label, control, required=False):
+        return ft.Container(
+            col={"xs": 12, "md": 6},
+            content=field_group(label, control, required=required),
+        )
+
+    def form_grid(items):
+        return ft.ResponsiveRow(
+            columns=12,
+            spacing=16,
+            run_spacing=14,
+            controls=[form_field(label, control, required) for label, control, required in items],
+        )
+
+    def title_block():
+        return ft.Row(
+            controls=[
+                ft.Container(
+                    width=58,
+                    height=58,
+                    border_radius=18,
+                    bgcolor=BLUE_BG,
+                    alignment=ft.Alignment(0, 0),
+                    content=ft.Icon(ft.Icons.INVENTORY_2, size=31, color=BLUE),
+                ),
+                ft.Column(
+                    expand=True,
+                    spacing=4,
+                    controls=[
+                        ft.Text("原料入庫作業", size=28, weight=ft.FontWeight.BOLD, color=TEXT_MAIN),
+                        ft.Text(
+                            "記錄供應商新料與廠內回用料入庫，維持庫存帳準確。",
+                            size=14,
+                            color=TEXT_SUB,
+                            max_lines=3,
+                            overflow=ft.TextOverflow.VISIBLE,
+                        ),
+                    ],
+                ),
+            ],
+            spacing=16,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
         )
 
     def button_style(bg_color, hover_color, press_color, text_color):
@@ -446,56 +513,73 @@ def InventoryContent(page: ft.Page):
             set_status("請輸入進貨批號。", is_error=True)
             return
 
-        if n_mat.value not in material_dict:
+        material_id = material_dict.get(n_mat.value)
+        if not material_id:
             set_status("找不到此原料對應的 Supabase material_id。", is_error=True)
             return
+
+        purchase_date = str(n_date.value or "")
+        quantity_bags = int(qty_text)
+        created_by_user_id = session_get("user_id")
+        created_by_name = session_get("user_name")
 
         submitting_new["value"] = True
         set_button_loading(btn_new, "寫入中...")
         set_status("正在寫入新料入庫資料...", theme="blue", loading=True)
 
-        try:
-            result = submit_purchase_record(
-                purchase_batch_no=batch_text,
-                purchase_date=str(n_date.value or ""),
-                material_id=material_dict[n_mat.value],
-                quantity_bags=int(qty_text),
-                created_by_user_id=session_get("user_id"),
-                created_by_name=session_get("user_name"),
-            )
+        def worker():
+            try:
+                result = submit_purchase_record(
+                    purchase_batch_no=batch_text,
+                    purchase_date=purchase_date,
+                    material_id=material_id,
+                    quantity_bags=quantity_bags,
+                    created_by_user_id=created_by_user_id,
+                    created_by_name=created_by_name,
+                )
 
-            if not result.ok:
-                set_status(result.message, is_error=True)
-                show_snack(result.message, success=False)
-                return
+                if not is_active_view():
+                    return
 
-            n_batch.value = today_batch_prefix()
-            n_date.value = today_dash_date()
-            n_qty.value = "1"
-            check_new_batch(None, do_update=False)
+                if not result.ok:
+                    set_status(result.message, is_error=True)
+                    show_snack(result.message, success=False)
+                    return
 
-            safe_update(n_batch)
-            safe_update(n_date)
-            safe_update(n_qty)
+                n_batch.value = today_batch_prefix()
+                n_date.value = today_dash_date()
+                n_qty.value = "1"
+                check_new_batch(None, do_update=False)
 
-            set_status(result.message, theme="blue", auto_hide=True)
-            show_snack(result.message, success=True)
+                safe_update(n_batch)
+                safe_update(n_date)
+                safe_update(n_qty)
 
-            refresh_from_service(silent=True)
+                set_status(result.message, theme="blue", auto_hide=True)
+                show_snack(result.message, success=True)
 
-        except Exception as ex:
-            set_status(f"寫入失敗：{ex}", is_error=True)
-            show_snack(f"寫入失敗：{ex}", success=False)
+                refresh_from_service(silent=True)
 
-        finally:
-            submitting_new["value"] = False
-            set_button_normal(
-                btn_new,
-                "確認送出新料入庫",
-                ft.Icons.CLOUD_UPLOAD_OUTLINED,
-                "#FFFFFF",
-            )
-            check_new_batch(None, do_update=True)
+            except Exception as ex:
+                if not is_active_view():
+                    return
+                set_status(f"寫入失敗：{ex}", is_error=True)
+                show_snack(f"寫入失敗：{ex}", success=False)
+
+            finally:
+                if not is_active_view():
+                    return
+                submitting_new["value"] = False
+                set_button_normal(
+                    btn_new,
+                    "確認送出新料入庫",
+                    ft.Icons.CLOUD_UPLOAD_OUTLINED,
+                    "#FFFFFF",
+                )
+                check_new_batch(None, do_update=True)
+
+        threading.Thread(target=worker, daemon=True).start()
+
 
     btn_new = ui_button(
         "確認送出新料入庫",
@@ -516,22 +600,12 @@ def InventoryContent(page: ft.Page):
         icon_color=BLUE,
         bar_color=BLUE_BAR,
         content_controls=[
-            ft.Row(
-                [
-                    field_group("進貨批號（需補齊流水號）", n_batch, required=True),
-                    field_group("關聯原料", n_mat, required=True),
-                ],
-                spacing=20,
-                vertical_alignment=ft.CrossAxisAlignment.START,
-            ),
-            ft.Row(
-                [
-                    field_group("進貨日期", n_date, required=True),
-                    field_group("進貨數量（包）", n_qty, required=True),
-                ],
-                spacing=20,
-                vertical_alignment=ft.CrossAxisAlignment.START,
-            ),
+            form_grid([
+                ("進貨批號（需補齊流水號）", n_batch, True),
+                ("關聯原料", n_mat, True),
+                ("進貨日期", n_date, True),
+                ("進貨數量（包）", n_qty, True),
+            ]),
             ft.Container(height=4),
             ft.Row([btn_new]),
         ],
@@ -609,52 +683,68 @@ def InventoryContent(page: ft.Page):
             set_status("請輸入正確的「重量」。", is_error=True)
             return
 
+        inbound_date = str(r_date.value or "")
+        material_type = str(r_type.value or "")
+        source_machine = str(r_machine.value or "")
+        supplier = str(r_vendor.value or "")
+
         submitting_rec["value"] = True
         set_button_loading(btn_rec, "寫入中...")
         set_status("正在寫入回用料入庫資料...", theme="green", loading=True)
 
-        try:
-            result = submit_recycled_material(
-                recycled_no=rec_id_text,
-                inbound_date=str(r_date.value or ""),
-                material_type=str(r_type.value or ""),
-                source_machine=str(r_machine.value or ""),
-                weight_kg=weight_val,
-                supplier=str(r_vendor.value or ""),
-            )
+        def worker():
+            try:
+                result = submit_recycled_material(
+                    recycled_no=rec_id_text,
+                    inbound_date=inbound_date,
+                    material_type=material_type,
+                    source_machine=source_machine,
+                    weight_kg=weight_val,
+                    supplier=supplier,
+                )
 
-            if not result.ok:
-                set_status(result.message, is_error=True)
-                show_snack(result.message, success=False)
-                return
+                if not is_active_view():
+                    return
 
-            r_id.value = today_batch_prefix()
-            r_date.value = today_dash_date()
-            r_weight.value = ""
-            check_rec_batch(None, do_update=False)
+                if not result.ok:
+                    set_status(result.message, is_error=True)
+                    show_snack(result.message, success=False)
+                    return
 
-            safe_update(r_id)
-            safe_update(r_date)
-            safe_update(r_weight)
+                r_id.value = today_batch_prefix()
+                r_date.value = today_dash_date()
+                r_weight.value = ""
+                check_rec_batch(None, do_update=False)
 
-            set_status(result.message, theme="green", auto_hide=True)
-            show_snack(result.message, success=True)
+                safe_update(r_id)
+                safe_update(r_date)
+                safe_update(r_weight)
 
-            refresh_from_service(silent=True)
+                set_status(result.message, theme="green", auto_hide=True)
+                show_snack(result.message, success=True)
 
-        except Exception as ex:
-            set_status(f"寫入失敗：{ex}", is_error=True)
-            show_snack(f"寫入失敗：{ex}", success=False)
+                refresh_from_service(silent=True)
 
-        finally:
-            submitting_rec["value"] = False
-            set_button_normal(
-                btn_rec,
-                "確認送出回用料紀錄",
-                ft.Icons.RECYCLING,
-                "#FFFFFF",
-            )
-            check_rec_batch(None, do_update=True)
+            except Exception as ex:
+                if not is_active_view():
+                    return
+                set_status(f"寫入失敗：{ex}", is_error=True)
+                show_snack(f"寫入失敗：{ex}", success=False)
+
+            finally:
+                if not is_active_view():
+                    return
+                submitting_rec["value"] = False
+                set_button_normal(
+                    btn_rec,
+                    "確認送出回用料紀錄",
+                    ft.Icons.RECYCLING,
+                    "#FFFFFF",
+                )
+                check_rec_batch(None, do_update=True)
+
+        threading.Thread(target=worker, daemon=True).start()
+
 
     btn_rec = ui_button(
         "確認送出回用料紀錄",
@@ -674,30 +764,14 @@ def InventoryContent(page: ft.Page):
         icon_color=GREEN,
         bar_color=GREEN_BAR,
         content_controls=[
-            ft.Row(
-                [
-                    field_group("原料編號（需補齊流水號）", r_id, required=True),
-                    field_group("入庫日期", r_date, required=True),
-                ],
-                spacing=20,
-                vertical_alignment=ft.CrossAxisAlignment.START,
-            ),
-            ft.Row(
-                [
-                    field_group("原料種類", r_type, required=True),
-                    field_group("重量（KG）", r_weight, required=True),
-                ],
-                spacing=20,
-                vertical_alignment=ft.CrossAxisAlignment.START,
-            ),
-            ft.Row(
-                [
-                    field_group("來源機台", r_machine, required=True),
-                    field_group("供應商", r_vendor, required=True),
-                ],
-                spacing=20,
-                vertical_alignment=ft.CrossAxisAlignment.START,
-            ),
+            form_grid([
+                ("原料編號（需補齊流水號）", r_id, True),
+                ("入庫日期", r_date, True),
+                ("原料種類", r_type, True),
+                ("重量（KG）", r_weight, True),
+                ("來源機台", r_machine, True),
+                ("供應商", r_vendor, True),
+            ]),
             ft.Container(height=4),
             ft.Row([btn_rec]),
         ],
@@ -1051,7 +1125,13 @@ def InventoryContent(page: ft.Page):
         safe_update(n_mat)
 
     def refresh_from_service(silent: bool = False):
+        if not is_active_view():
+            return
+
         result = load_inventory_page_data()
+
+        if not is_active_view():
+            return
 
         if not result.ok:
             data_loaded["done"] = False
@@ -1088,16 +1168,22 @@ def InventoryContent(page: ft.Page):
         if not silent:
             set_status("Supabase 資料同步完成，可開始作業。", theme="green", auto_hide=True)
 
+
     def load_bg_data():
         try:
             time.sleep(0.6)
+            if not is_active_view():
+                return
             set_status("背景同步 Supabase 資料...", theme="blue", loading=True)
             refresh_from_service(silent=False)
 
         except Exception as ex:
+            if not is_active_view():
+                return
             data_loaded["done"] = False
             print(f"背景載入失敗: {ex}")
             set_status(f"背景載入失敗：{ex}", is_error=True)
+
 
     def start_bg_load():
         threading.Thread(target=load_bg_data, daemon=True).start()
@@ -1113,31 +1199,22 @@ def InventoryContent(page: ft.Page):
     # =====================================================
     # 12. 最終畫面
     # =====================================================
-    return ft.Column(
-        controls=[
-            ft.Row(
-                controls=[
-                    ft.Icon(ft.Icons.INVENTORY_2, size=26, color="#374151"),
-                    ft.Text(
-                        "原料入庫作業",
-                        size=24,
-                        weight=ft.FontWeight.BOLD,
-                        color=TEXT_MAIN,
-                    ),
-                ],
-                spacing=10,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            ),
-            status_bar,
-            ft.Container(height=6),
-            ft.Row(
-                controls=[tab_btn_new, tab_btn_rec],
-                spacing=15,
-                scroll=ft.ScrollMode.AUTO,
-            ),
-            ft.Divider(height=22, color=BORDER),
-            content_area,
-            ft.Container(height=70),
-        ],
-        spacing=10,
+    return ft.Container(
+        bgcolor="#F8FAFC",
+        content=ft.Column(
+            controls=[
+                title_block(),
+                status_bar,
+                ft.Container(height=6),
+                ft.Row(
+                    controls=[tab_btn_new, tab_btn_rec],
+                    spacing=15,
+                    scroll=ft.ScrollMode.AUTO,
+                ),
+                ft.Divider(height=22, color=BORDER),
+                content_area,
+                ft.Container(height=70),
+            ],
+            spacing=10,
+        ),
     )
