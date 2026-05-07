@@ -40,7 +40,11 @@ def main(page: ft.Page):
     # =====================================================
     # 12 小時免重登：瀏覽器端只保存 session token
     # =====================================================
-    persistent_auth_state = {"checking": False, "checked": False}
+    persistent_auth_state = {
+        "checking": False,
+        "checked": False,
+        "target_route": "/",
+    }
 
     def _normalize_storage_value(value):
         if value is None:
@@ -50,7 +54,6 @@ def main(page: ft.Page):
         if text in ["", "null", "None", "undefined"]:
             return ""
 
-        # 某些 JS bridge 可能回傳 JSON 字串格式。
         if len(text) >= 2 and text[0] == '"' and text[-1] == '"':
             try:
                 return json.loads(text)
@@ -65,7 +68,6 @@ def main(page: ft.Page):
         優先使用 shared_preferences；若環境沒有，再退回 eval_js / run_javascript。
         回傳值透過 callback(value) 取得。
         """
-        # Flet 0.84 新式 client storage。Web 端底層是 localStorage。
         if hasattr(page, "shared_preferences") and hasattr(page, "run_task"):
             async def do_get():
                 try:
@@ -127,9 +129,7 @@ def main(page: ft.Page):
             except Exception as ex:
                 print("page.run_task shared_preferences.set failed:", repr(ex))
 
-        script = (
-            f"window.localStorage.setItem({json.dumps(key)}, {json.dumps(value)});"
-        )
+        script = f"window.localStorage.setItem({json.dumps(key)}, {json.dumps(value)});"
 
         if hasattr(page, "eval_js"):
             try:
@@ -245,14 +245,106 @@ def main(page: ft.Page):
         if session_token:
             page.session_data["session_token"] = session_token
 
-    def attempt_restore_persistent_login():
+    def save_browser_session_token(token: str):
+        token = str(token or "").strip()
+        if not token:
+            return False
+        page.session_data["session_token"] = token
+        return browser_storage_set(SESSION_TOKEN_KEY, token)
+
+    def clear_browser_session_token():
+        try:
+            page.session_data.pop("session_token", None)
+        except Exception:
+            pass
+        return browser_storage_remove(SESSION_TOKEN_KEY)
+
+    def register_session_helpers():
+        page.session_data["_navigate"] = navigate
+        page.session_data["_save_login_session"] = save_session_data
+        page.session_data["_save_browser_session_token"] = save_browser_session_token
+        page.session_data["_save_persistent_session_token"] = save_browser_session_token
+        page.session_data["_save_persistent_token"] = save_browser_session_token
+        page.session_data["_set_persistent_token"] = save_browser_session_token
+        page.session_data["_clear_browser_session_token"] = clear_browser_session_token
+        page.session_data["_clear_persistent_session_token"] = clear_browser_session_token
+        page.session_data["_browser_storage_get"] = browser_storage_get
+        page.session_data["_browser_storage_set"] = browser_storage_set
+        page.session_data["_browser_storage_remove"] = browser_storage_remove
+
+    register_session_helpers()
+
+    def build_auth_check_view(message: str = "正在檢查登入狀態..."):
+        return ft.View(
+            route=page.route or "/",
+            padding=0,
+            bgcolor="#F8FAFC",
+            controls=[
+                ft.Container(
+                    expand=True,
+                    bgcolor="#F8FAFC",
+                    alignment=ft.Alignment(0, 0),
+                    padding=24,
+                    content=ft.Container(
+                        width=360,
+                        bgcolor="#FFFFFF",
+                        border=ft.border.all(1, "#E2E8F0"),
+                        border_radius=22,
+                        padding=ft.padding.symmetric(horizontal=28, vertical=32),
+                        shadow=ft.BoxShadow(
+                            spread_radius=0,
+                            blur_radius=22,
+                            color="#12000000",
+                            offset=ft.Offset(0, 8),
+                        ),
+                        content=ft.Column(
+                            tight=True,
+                            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                            spacing=14,
+                            controls=[
+                                ft.ProgressRing(width=34, height=34, stroke_width=3, color="#4F7FB8"),
+                                ft.Text(
+                                    "KNH 紡黏原料管理系統",
+                                    size=18,
+                                    weight=ft.FontWeight.BOLD,
+                                    color="#0F172A",
+                                    text_align=ft.TextAlign.CENTER,
+                                ),
+                                ft.Text(
+                                    message,
+                                    size=14,
+                                    color="#64748B",
+                                    text_align=ft.TextAlign.CENTER,
+                                ),
+                            ],
+                        ),
+                    ),
+                )
+            ],
+        )
+
+    def show_auth_check_view(message: str = "正在檢查登入狀態..."):
+        try:
+            page.views.clear()
+            page.views.append(build_auth_check_view(message))
+            page.update()
+        except Exception as ex:
+            print("show_auth_check_view error:", repr(ex))
+
+    def start_persistent_auth_check(target_route: str | None = None, force: bool = False):
         if is_login():
             return False
 
-        if persistent_auth_state.get("checking"):
+        if persistent_auth_state.get("checking") and not force:
             return True
 
+        route_target = target_route or page.route or "/"
+        if route_target in ["", "/login"]:
+            route_target = "/"
+
+        persistent_auth_state["target_route"] = route_target
         persistent_auth_state["checking"] = True
+        show_auth_check_view("正在檢查登入狀態...")
 
         def on_token_loaded(token):
             token = _normalize_storage_value(token)
@@ -261,51 +353,47 @@ def main(page: ft.Page):
 
             if not token:
                 print("PERSISTENT LOGIN: no token")
+                navigate("/login")
                 return
 
             try:
-                result = restore_persistent_session(
-                    token,
-                    user_agent=str(getattr(page, "client_user_agent", "") or ""),
-                    ip_address=str(getattr(page, "client_ip", "") or ""),
-                )
+                result = restore_persistent_session(token)
 
-                if not result.ok:
-                    print("PERSISTENT LOGIN FAILED:", result.message)
-                    browser_storage_remove(SESSION_TOKEN_KEY)
-                    return
-
-                data = result.data or {}
-                user = data.get("user") or {}
-                restored_token = data.get("session_token") or token
-                save_session_data(user, restored_token)
-
-                print(
-                    "PERSISTENT LOGIN RESTORED:",
-                    page.session_data.get("employee_id"),
-                    page.session_data.get("user_name"),
-                )
-                navigate("/")
+                if result.ok:
+                    data = result.data or {}
+                    user = data.get("user") or {}
+                    restored_token = str(data.get("session_token") or token).strip()
+                    save_session_data(user, restored_token)
+                    register_session_helpers()
+                    save_browser_session_token(restored_token)
+                    print("PERSISTENT LOGIN: restored")
+                    navigate(persistent_auth_state.get("target_route") or "/")
+                else:
+                    print("PERSISTENT LOGIN failed:", result.message)
+                    clear_browser_session_token()
+                    navigate("/login")
 
             except Exception as ex:
-                print("PERSISTENT LOGIN ERROR:", repr(ex))
-                browser_storage_remove(SESSION_TOKEN_KEY)
+                print("PERSISTENT LOGIN exception:", repr(ex))
+                clear_browser_session_token()
+                navigate("/login")
 
-        return browser_storage_get(SESSION_TOKEN_KEY, on_token_loaded)
+        browser_storage_get(SESSION_TOKEN_KEY, on_token_loaded)
+        return True
 
     def logout():
-        session_token = str(page.session_data.get("session_token") or "").strip()
-        if session_token:
+        token = str(page.session_data.get("session_token") or "").strip()
+        if token:
             try:
-                result = revoke_persistent_session(session_token)
-                if not result.ok:
-                    print("revoke session failed:", result.message)
+                revoke_persistent_session(token)
             except Exception as ex:
-                print("revoke session error:", repr(ex))
+                print("revoke persistent session failed:", repr(ex))
 
-        browser_storage_remove(SESSION_TOKEN_KEY)
+        clear_browser_session_token()
         page.session_data.clear()
-        page.session_data["_navigate"] = navigate
+        register_session_helpers()
+        persistent_auth_state["checked"] = True
+        persistent_auth_state["checking"] = False
         navigate("/login")
 
     # =====================================================
@@ -897,11 +985,26 @@ def main(page: ft.Page):
             # 先建立 target_view，不要一開始就清空 page.views
             target_view = None
 
-            if not is_login() and route != "/login":
-                target_view = LoginView(page)
+            if persistent_auth_state.get("checking") and not is_login():
+                target_view = build_auth_check_view("正在檢查登入狀態...")
+
+            elif not is_login() and route != "/login":
+                if not persistent_auth_state.get("checked"):
+                    start_persistent_auth_check(target_route=route)
+                    target_view = build_auth_check_view("正在檢查登入狀態...")
+                else:
+                    target_view = LoginView(page)
 
             elif route == "/login":
-                target_view = LoginView(page)
+                if is_login():
+                    target_view = shell(
+                        "/",
+                        "首頁儀表板",
+                        DashboardContent(page),
+                        0,
+                    )
+                else:
+                    target_view = LoginView(page)
 
             elif route == "/":
                 target_view = shell(
@@ -1075,13 +1178,13 @@ def main(page: ft.Page):
     page.on_route_change = route_change
     page.on_view_pop = view_pop
 
+    initial_route = page.route or "/"
     if is_login():
-        navigate("/")
+        navigate(initial_route if initial_route != "/login" else "/")
     else:
-        # 先顯示登入頁；若瀏覽器 localStorage / shared_preferences 有有效 token，
-        # callback 會自動還原 session 並導向首頁。
-        navigate("/login")
-        attempt_restore_persistent_login()
+        # 先顯示檢查畫面，再讀取瀏覽器端 token。
+        # 避免 Safari 先露出登入頁，等到使用者點欄位才跳回首頁。
+        start_persistent_auth_check(target_route=initial_route, force=True)
 
 
 if __name__ == "__main__":
