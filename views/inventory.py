@@ -29,6 +29,17 @@ def InventoryContent(page: ft.Page):
     submitting_new = {"value": False}
     submitting_rec = {"value": False}
 
+    # 防連點保護：除了 UI disabled 之外，再用 Lock 擋住極短時間內的重複事件。
+    # purchase 表單同時涵蓋供應商新料與母粒入庫；recycled 表單涵蓋廠內回用料入庫。
+    submit_locks = {
+        "purchase": threading.Lock(),
+        "recycled": threading.Lock(),
+    }
+    in_flight_codes = {
+        "purchase": "",
+        "recycled": "",
+    }
+
     def session_get(key: str, default=None):
         if hasattr(page, "session_data") and isinstance(page.session_data, dict):
             return page.session_data.get(key, default)
@@ -467,6 +478,96 @@ def InventoryContent(page: ft.Page):
     today_batch = today_batch_prefix()
     today_date = today_dash_date()
 
+    def normalize_unique_code(value) -> str:
+        """批號 / 編號比對用：去掉前後空白並統一大小寫。"""
+        return str(value or "").strip().upper()
+
+    def serial_example_text() -> str:
+        return f"{today_batch_prefix()}01"
+
+    def batch_code_has_serial(value) -> bool:
+        """
+        入庫批號 / 回用料編號格式檢查。
+
+        現場規則：
+        - 系統會先帶出 8 碼日期前綴，例如 20260508。
+        - 操作員必須補上至少 2 碼流水號，例如 2026050801、2026050802。
+        - 供應商新料 / 母粒入庫與廠內回用料入庫都套用同一規則。
+        """
+        text = normalize_unique_code(value)
+
+        if not text:
+            return False
+
+        # 格式固定為 8 碼日期 + 至少 2 碼流水號，避免只送出 20260508。
+        if not text.isdigit() or len(text) < 10:
+            return False
+
+        date_part = text[:8]
+        serial_part = text[8:]
+
+        return date_part.isdigit() and serial_part.isdigit() and len(serial_part) >= 2
+
+    def batch_code_serial_error(label: str) -> str:
+        return f"請補齊{label}流水號，例如 {serial_example_text()}"
+
+    def first_existing_value(row: dict, keys: list[str]) -> str:
+        for key in keys:
+            value = row.get(key)
+            if value not in [None, ""]:
+                return str(value).strip()
+        return ""
+
+    def purchase_batch_already_loaded(batch_no: str) -> bool:
+        """
+        供應商新料 / 母粒入庫的前端重複檢查。
+        目前 inventory.py 只能檢查本頁已載入的最近紀錄與正在送出的批號；
+        全資料庫絕對防重複仍應放在 service 或 Supabase unique constraint。
+        """
+        target = normalize_unique_code(batch_no)
+        if not target:
+            return False
+
+        if in_flight_codes.get("purchase") == target:
+            return True
+
+        for record in recent_purchase_records:
+            existing = normalize_unique_code(
+                first_existing_value(
+                    record,
+                    ["batch_no", "purchase_batch_no", "purchase_batch", "batch"],
+                )
+            )
+            if existing and existing == target:
+                return True
+
+        return False
+
+    def recycled_no_already_loaded(recycled_no: str) -> bool:
+        """
+        廠內回用料入庫的前端重複檢查。
+        目前先擋本頁已載入的最近紀錄與正在送出的編號；
+        全資料庫絕對防重複仍應放在 service 或 Supabase unique constraint。
+        """
+        target = normalize_unique_code(recycled_no)
+        if not target:
+            return False
+
+        if in_flight_codes.get("recycled") == target:
+            return True
+
+        for record in recent_recycled_records:
+            existing = normalize_unique_code(
+                first_existing_value(
+                    record,
+                    ["recycled_no", "recycled_material_no", "material_no"],
+                )
+            )
+            if existing and existing == target:
+                return True
+
+        return False
+
     # =====================================================
     # 6. 供應商新料入庫表單
     # =====================================================
@@ -479,19 +580,29 @@ def InventoryContent(page: ft.Page):
         """
         按鈕策略：
         - 資料尚未同步完成：不可送出。
-        - 資料同步完成後：按鈕保持可點擊。
-        - 欄位缺漏或格式錯誤：由 submit_new() 顯示明確錯誤訊息。
-
-        這樣現場操作員點按鈕時會有回饋，不會以為系統壞掉。
+        - 資料同步完成後：欄位基本正確才可送出。
+        - 若批號已出現在本頁已載入紀錄或正在送出中，先在前端擋下。
         """
         val = (n_batch.value or "").strip()
 
         if not data_loaded["done"]:
             btn_new.disabled = True
             n_batch.error_text = None
+        elif submitting_new["value"]:
+            btn_new.disabled = True
+            n_batch.error_text = None
+        elif not val:
+            btn_new.disabled = True
+            n_batch.error_text = "請輸入進貨批號"
+        elif not batch_code_has_serial(val):
+            btn_new.disabled = True
+            n_batch.error_text = batch_code_serial_error("進貨批號")
+        elif purchase_batch_already_loaded(val):
+            btn_new.disabled = True
+            n_batch.error_text = "此進貨批號已存在於最近紀錄，請確認是否重複"
         else:
             btn_new.disabled = False
-            n_batch.error_text = None if val else "請輸入進貨批號"
+            n_batch.error_text = None
 
         apply_button_enabled_state(btn_new)
 
@@ -501,6 +612,7 @@ def InventoryContent(page: ft.Page):
 
     def submit_new(e):
         if submitting_new["value"]:
+            set_status("新料 / 母粒入庫資料寫入中，請勿重複點擊。", theme="blue", loading=True)
             return
 
         if not data_loaded["done"]:
@@ -521,6 +633,21 @@ def InventoryContent(page: ft.Page):
             set_status("請輸入進貨批號。", is_error=True)
             return
 
+        if not batch_code_has_serial(batch_text):
+            message = batch_code_serial_error("進貨批號")
+            n_batch.error_text = message
+            safe_update(n_batch)
+            set_status(message, is_error=True)
+            show_snack(message, success=False)
+            return
+
+        if purchase_batch_already_loaded(batch_text):
+            n_batch.error_text = "此進貨批號已存在於最近紀錄，請確認是否重複"
+            safe_update(n_batch)
+            set_status("此進貨批號已存在於最近紀錄，未送出。", is_error=True)
+            show_snack("此進貨批號已存在於最近紀錄，未送出。", success=False)
+            return
+
         material_id = material_dict.get(n_mat.value)
         if not material_id:
             set_status("找不到此原料對應的 Supabase material_id。", is_error=True)
@@ -531,9 +658,14 @@ def InventoryContent(page: ft.Page):
         created_by_user_id = session_get("user_id")
         created_by_name = session_get("user_name")
 
+        if not submit_locks["purchase"].acquire(blocking=False):
+            set_status("新料 / 母粒入庫資料寫入中，請勿重複點擊。", theme="blue", loading=True)
+            return
+
         submitting_new["value"] = True
+        in_flight_codes["purchase"] = normalize_unique_code(batch_text)
         set_button_loading(btn_new, "寫入中...")
-        set_status("正在寫入新料入庫資料...", theme="blue", loading=True)
+        set_status("正在寫入新料 / 母粒入庫資料...", theme="blue", loading=True)
 
         def worker():
             try:
@@ -575,9 +707,14 @@ def InventoryContent(page: ft.Page):
                 show_snack(f"寫入失敗：{ex}", success=False)
 
             finally:
+                submitting_new["value"] = False
+                in_flight_codes["purchase"] = ""
+                if submit_locks["purchase"].locked():
+                    submit_locks["purchase"].release()
+
                 if not is_active_view():
                     return
-                submitting_new["value"] = False
+
                 set_button_normal(
                     btn_new,
                     "確認送出新料入庫",
@@ -650,17 +787,29 @@ def InventoryContent(page: ft.Page):
         """
         按鈕策略：
         - 資料尚未同步完成：不可送出。
-        - 資料同步完成後：按鈕保持可點擊。
-        - 編號未補齊流水號：由 submit_rec() 顯示明確錯誤訊息。
+        - 資料同步完成後：編號完整且未重複才可送出。
+        - 若編號已出現在本頁已載入紀錄或正在送出中，先在前端擋下。
         """
         val = (r_id.value or "").strip()
 
         if not data_loaded["done"]:
             btn_rec.disabled = True
             r_id.error_text = None
+        elif submitting_rec["value"]:
+            btn_rec.disabled = True
+            r_id.error_text = None
+        elif not val:
+            btn_rec.disabled = True
+            r_id.error_text = "請輸入原料編號"
+        elif not batch_code_has_serial(val):
+            btn_rec.disabled = True
+            r_id.error_text = batch_code_serial_error("原料編號")
+        elif recycled_no_already_loaded(val):
+            btn_rec.disabled = True
+            r_id.error_text = "此原料編號已存在於最近紀錄，請確認是否重複"
         else:
             btn_rec.disabled = False
-            r_id.error_text = None if val and val != today_batch_prefix() else "請補齊流水號"
+            r_id.error_text = None
 
         apply_button_enabled_state(btn_rec)
 
@@ -670,6 +819,7 @@ def InventoryContent(page: ft.Page):
 
     def submit_rec(e):
         if submitting_rec["value"]:
+            set_status("回用料入庫資料寫入中，請勿重複點擊。", theme="green", loading=True)
             return
 
         if not data_loaded["done"]:
@@ -679,8 +829,23 @@ def InventoryContent(page: ft.Page):
         rec_id_text = (r_id.value or "").strip()
         weight_text = (r_weight.value or "").strip()
 
-        if not rec_id_text or rec_id_text == today_batch_prefix():
-            set_status("請完整填寫「原料編號」的流水號。", is_error=True)
+        if not rec_id_text:
+            set_status("請輸入原料編號。", is_error=True)
+            return
+
+        if not batch_code_has_serial(rec_id_text):
+            message = batch_code_serial_error("原料編號")
+            r_id.error_text = message
+            safe_update(r_id)
+            set_status(message, is_error=True)
+            show_snack(message, success=False)
+            return
+
+        if recycled_no_already_loaded(rec_id_text):
+            r_id.error_text = "此原料編號已存在於最近紀錄，請確認是否重複"
+            safe_update(r_id)
+            set_status("此原料編號已存在於最近紀錄，未送出。", is_error=True)
+            show_snack("此原料編號已存在於最近紀錄，未送出。", success=False)
             return
 
         try:
@@ -696,7 +861,12 @@ def InventoryContent(page: ft.Page):
         source_machine = str(r_machine.value or "")
         supplier = str(r_vendor.value or "")
 
+        if not submit_locks["recycled"].acquire(blocking=False):
+            set_status("回用料入庫資料寫入中，請勿重複點擊。", theme="green", loading=True)
+            return
+
         submitting_rec["value"] = True
+        in_flight_codes["recycled"] = normalize_unique_code(rec_id_text)
         set_button_loading(btn_rec, "寫入中...")
         set_status("正在寫入回用料入庫資料...", theme="green", loading=True)
 
@@ -740,9 +910,14 @@ def InventoryContent(page: ft.Page):
                 show_snack(f"寫入失敗：{ex}", success=False)
 
             finally:
+                submitting_rec["value"] = False
+                in_flight_codes["recycled"] = ""
+                if submit_locks["recycled"].locked():
+                    submit_locks["recycled"].release()
+
                 if not is_active_view():
                     return
-                submitting_rec["value"] = False
+
                 set_button_normal(
                     btn_rec,
                     "確認送出回用料紀錄",
