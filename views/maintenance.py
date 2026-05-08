@@ -2352,8 +2352,7 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
 
             def choose_area(value: str):
                 area_tf.value = value
-                if not str(location_tf.value or "").strip():
-                    location_tf.value = value
+                location_tf.value = value
                 try:
                     area_tf.update()
                     location_tf.update()
@@ -2597,8 +2596,7 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
 
             def choose_system(value: str):
                 system_tf.value = value
-                if not str(machine_tf.value or "").strip():
-                    machine_tf.value = value
+                machine_tf.value = value
                 try:
                     system_tf.update()
                     machine_tf.update()
