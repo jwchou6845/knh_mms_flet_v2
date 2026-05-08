@@ -1,7 +1,7 @@
 # views/spinneret.py
 # KNH MMS - 噴頭組件狀態
 # Flet 0.84 + Supabase
-# 本版重點：非阻塞背景載入、離頁保護、集中 page.update()、手機 Web 穩定按鈕。
+# 本版重點：非阻塞背景載入、離頁保護、集中 page.update()、手機 Web 穩定按鈕；狀態膠囊 slot 隱藏修正。
 
 import flet as ft
 import threading
@@ -42,8 +42,6 @@ def SpinneretContent(page: ft.Page):
         return True
 
     def page_update():
-        if not is_view_active(view_token):
-            return
         try:
             page.update()
         except Exception as ex:
@@ -91,34 +89,31 @@ def SpinneretContent(page: ft.Page):
     # =====================================================
     # 2. 共用 UI 元件
     # =====================================================
-    def native_button_style(bg_color: str, text_color: str, border_color: str | None = None) -> ft.ButtonStyle:
-        return ft.ButtonStyle(
-            bgcolor={
-                ft.ControlState.DEFAULT: bg_color,
-                ft.ControlState.HOVERED: bg_color,
-                ft.ControlState.PRESSED: bg_color,
-                ft.ControlState.DISABLED: DISABLED,
-            },
-            color={
-                ft.ControlState.DEFAULT: text_color,
-                ft.ControlState.HOVERED: text_color,
-                ft.ControlState.PRESSED: text_color,
-                ft.ControlState.DISABLED: "#FFFFFF",
-            },
-            side={
-                ft.ControlState.DEFAULT: ft.BorderSide(1, border_color or bg_color),
-                ft.ControlState.HOVERED: ft.BorderSide(1, border_color or bg_color),
-                ft.ControlState.PRESSED: ft.BorderSide(1, border_color or bg_color),
-                ft.ControlState.DISABLED: ft.BorderSide(1, DISABLED),
-            },
-            shape=ft.RoundedRectangleBorder(radius=12),
-            padding=ft.padding.symmetric(horizontal=16, vertical=14),
-            elevation={
-                ft.ControlState.DEFAULT: 0,
-                ft.ControlState.HOVERED: 1,
-                ft.ControlState.PRESSED: 0,
-                ft.ControlState.DISABLED: 0,
-            },
+    def button_content(label: str, icon_name, color: str, loading: bool = False) -> ft.Row:
+        controls = []
+
+        if loading:
+            controls.append(ft.ProgressRing(width=18, height=18, stroke_width=2, color=color))
+        else:
+            controls.append(ft.Icon(icon_name, color=color, size=18))
+
+        controls.append(
+            ft.Text(
+                label,
+                color=color,
+                weight=ft.FontWeight.BOLD,
+                size=14,
+                max_lines=1,
+                overflow=ft.TextOverflow.ELLIPSIS,
+            )
+        )
+
+        return ft.Row(
+            controls=controls,
+            alignment=ft.MainAxisAlignment.CENTER,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            spacing=8,
+            tight=True,
         )
 
     def stable_button(
@@ -129,17 +124,17 @@ def SpinneretContent(page: ft.Page):
         on_click_func,
         height: int = 46,
         border_color: str | None = None,
-    ) -> ft.ElevatedButton:
-        """
-        手機 Web 關鍵按鈕穩定版：優先使用 Flet 原生 text / icon，
-        避免 content=Row(...) 在部分手機瀏覽器出現文字或圖示不渲染。
-        """
-        btn = ft.ElevatedButton(
-            text=label,
-            icon=icon_name,
+    ) -> ft.Container:
+        btn = ft.Container(
             height=height,
             expand=True,
-            style=native_button_style(bg_color, text_color, border_color),
+            border_radius=12,
+            bgcolor=bg_color,
+            border=ft.border.all(1, border_color or bg_color),
+            alignment=ft.Alignment(0, 0),
+            padding=ft.padding.symmetric(horizontal=12),
+            ink=True,
+            content=button_content(label, icon_name, text_color),
         )
         btn.disabled = False
         btn.data = {
@@ -159,20 +154,23 @@ def SpinneretContent(page: ft.Page):
         btn.on_click = handle_click
         return btn
 
-    def set_button_loading(button: ft.ElevatedButton, label: str = "寫入中..."):
+    def set_button_loading(button: ft.Container, label: str = "寫入中..."):
+        data = button.data if isinstance(getattr(button, "data", None), dict) else {}
         button.disabled = True
-        button.text = label
-        button.icon = ft.Icons.HOURGLASS_TOP
+        button.bgcolor = DISABLED
+        button.border = ft.border.all(1, DISABLED)
+        button.content = button_content(label, data.get("icon", ft.Icons.SYNC), "#FFFFFF", loading=True)
 
-    def set_button_normal(button: ft.ElevatedButton):
+    def set_button_normal(button: ft.Container):
         data = button.data if isinstance(getattr(button, "data", None), dict) else {}
         button.disabled = False
-        button.text = data.get("label", "確認")
-        button.icon = data.get("icon", ft.Icons.CHECK)
-        button.style = native_button_style(
-            data.get("bg", BLUE_SOFT),
+        button.bgcolor = data.get("bg", BLUE_SOFT)
+        button.border = ft.border.all(1, data.get("border", data.get("bg", BLUE_BORDER)))
+        button.content = button_content(
+            data.get("label", "確認"),
+            data.get("icon", ft.Icons.CHECK),
             data.get("text_color", BLUE),
-            data.get("border", data.get("bg", BLUE_BORDER)),
+            loading=False,
         )
 
     def field_label(label: str, required: bool = False) -> ft.Text:
@@ -244,8 +242,8 @@ def SpinneretContent(page: ft.Page):
         ),
     )
 
-    # 外層 slot 控制膠囊是否參與版面；只隱藏 badge 本身時，
-    # 手機 Web 仍可能留下 title column 內的 padding / spacing。
+    # 外層 slot 控制狀態膠囊是否參與版面。
+    # 只隱藏 status_badge 時，手機 Web 可能仍留下 title_column 內的 padding/spacing。
     status_slot = ft.Container(
         padding=ft.padding.only(top=6),
         alignment=ft.Alignment(-1, 0),
