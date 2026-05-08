@@ -510,6 +510,68 @@ def submit_maintenance_record(
 
 
 # =========================
+# 保養項目重複檢查
+# =========================
+
+def _normalize_duplicate_text(value: Any) -> str:
+    text = str(value or "").strip().replace("　", " ")
+    return " ".join(text.split()).casefold()
+
+
+def _find_duplicate_cleaning_item(item_name: str, machine_area: str) -> dict[str, Any] | None:
+    target_name = _normalize_duplicate_text(item_name)
+    target_machine = _normalize_duplicate_text(machine_area)
+
+    if not target_name or not target_machine:
+        return None
+
+    items = get_active_maintenance_items()
+
+    for item in items:
+        if item.get("maintenance_type") != "清潔":
+            continue
+
+        same_name = _normalize_duplicate_text(item.get("item_name")) == target_name
+        same_machine = _normalize_duplicate_text(item.get("machine_area")) == target_machine
+
+        if same_name and same_machine:
+            return item
+
+    return None
+
+
+def _find_duplicate_consumable_item(
+    main_category: str,
+    sub_category: str,
+    item_name: str,
+    machine_area: str,
+) -> dict[str, Any] | None:
+    target_main = _normalize_duplicate_text(main_category)
+    target_sub = _normalize_duplicate_text(sub_category)
+    target_name = _normalize_duplicate_text(item_name)
+    target_machine = _normalize_duplicate_text(machine_area)
+
+    if not target_main or not target_name or not target_machine:
+        return None
+
+    items = get_active_maintenance_items()
+
+    for item in items:
+        if item.get("maintenance_type") != "耗材更換":
+            continue
+
+        same_main = _normalize_duplicate_text(item.get("main_category")) == target_main
+        same_sub = _normalize_duplicate_text(item.get("sub_category")) == target_sub
+        same_name = _normalize_duplicate_text(item.get("item_name")) == target_name
+        same_machine = _normalize_duplicate_text(item.get("machine_area")) == target_machine
+
+        if same_main and same_sub and same_name and same_machine:
+            return item
+
+    return None
+
+
+# =========================
 # 新增清潔項目
 # =========================
 
@@ -528,6 +590,20 @@ def create_cleaning_item(
 
     if cycle_days <= 0:
         return ServiceResult(ok=False, message="週期天數必須大於 0。")
+
+    item_name = str(item_name or "").strip()
+    machine_area = str(machine_area or "").strip()
+
+    try:
+        duplicate = _find_duplicate_cleaning_item(item_name, machine_area)
+        if duplicate:
+            return ServiceResult(
+                ok=False,
+                message=f"已存在相同清潔項目：{duplicate.get('item_name') or item_name}｜{duplicate.get('machine_area') or machine_area}，請改用『編輯週期』或直接新增保養紀錄。",
+                data=duplicate,
+            )
+    except Exception as exc:
+        return ServiceResult(ok=False, message=f"檢查清潔項目是否重複失敗：{exc}")
 
     payload = {
         "item_name": item_name,
@@ -577,6 +653,34 @@ def create_consumable_item(
 
     if cycle_days <= 0:
         return ServiceResult(ok=False, message="週期天數必須大於 0。")
+
+    main_category = str(main_category or "").strip()
+    sub_category = str(sub_category or "").strip()
+    item_name = str(item_name or "").strip()
+    machine_area = str(machine_area or "").strip()
+
+    try:
+        duplicate = _find_duplicate_consumable_item(
+            main_category=main_category,
+            sub_category=sub_category,
+            item_name=item_name,
+            machine_area=machine_area,
+        )
+        if duplicate:
+            return ServiceResult(
+                ok=False,
+                message=(
+                    "已存在相同耗材項目："
+                    f"{duplicate.get('main_category') or main_category}｜"
+                    f"{duplicate.get('sub_category') or '-'}｜"
+                    f"{duplicate.get('item_name') or item_name}｜"
+                    f"{duplicate.get('machine_area') or machine_area}，"
+                    "請改用『編輯週期』或直接新增保養紀錄。"
+                ),
+                data=duplicate,
+            )
+    except Exception as exc:
+        return ServiceResult(ok=False, message=f"檢查耗材項目是否重複失敗：{exc}")
 
     payload = {
         "item_name": item_name,
