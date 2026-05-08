@@ -184,6 +184,44 @@ def FeedContent(page: ft.Page):
     def now_datetime_string(date_text: str):
         return parse_feed_date_to_taipei_iso(date_text)
 
+    def aux_batch_prefix():
+        """
+        輔助母粒領用批號前綴。
+        操作員需在此日期前綴後補流水號，例如 MB2026050801。
+        """
+        return f"MB{now_taipei().strftime('%Y%m%d')}"
+
+    def aux_batch_example():
+        return f"{aux_batch_prefix()}01"
+
+    def validate_aux_batch_no(value):
+        """
+        輔助母粒批號必須為：MB + 8 碼日期 + 至少 2 碼流水號。
+        例如：MB2026050801。
+        """
+        text_value = str(value or "").strip().upper()
+
+        if not text_value:
+            return False, f"請輸入母粒批號，例如 {aux_batch_example()}。"
+
+        if not text_value.startswith("MB"):
+            return False, f"母粒批號格式需為 MB + 日期 + 流水號，例如 {aux_batch_example()}。"
+
+        number_part = text_value[2:]
+        if not number_part.isdigit():
+            return False, f"母粒批號只能使用 MB 加數字，例如 {aux_batch_example()}。"
+
+        if len(number_part) < 10:
+            return False, f"請補齊母粒批號流水號，例如 {aux_batch_example()}。"
+
+        date_part = number_part[:8]
+        serial_part = number_part[8:]
+
+        if len(date_part) != 8 or len(serial_part) < 2:
+            return False, f"請補齊母粒批號流水號，例如 {aux_batch_example()}。"
+
+        return True, ""
+
     def format_datetime_local(dt_text: str):
         return format_feed_datetime(dt_text)
 
@@ -1604,6 +1642,10 @@ def FeedContent(page: ft.Page):
             form_title_icon.color = BLUE
             form_title_text.value = "領用新料作業"
             material_input_group.controls[0].controls[1].value = "領用新料 *"
+            batch_input_group.controls[0].controls[1].value = "原料批號 *"
+            batch_field.hint_text = "輸入原料包裝上之批號"
+            batch_field.label = "輸入原料包裝上之批號"
+            batch_field.error_text = None
 
             # 從母粒切回新料時，清掉母粒自動帶入的批號，讓新料恢復 hint 狀態
             if str(batch_field.value or "").startswith("MB"):
@@ -1632,6 +1674,10 @@ def FeedContent(page: ft.Page):
             form_title_icon.color = PURPLE
             form_title_text.value = "輔助母粒作業"
             material_input_group.controls[0].controls[1].value = "領用母粒 *"
+            batch_input_group.controls[0].controls[1].value = "母粒批號（請補齊流水號） *"
+            batch_field.hint_text = f"例如：{aux_batch_example()}"
+            batch_field.label = f"例如：{aux_batch_example()}"
+            batch_field.error_text = None
 
             if aux_materials:
                 keys = sorted(aux_materials.keys())
@@ -1647,7 +1693,7 @@ def FeedContent(page: ft.Page):
             ]
             machine_dropdown.value = "S1-PET"
 
-            batch_field.value = f"MB{now_taipei().strftime('%Y%m%d')}"
+            batch_field.value = aux_batch_prefix()
             form_card.border = ft.border.all(1, PURPLE_BORDER)
 
         else:
@@ -1655,6 +1701,7 @@ def FeedContent(page: ft.Page):
             form_title_icon.color = ORANGE
             form_title_text.value = "領用回用料作業"
             material_input_group.controls[0].controls[1].value = "領用回用料 *"
+            batch_field.error_text = None
 
             if rec_materials:
                 keys = list(rec_materials.keys())
@@ -1729,9 +1776,23 @@ def FeedContent(page: ft.Page):
             # Supabase：materials -> feed_records
             # =====================================================
             if mode in ["new", "aux"]:
-                if not batch_field.value or not str(batch_field.value).strip():
+                batch_no = str(batch_field.value or "").strip()
+                batch_field.error_text = None
+
+                if not batch_no:
+                    batch_field.error_text = "請輸入原料批號。"
                     show_snack("請輸入原料批號。", RED)
+                    update_page()
                     return
+
+                if mode == "aux":
+                    ok, message = validate_aux_batch_no(batch_no)
+                    if not ok:
+                        batch_field.error_text = message
+                        show_snack(message, RED)
+                        update_page()
+                        return
+                    batch_no = batch_no.upper()
 
                 invalid_values = ["無新料資料", "無母粒資料", "資料載入中"]
                 if not material_dropdown.value or material_dropdown.value in invalid_values:
@@ -1750,7 +1811,7 @@ def FeedContent(page: ft.Page):
                 result = submit_material_feed_record(
                     feed_type=mode,
                     material_id=material_id,
-                    batch_no=str(batch_field.value).strip(),
+                    batch_no=batch_no,
                     feed_date=str(date_field.value or ""),
                     machine_code=str(machine_dropdown.value or ""),
                     quantity_bags=qty,
@@ -1769,7 +1830,7 @@ def FeedContent(page: ft.Page):
                 if mode == "new":
                     batch_field.value = ""
                 else:
-                    batch_field.value = f"MB{now_taipei().strftime('%Y%m%d')}"
+                    batch_field.value = aux_batch_prefix()
 
                 qty_value.value = "1"
                 note_field.value = ""
