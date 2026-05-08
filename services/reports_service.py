@@ -773,13 +773,18 @@ def build_feed_result(rows: list[dict[str, Any]]) -> ServiceResult:
 
 
 def build_purchase_result(rows: list[dict[str, Any]]) -> ServiceResult:
+    """
+    建立入庫紀錄查詢結果。
+
+    purchase_records 目前沒有 category / material_category 欄位，
+    因此入庫紀錄不輸出「類別」，避免報表欄位與正式資料表不一致。
+    """
     output = []
 
     for row in rows:
         output.append(
             {
                 "日期": format_date(first_value(row, ["purchase_date", "created_at"])),
-                "類別": first_value(row, ["category", "material_category"], "-"),
                 "原料名稱": first_value(row, ["material_name", "name"], "-"),
                 "供應商": first_value(row, ["supplier"], "-"),
                 "數量": purchase_quantity_value(row),
@@ -790,7 +795,7 @@ def build_purchase_result(rows: list[dict[str, Any]]) -> ServiceResult:
 
     return build_result(
         title="入庫紀錄查詢",
-        columns=["日期", "類別", "原料名稱", "供應商", "數量", "單位", "人員"],
+        columns=["日期", "原料名稱", "供應商", "數量", "單位", "人員"],
         rows=output,
         summary_text=f"查詢到 {len(output)} 筆入庫紀錄。",
     )
@@ -871,7 +876,9 @@ def run_advanced_query(
 
         if data_type == "入庫紀錄":
             rows = get_purchase_records_between(start.isoformat(), end_exclusive.isoformat())
-            rows = filter_common_rows(rows, category, material_name, supplier, machine, user_name)
+            # purchase_records 沒有 category / material_category 欄位，
+            # 入庫紀錄查詢需忽略「類別」篩選，避免非「全部」時被全部濾掉。
+            rows = filter_common_rows(rows, "全部", material_name, supplier, machine, user_name)
             return build_purchase_result(rows)
 
         if data_type == "保養紀錄":
