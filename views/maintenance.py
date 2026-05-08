@@ -2210,30 +2210,30 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
         def extension_action_button(label: str, icon, color: str, soft_bg: str, handler):
             """手機 Web 穩定版：不用 OutlinedButton，改成 Container + Column。"""
             return ft.Container(
-                height=106,
+                height=78,
                 bgcolor="#FFFFFF",
                 border=ft.border.all(1, color),
-                border_radius=16,
-                padding=ft.padding.symmetric(horizontal=10, vertical=12),
+                border_radius=14,
+                padding=ft.padding.symmetric(horizontal=6, vertical=8),
                 alignment=ft.Alignment(0, 0),
                 ink=True,
                 on_click=handler,
                 content=ft.Column(
                     horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                     alignment=ft.MainAxisAlignment.CENTER,
-                    spacing=8,
+                    spacing=5,
                     controls=[
                         ft.Container(
-                            width=42,
-                            height=42,
-                            border_radius=21,
+                            width=38,
+                            height=38,
+                            border_radius=19,
                             bgcolor=soft_bg,
                             alignment=ft.Alignment(0, 0),
-                            content=ft.Icon(icon, color=color, size=23),
+                            content=ft.Icon(icon, color=color, size=22),
                         ),
                         ft.Text(
                             label,
-                            size=12,
+                            size=11,
                             color=TEXT,
                             weight=ft.FontWeight.W_600,
                             text_align=ft.TextAlign.CENTER,
@@ -2377,8 +2377,8 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
             ]
 
             submit_btn = stable_filled_button(
-                "檢查並新增清潔項目",
-                ft.Icons.RULE_OUTLINED,
+                "新增清潔項目",
+                ft.Icons.ADD_OUTLINED,
                 bg=BLUE_BTN,
                 on_click=lambda e: on_prepare_submit(e),
                 height=46,
@@ -2433,7 +2433,7 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
                     hide_sync_badge_later(3.0)
                     show_snack(result.message, success=True)
                 else:
-                    set_button_normal(page, submit_btn, "檢查並新增清潔項目", ft.Icons.RULE_OUTLINED)
+                    set_button_normal(page, submit_btn, "新增清潔項目", ft.Icons.ADD_OUTLINED)
                     show_snack(result.message, success=False)
 
             def open_confirm(payload: dict):
@@ -2633,8 +2633,8 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
             ]
 
             submit_btn = stable_filled_button(
-                "檢查並新增耗材項目",
-                ft.Icons.RULE_OUTLINED,
+                "新增耗材項目",
+                ft.Icons.ADD_OUTLINED,
                 bg=ORANGE_BTN,
                 on_click=lambda e: on_prepare_submit(e),
                 height=46,
@@ -2687,7 +2687,7 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
                     hide_sync_badge_later(3.0)
                     show_snack(result.message, success=True)
                 else:
-                    set_button_normal(page, submit_btn, "檢查並新增耗材項目", ft.Icons.RULE_OUTLINED)
+                    set_button_normal(page, submit_btn, "新增耗材項目", ft.Icons.ADD_OUTLINED)
                     show_snack(result.message, success=False)
 
             def open_confirm(payload: dict):
@@ -3021,15 +3021,15 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
                 run_spacing=10,
                 controls=[
                     ft.Container(
-                        col={"xs": 12, "sm": 4},
-                        content=extension_action_button("新增清潔項目", ft.Icons.CLEANING_SERVICES_OUTLINED, BLUE_BTN, BLUE_SOFT, open_create_cleaning_dialog),
+                        col={"xs": 4, "sm": 4},
+                        content=extension_action_button("新增清潔", ft.Icons.CLEANING_SERVICES_OUTLINED, BLUE_BTN, BLUE_SOFT, open_create_cleaning_dialog),
                     ),
                     ft.Container(
-                        col={"xs": 12, "sm": 4},
-                        content=extension_action_button("新增耗材項目", ft.Icons.INVENTORY_2_OUTLINED, ORANGE, ORANGE_SOFT, open_create_consumable_dialog),
+                        col={"xs": 4, "sm": 4},
+                        content=extension_action_button("新增耗材", ft.Icons.INVENTORY_2_OUTLINED, ORANGE, ORANGE_SOFT, open_create_consumable_dialog),
                     ),
                     ft.Container(
-                        col={"xs": 12, "sm": 4},
+                        col={"xs": 4, "sm": 4},
                         content=extension_action_button("編輯週期", ft.Icons.EVENT_REPEAT_OUTLINED, PURPLE_BTN, PURPLE_SOFT, open_update_cycle_dialog),
                     ),
                 ],
@@ -3362,39 +3362,40 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
         page.bgcolor = BG
 
         body = ft.Container(
-            padding=ft.padding.only(left=16, right=16, top=18, bottom=96),
+            padding=ft.padding.only(left=16, right=16, top=18, bottom=24),
             content=ft.Column(
                 spacing=18,
                 controls=[
                     build_header(),
                     build_error_banner(),
                     build_summary_cards(is_mobile=True),
+                    ft.Container(
+                        content=stable_filled_button(
+                            "新增保養紀錄",
+                            ft.Icons.ADD_CIRCLE_OUTLINE,
+                            bg=BLUE_BTN,
+                            on_click=open_record_dialog,
+                            height=54,
+                        ),
+                    ),
                     build_type_tabs(),
                     build_filter_bar(),
                     build_today_tasks(),
                     build_item_list(),
                     build_recent_records(),
                     build_extension_settings(),
+                    ft.Container(height=72),
                 ],
             ),
         )
 
-        return ft.Stack(
+        return ft.Container(
             expand=True,
-            controls=[
-                ft.Container(
-                    expand=True,
-                    content=ft.Column(
-                        expand=True,
-                        scroll=ft.ScrollMode.AUTO,
-                        controls=[body],
-                    ),
-                ),
-                ft.Container(
-                    alignment=ft.Alignment(0, 1),
-                    content=build_bottom_submit_button(),
-                ),
-            ],
+            content=ft.Column(
+                expand=True,
+                scroll=ft.ScrollMode.AUTO,
+                controls=[body],
+            ),
         )
 
     # =========================
