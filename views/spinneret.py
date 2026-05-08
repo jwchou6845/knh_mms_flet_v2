@@ -452,6 +452,12 @@ def SpinneretContent(page: ft.Page):
         current_spec = record.get("plate_spec", "無")
         time_str = record.get("status_updated_at", "尚無紀錄")
         note_value = record.get("note", "")
+        updated_by_text = str(
+            record.get("updated_by_name")
+            or record.get("updated_by")
+            or record.get("last_updated_by_name")
+            or "-"
+        )
         is_saving = rec_id in saving_ids
 
         bg_color, txt_color = get_status_style(current_status)
@@ -524,6 +530,8 @@ def SpinneretContent(page: ft.Page):
                         return
 
                     updated_item = result.data or {}
+                    if not updated_item.get("updated_by_name"):
+                        updated_item["updated_by_name"] = get_session_value("user_name", "未登入")
                     update_record_locally(rec_id, updated_item)
                     saving_ids.discard(rec_id)
 
@@ -635,6 +643,15 @@ def SpinneretContent(page: ft.Page):
                                                     ft.Icon(ft.Icons.ACCESS_TIME, size=14, color="#94A3B8"),
                                                     ft.Text("最後更新：", size=12, color=TEXT_SUB),
                                                     ft.Text(str(time_str or "-"), size=12, color=TEXT_SUB),
+                                                ],
+                                                spacing=5,
+                                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                            ),
+                                            ft.Row(
+                                                controls=[
+                                                    ft.Icon(ft.Icons.PERSON_OUTLINE, size=14, color="#94A3B8"),
+                                                    ft.Text("更新人員：", size=12, color=TEXT_SUB),
+                                                    ft.Text(updated_by_text, size=12, color=TEXT_SUB),
                                                 ],
                                                 spacing=5,
                                                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
