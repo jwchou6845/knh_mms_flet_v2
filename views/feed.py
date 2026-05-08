@@ -261,6 +261,32 @@ def FeedContent(page: ft.Page):
         ),
     )
 
+    # 手機 Web：用外層容器控制顯示 / 隱藏，讓隱藏後不保留空白高度。
+    status_badge_area = ft.Container(
+        alignment=ft.Alignment(-1, 0),
+        content=status_badge,
+    )
+    status_hide_guard = {"version": 0}
+
+    def schedule_status_auto_hide(version: int, delay_seconds: float = 3.0):
+        def _hide():
+            if status_hide_guard.get("version") != version:
+                return
+
+            if not is_current_feed_view():
+                return
+
+            status_badge_area.visible = False
+
+            try:
+                update_page()
+            except Exception as ex:
+                print("feed status auto hide error:", ex)
+
+        timer = threading.Timer(delay_seconds, _hide)
+        timer.daemon = True
+        timer.start()
+
     def set_status(text, theme="blue", loading=False, update_now=True):
         if theme == "green":
             bg = GREEN_SOFT
@@ -283,6 +309,10 @@ def FeedContent(page: ft.Page):
             fg = BLUE
             icon = ft.Icons.SYNC
 
+        status_hide_guard["version"] += 1
+        current_status_version = status_hide_guard["version"]
+
+        status_badge_area.visible = True
         status_badge.bgcolor = bg
         status_badge.border = ft.border.all(1, border)
 
@@ -303,6 +333,9 @@ def FeedContent(page: ft.Page):
 
         if update_now:
             update_page()
+
+        if theme == "green" and not loading:
+            schedule_status_auto_hide(current_status_version, delay_seconds=3.0)
 
     # =====================================================
     # 4. 共用 UI 元件
@@ -477,10 +510,7 @@ def FeedContent(page: ft.Page):
             ft.Column(
                 controls=[
                     header_title_block,
-                    ft.Container(
-                        alignment=ft.Alignment(-1, 0),
-                        content=status_badge,
-                    ),
+                    status_badge_area,
                 ],
                 spacing=10,
             )
@@ -488,7 +518,7 @@ def FeedContent(page: ft.Page):
             else ft.Row(
                 controls=[
                     header_title_block,
-                    status_badge,
+                    status_badge_area,
                 ],
                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
