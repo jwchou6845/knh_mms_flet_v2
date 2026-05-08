@@ -25,7 +25,7 @@ from services.maintenance_service import (
 
 
 # ============================================================
-# KNH MMS - 機台保養紀錄 maintenance.py v2.9.2 nonblocking sync guard
+# KNH MMS - 機台保養紀錄 maintenance.py v2.6 record history and super admin soft delete
 # Flet 0.84 + Python + Supabase
 # ============================================================
 
@@ -418,6 +418,7 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
         "inline_record_item_id": None,
         "open_records_item_id": None,
         "item_records_cache": {},
+        "item_records_loading": set(),
         "delete_confirm_record_id": None,
         # v2.5：手機 UX 收合狀態
         "items_expanded": True,
@@ -446,6 +447,7 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
         content=root_stack,
     )
     modal_ref = {"control": None}
+    ui_lock = threading.RLock()
 
     # 基礎離頁保護：背景 thread 回來時，如果使用者已切離 /maintenance，就不再更新舊畫面。
     view_token = f"maintenance-{time.time_ns()}"
@@ -467,7 +469,9 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
         if not is_active_view():
             return
         try:
-            page.update()
+            with ui_lock:
+                if is_active_view():
+                    page.update()
         except Exception:
             pass
 
@@ -537,7 +541,7 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
 
         modal_ref["control"] = modal_layer
         root_stack.controls.append(modal_layer)
-        page.update()
+        safe_page_update()
 
     def close_dialog(dialog: ft.AlertDialog | None = None):
         """
@@ -551,10 +555,7 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
 
         modal_ref["control"] = None
 
-        try:
-            page.update()
-        except Exception:
-            pass
+        safe_page_update()
 
     def show_snack(message: str, success: bool = True):
         """
@@ -569,7 +570,7 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
         except Exception:
             pass
         snack.open = True
-        page.update()
+        safe_page_update()
 
     def is_super_admin() -> bool:
         return session_get("role") == "超級管理員"
@@ -587,7 +588,6 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
 
     def load_data(update_sync_state: bool = True) -> bool:
         result = load_maintenance_page_data()
-
         data = result.data if isinstance(result.data, dict) else None
 
         if result.ok:
@@ -609,26 +609,32 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
         if not is_active_view():
             return
 
-        width = page.width or 390
-
-        if width < MOBILE_WIDTH:
-            main_host.content = build_mobile_layout()
-        else:
-            main_host.content = build_desktop_layout()
-
         try:
-            main_host.update()
-        except Exception:
-            safe_page_update()
+            with ui_lock:
+                if not is_active_view():
+                    return
 
-    def start_background_load(show_loading: bool = True):
+                width = page.width or 390
+
+                if width < MOBILE_WIDTH:
+                    main_host.content = build_mobile_layout()
+                else:
+                    main_host.content = build_desktop_layout()
+
+                try:
+                    main_host.update()
+                except Exception:
+                    page.update()
+        except Exception:
+            pass
+
+    def start_background_load(show_loading: bool = True, render_loading: bool = True):
         if show_loading:
             set_sync_state("loading", "資料同步中", visible=True)
-
-        def worker():
-            if show_loading and is_active_view():
+            if render_loading and is_active_view():
                 rebuild()
 
+        def worker():
             ok = load_data(update_sync_state=True)
             if not is_active_view():
                 return
@@ -640,7 +646,7 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
         threading.Thread(target=worker, daemon=True).start()
 
     def refresh():
-        start_background_load(show_loading=True)
+        start_background_load(show_loading=True, render_loading=True)
 
     # =========================
     # 表單共用選項
@@ -670,7 +676,7 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
         machines = set()
 
         for item in get_all_items():
-            machine = str(item.get("machine_area") or "").strip()
+            machine = item.get("machine_area")
             if machine:
                 machines.add(machine)
 
@@ -680,26 +686,6 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
             options.append(ft.dropdown.Option(machine))
 
         return options
-
-    def get_status_options():
-        """
-        讓篩選選項同時保留標準狀態與 Supabase 實際回傳狀態。
-        避免 service 回傳字串與固定選項不同時，使用者完全篩不到資料。
-        """
-        base = ["全部", "正常", "提醒", "逾期", "未建立紀錄"]
-        actual = []
-
-        for item in get_all_items():
-            status = str(item.get("status") or "").strip()
-            if status and status not in actual:
-                actual.append(status)
-
-        merged = []
-        for status in base + sorted(actual):
-            if status not in merged:
-                merged.append(status)
-
-        return [ft.dropdown.Option(status) for status in merged]
 
     # =========================
     # Dialog：篩選
@@ -967,27 +953,34 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
 
             set_button_loading(page, submit_btn)
 
-            result = submit_maintenance_record(
-                maintenance_item_id=form_state.get("item_id") or "",
-                executed_date=date_tf.value or "",
-                operator_name=operator_tf.value or "",
-                result=result_dd.value or "",
-                note=note_tf.value or "",
-                created_by_user_id=session_get("user_id"),
-                created_by_name=session_get("user_name"),
-            )
+            payload = {
+                "maintenance_item_id": form_state.get("item_id") or "",
+                "executed_date": date_tf.value or "",
+                "operator_name": operator_tf.value or "",
+                "result": result_dd.value or "",
+                "note": note_tf.value or "",
+                "created_by_user_id": session_get("user_id"),
+                "created_by_name": session_get("user_name"),
+            }
 
-            if result.ok:
-                close_dialog(dialog)
-                try:
-                    load_data()
-                    rebuild()
-                    show_snack(result.message, success=True)
-                except Exception as ex:
-                    show_snack(f"資料已寫入，但重新整理失敗：{ex}", success=False)
-            else:
-                set_button_normal(page, submit_btn, "送出紀錄", ft.Icons.SAVE_OUTLINED)
-                show_snack(result.message, success=False)
+            def worker():
+                result = submit_maintenance_record(**payload)
+                if not is_active_view():
+                    return
+                if result.ok:
+                    close_dialog(dialog)
+                    try:
+                        load_data(update_sync_state=True)
+                        rebuild()
+                        hide_sync_badge_later(3.0)
+                        show_snack(result.message, success=True)
+                    except Exception as ex:
+                        show_snack(f"資料已寫入，但重新整理失敗：{ex}", success=False)
+                else:
+                    set_button_normal(page, submit_btn, "送出紀錄", ft.Icons.SAVE_OUTLINED)
+                    show_snack(result.message, success=False)
+
+            threading.Thread(target=worker, daemon=True).start()
 
         submit_btn.on_click = on_submit
 
@@ -1034,6 +1027,9 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
     # =========================
 
     def open_create_cleaning_dialog(e=None):
+        if state.get("loading"):
+            show_snack("資料同步中，請稍候再操作。", success=False)
+            return
         state["active_extension_form"] = None if state.get("active_extension_form") == "clean" else "clean"
         state["extension_expanded"] = True
         rebuild()
@@ -1043,6 +1039,9 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
     # =========================
 
     def open_create_consumable_dialog(e=None):
+        if state.get("loading"):
+            show_snack("資料同步中，請稍候再操作。", success=False)
+            return
         state["active_extension_form"] = None if state.get("active_extension_form") == "material" else "material"
         state["extension_expanded"] = True
         rebuild()
@@ -1052,6 +1051,9 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
     # =========================
 
     def open_update_cycle_dialog(e=None):
+        if state.get("loading"):
+            show_snack("資料同步中，請稍候再操作。", success=False)
+            return
         state["active_extension_form"] = None if state.get("active_extension_form") == "period" else "period"
         state["extension_expanded"] = True
         rebuild()
@@ -1361,22 +1363,22 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
     # =========================
 
     def get_filtered_items() -> list[dict]:
-        selected_type = state.get("selected_type", "清潔")
-        items = list(state["data"].get("items_by_type", {}).get(selected_type, []))
+        selected_type = state["selected_type"]
+        items = state["data"].get("items_by_type", {}).get(selected_type, [])
 
-        filter_status = str(state.get("filter_status") or "全部").strip()
-        filter_machine = str(state.get("filter_machine") or "全部").strip()
+        filter_status = state["filter_status"]
+        filter_machine = state["filter_machine"]
 
         if filter_status != "全部":
             items = [
                 item for item in items
-                if str(item.get("status") or "").strip() == filter_status
+                if item.get("status") == filter_status
             ]
 
         if filter_machine != "全部":
             items = [
                 item for item in items
-                if str(item.get("machine_area") or "").strip() == filter_machine
+                if item.get("machine_area") == filter_machine
             ]
 
         return items
@@ -1435,24 +1437,31 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
 
             set_button_loading(page, submit_btn)
 
-            result = submit_maintenance_record(
-                maintenance_item_id=item.get("id") or "",
-                executed_date=date_tf.value or "",
-                operator_name=operator_tf.value or "",
-                result=result_dd.value or "",
-                note=note_tf.value or "",
-                created_by_user_id=session_get("user_id"),
-                created_by_name=session_get("user_name"),
-            )
+            payload = {
+                "maintenance_item_id": item.get("id") or "",
+                "executed_date": date_tf.value or "",
+                "operator_name": operator_tf.value or "",
+                "result": result_dd.value or "",
+                "note": note_tf.value or "",
+                "created_by_user_id": session_get("user_id"),
+                "created_by_name": session_get("user_name"),
+            }
 
-            if result.ok:
-                state["inline_record_item_id"] = None
-                load_data()
-                rebuild()
-                show_snack(result.message, success=True)
-            else:
-                set_button_normal(page, submit_btn, "送出紀錄", ft.Icons.SAVE_OUTLINED)
-                show_snack(result.message, success=False)
+            def worker():
+                result = submit_maintenance_record(**payload)
+                if not is_active_view():
+                    return
+                if result.ok:
+                    state["inline_record_item_id"] = None
+                    load_data(update_sync_state=True)
+                    rebuild()
+                    hide_sync_badge_later(3.0)
+                    show_snack(result.message, success=True)
+                else:
+                    set_button_normal(page, submit_btn, "送出紀錄", ft.Icons.SAVE_OUTLINED)
+                    show_snack(result.message, success=False)
+
+            threading.Thread(target=worker, daemon=True).start()
 
         submit_btn.on_click = on_submit
 
@@ -1503,13 +1512,23 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
         if state.get("open_records_item_id") == item_id:
             state["open_records_item_id"] = None
             state["delete_confirm_record_id"] = None
+            state.get("item_records_loading", set()).discard(item_id)
             rebuild()
             return
 
         state["open_records_item_id"] = item_id
         state["delete_confirm_record_id"] = None
-        reload_item_records(item_id)
+        state.setdefault("item_records_loading", set()).add(item_id)
         rebuild()
+
+        def worker():
+            reload_item_records(item_id)
+            if not is_active_view():
+                return
+            state.setdefault("item_records_loading", set()).discard(item_id)
+            rebuild()
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def build_record_result_badge(result_text: str) -> ft.Container:
         color, bg = status_colors(result_text)
@@ -1528,6 +1547,7 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
     def build_item_records_panel(item: dict) -> ft.Control:
         item_id = item.get("id")
         records = state.get("item_records_cache", {}).get(item_id, [])
+        loading_records = item_id in state.get("item_records_loading", set())
         admin = is_super_admin()
 
         def close_records(_=None):
@@ -1535,7 +1555,21 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
             state["delete_confirm_record_id"] = None
             rebuild()
 
-        if not records:
+        if loading_records:
+            body = ft.Container(
+                padding=14,
+                border=ft.border.all(1, BLUE_BORDER),
+                border_radius=12,
+                bgcolor=BLUE_SOFT,
+                content=ft.Row(
+                    spacing=10,
+                    controls=[
+                        ft.ProgressRing(width=16, height=16, stroke_width=2, color=BLUE_BTN),
+                        ft.Text("正在讀取此項目保養紀錄...", size=13, color=BLUE_BTN, weight=ft.FontWeight.W_600),
+                    ],
+                ),
+            )
+        elif not records:
             body = ft.Container(
                 padding=14,
                 border=ft.border.all(1, BORDER),
@@ -1559,22 +1593,27 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
                     rebuild()
 
                 def confirm_delete(_, rid=record_id):
-                    result = delete_maintenance_record(
-                        record_id=rid or "",
-                        deleted_by_user_id=session_get("user_id"),
-                        deleted_by_name=session_get("user_name"),
-                        delete_reason="超級管理員於保養紀錄頁面刪除",
-                        role=session_get("role"),
-                    )
+                    def worker():
+                        result = delete_maintenance_record(
+                            record_id=rid or "",
+                            deleted_by_user_id=session_get("user_id"),
+                            deleted_by_name=session_get("user_name"),
+                            delete_reason="超級管理員於保養紀錄頁面刪除",
+                            role=session_get("role"),
+                        )
+                        if not is_active_view():
+                            return
+                        if result.ok:
+                            state["delete_confirm_record_id"] = None
+                            reload_item_records(item_id)
+                            load_data(update_sync_state=True)
+                            rebuild()
+                            hide_sync_badge_later(3.0)
+                            show_snack(result.message, success=True)
+                        else:
+                            show_snack(result.message, success=False)
 
-                    if result.ok:
-                        state["delete_confirm_record_id"] = None
-                        reload_item_records(item_id)
-                        load_data()
-                        rebuild()
-                        show_snack(result.message, success=True)
-                    else:
-                        show_snack(result.message, success=False)
+                    threading.Thread(target=worker, daemon=True).start()
 
                 action_controls = []
 
@@ -1590,45 +1629,25 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
                                     weight=ft.FontWeight.W_600,
                                 ),
                             ),
-                            ft.Container(
-                                width=78,
-                                content=stable_outline_button(
-                                    "取消",
-                                    ft.Icons.CLOSE,
-                                    color=TEXT_MUTED,
-                                    border_color=BORDER,
-                                    on_click=cancel_delete,
-                                    height=38,
-                                    expand=False,
-                                ),
+                            ft.OutlinedButton(
+                                "取消",
+                                style=outline_button_style(),
+                                on_click=cancel_delete,
                             ),
-                            ft.Container(
-                                width=98,
-                                content=stable_filled_button(
-                                    "確認刪除",
-                                    ft.Icons.DELETE_OUTLINE,
-                                    bg=RED,
-                                    on_click=confirm_delete,
-                                    height=38,
-                                    expand=False,
-                                ),
+                            ft.ElevatedButton(
+                                "確認刪除",
+                                height=38,
+                                style=primary_button_style(bg=RED, hover="#B91C1C", pressed="#991B1B"),
+                                on_click=confirm_delete,
                             ),
                         ]
                     else:
                         action_controls = [
                             ft.Container(expand=True),
-                            ft.Container(
-                                width=86,
-                                content=stable_outline_button(
-                                    "刪除",
-                                    ft.Icons.DELETE_OUTLINE,
-                                    color=RED,
-                                    border_color="#FCA5A5",
-                                    hover_bg=RED_SOFT,
-                                    on_click=ask_delete,
-                                    height=38,
-                                    expand=False,
-                                ),
+                            ft.OutlinedButton(
+                                "刪除",
+                                style=outline_button_style(color=RED, hover_bg=RED_SOFT, border_color="#FCA5A5"),
+                                on_click=ask_delete,
                             ),
                         ]
 
@@ -1714,19 +1733,7 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
                                     ft.Text(item_display_name(item), size=12, color=TEXT_MUTED),
                                 ],
                             ),
-                            ft.Container(
-                                width=86,
-                                content=stable_outline_button(
-                                    "收起",
-                                    ft.Icons.KEYBOARD_ARROW_UP,
-                                    color=PURPLE_BTN,
-                                    border_color=PURPLE_BORDER,
-                                    hover_bg=PURPLE_SOFT,
-                                    on_click=close_records,
-                                    height=38,
-                                    expand=False,
-                                ),
-                            ),
+                            ft.OutlinedButton("收起", style=outline_button_style(), on_click=close_records),
                         ],
                     ),
                     ft.Text(
@@ -1888,70 +1895,52 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
 
     def build_filter_bar() -> ft.Control:
         """
-        頁面內篩選列。
-        手機 Web 版不再依賴 Dropdown.on_change。
-        改為 Container 選項鈕，點選後直接寫回 state 並重建畫面，確保「目前條件」與清單同步。
+        v2.5：頁面內篩選列。
+        不再使用彈出式篩選視窗；保養類型由外層「清潔 / 耗材更換」切換控制。
+        此處只篩選狀態與機台 / 區位，避免彈窗與外層 label 狀態互相干擾。
         """
-        status_text = str(state.get("filter_status") or "全部").strip()
-        machine_text = str(state.get("filter_machine") or "全部").strip()
+        status_text = state.get("filter_status", "全部")
+        machine_text = state.get("filter_machine", "全部")
         active_filter = status_text != "全部" or machine_text != "全部"
-        filtered_count = len(get_filtered_items())
 
-        def chip(label: str, active: bool, color: str, on_click) -> ft.Container:
-            return ft.Container(
-                height=38,
-                padding=ft.padding.symmetric(horizontal=12),
-                border_radius=19,
-                bgcolor=BLUE_SOFT if active else "#FFFFFF",
-                border=ft.border.all(1, color if active else BORDER),
-                alignment=ft.Alignment(0, 0),
-                ink=True,
-                on_click=on_click,
-                content=ft.Text(
-                    label,
-                    size=13,
-                    color=color if active else TEXT_MUTED,
-                    weight=ft.FontWeight.BOLD if active else ft.FontWeight.W_500,
-                    max_lines=1,
-                    overflow=ft.TextOverflow.ELLIPSIS,
-                ),
-            )
+        status_dd = ft.Dropdown(
+            label="狀態",
+            value=status_text,
+            dense=True,
+            options=[
+                ft.dropdown.Option("全部"),
+                ft.dropdown.Option("正常"),
+                ft.dropdown.Option("提醒"),
+                ft.dropdown.Option("逾期"),
+                ft.dropdown.Option("未建立紀錄"),
+            ],
+        )
 
-        def set_status_filter(value: str):
-            state["filter_status"] = value or "全部"
-            state["items_expanded"] = True
-            rebuild()
+        machine_dd = ft.Dropdown(
+            label="機台 / 區位",
+            value=machine_text,
+            dense=True,
+            options=get_machine_options(),
+        )
 
-        def set_machine_filter(value: str):
-            state["filter_machine"] = value or "全部"
-            state["items_expanded"] = True
+        def apply_inline_filter(_=None):
+            state["filter_status"] = status_dd.value or "全部"
+            state["filter_machine"] = machine_dd.value or "全部"
             rebuild()
 
         def clear_inline_filter(_=None):
             state["filter_status"] = "全部"
             state["filter_machine"] = "全部"
-            state["items_expanded"] = True
             rebuild()
 
-        status_values = [option.key if getattr(option, "key", None) is not None else option.text for option in get_status_options()]
-        machine_values = [option.key if getattr(option, "key", None) is not None else option.text for option in get_machine_options()]
+        status_dd.on_change = apply_inline_filter
+        machine_dd.on_change = apply_inline_filter
 
-        clear_control = (
-            ft.Container(
-                width=82,
-                content=stable_outline_button(
-                    "清除",
-                    ft.Icons.CLOSE,
-                    color=BLUE_BTN,
-                    border_color=BLUE_BORDER,
-                    hover_bg=BLUE_SOFT,
-                    on_click=clear_inline_filter,
-                    height=38,
-                    expand=False,
-                ),
-            )
-            if active_filter
-            else ft.Container(width=0, height=0)
+        clear_btn = ft.OutlinedButton(
+            "清除",
+            visible=active_filter,
+            style=outline_button_style(),
+            on_click=clear_inline_filter,
         )
 
         return ft.Container(
@@ -1960,7 +1949,7 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
             border_radius=14,
             padding=12,
             content=ft.Column(
-                spacing=12,
+                spacing=10,
                 controls=[
                     ft.Row(
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -1976,52 +1965,20 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
                                 controls=[
                                     ft.Text("頁面內篩選", size=13, color=TEXT, weight=ft.FontWeight.W_600),
                                     ft.Text(
-                                        f"目前條件：狀態 {status_text}｜區位 {machine_text}｜符合 {filtered_count} 筆",
+                                        f"目前條件：狀態 {status_text}｜區位 {machine_text}",
                                         size=12,
                                         color=TEXT_MUTED,
-                                        max_lines=2,
                                     ),
                                 ],
                             ),
-                            clear_control,
+                            clear_btn,
                         ],
                     ),
-                    ft.Column(
-                        spacing=7,
+                    ft.Row(
+                        spacing=10,
                         controls=[
-                            ft.Text("狀態", size=12, color=TEXT_MUTED, weight=ft.FontWeight.W_600),
-                            ft.Row(
-                                scroll=ft.ScrollMode.AUTO,
-                                spacing=8,
-                                controls=[
-                                    chip(
-                                        str(value),
-                                        str(value) == status_text,
-                                        BLUE_BTN,
-                                        lambda _, v=str(value): set_status_filter(v),
-                                    )
-                                    for value in status_values
-                                ],
-                            ),
-                        ],
-                    ),
-                    ft.Column(
-                        spacing=7,
-                        controls=[
-                            ft.Text("機台 / 區位", size=12, color=TEXT_MUTED, weight=ft.FontWeight.W_600),
-                            ft.Row(
-                                scroll=ft.ScrollMode.AUTO,
-                                spacing=8,
-                                controls=[
-                                    chip(
-                                        str(value),
-                                        str(value) == machine_text,
-                                        PURPLE_BTN if str(value) != "全部" else BLUE_BTN,
-                                        lambda _, v=str(value): set_machine_filter(v),
-                                    )
-                                    for value in machine_values
-                                ],
-                            ),
+                            ft.Container(expand=True, content=status_dd),
+                            ft.Container(expand=True, content=machine_dd),
                         ],
                     ),
                 ],
@@ -2107,12 +2064,6 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
                     controls=[
                         ft.Icon(ft.Icons.SEARCH_OFF_OUTLINED, size=34, color=TEXT_MUTED),
                         ft.Text("沒有符合條件的保養項目。", size=14, color=TEXT_MUTED),
-                        ft.Text(
-                            f"目前條件：狀態 {state.get('filter_status', '全部')}｜區位 {state.get('filter_machine', '全部')}",
-                            size=12,
-                            color=TEXT_MUTED,
-                            text_align=ft.TextAlign.CENTER,
-                        ),
                     ],
                 ),
             )
@@ -2235,7 +2186,7 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
             field = ft.TextField(
                 value=value,
                 hint_text=hint,
-                hint_style=ft.TextStyle(size=14, color="#64748B"),
+                hint_style=ft.TextStyle(size=14, color=TEXT_MUTED),
                 multiline=multiline,
                 min_lines=2 if multiline else 1,
                 max_lines=4 if multiline else 1,
@@ -2256,32 +2207,35 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
                 field,
             )
 
-        def extension_action_button(label: str, icon, color: str, soft_bg: str, handler, form_key: str):
-            """
-            手機 Web 穩定版：不用 Dialog / OutlinedButton。
-            三個入口改為緊湊小卡，手機也維持三欄，點選後在下方展開 inline 表單。
-            """
-            active = state.get("active_extension_form") == form_key
+        def extension_action_button(label: str, icon, color: str, soft_bg: str, handler):
+            """手機 Web 穩定版：不用 OutlinedButton，改成 Container + Column。"""
             return ft.Container(
-                height=78,
-                bgcolor=soft_bg if active else "#FFFFFF",
-                border=ft.border.all(2 if active else 1, color if active else BORDER),
-                border_radius=14,
-                padding=ft.padding.symmetric(horizontal=6, vertical=8),
+                height=106,
+                bgcolor="#FFFFFF",
+                border=ft.border.all(1, color),
+                border_radius=16,
+                padding=ft.padding.symmetric(horizontal=10, vertical=12),
                 alignment=ft.Alignment(0, 0),
                 ink=True,
                 on_click=handler,
                 content=ft.Column(
                     horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                     alignment=ft.MainAxisAlignment.CENTER,
-                    spacing=5,
+                    spacing=8,
                     controls=[
-                        ft.Icon(icon, color=color, size=24),
+                        ft.Container(
+                            width=42,
+                            height=42,
+                            border_radius=21,
+                            bgcolor=soft_bg,
+                            alignment=ft.Alignment(0, 0),
+                            content=ft.Icon(icon, color=color, size=23),
+                        ),
                         ft.Text(
                             label,
-                            size=11,
+                            size=12,
                             color=TEXT,
-                            weight=ft.FontWeight.W_700 if active else ft.FontWeight.W_600,
+                            weight=ft.FontWeight.W_600,
                             text_align=ft.TextAlign.CENTER,
                             max_lines=2,
                             overflow=ft.TextOverflow.ELLIPSIS,
@@ -2290,134 +2244,572 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
                 ),
             )
 
+        def guided_hint(text: str) -> ft.Container:
+            return ft.Container(
+                bgcolor="#F8FAFC",
+                border=ft.border.all(1, BORDER),
+                border_radius=12,
+                padding=ft.padding.symmetric(horizontal=12, vertical=9),
+                content=ft.Row(
+                    spacing=8,
+                    vertical_alignment=ft.CrossAxisAlignment.START,
+                    controls=[
+                        ft.Icon(ft.Icons.INFO_OUTLINE, size=18, color=TEXT_MUTED),
+                        ft.Text(text, size=12, color=TEXT_MUTED, expand=True),
+                    ],
+                ),
+            )
+
+        def option_chip(
+            label: str,
+            on_click,
+            color: str = BLUE_BTN,
+        ) -> ft.Container:
+            return ft.Container(
+                height=34,
+                border_radius=17,
+                bgcolor="#FFFFFF",
+                border=ft.border.all(1, BORDER),
+                padding=ft.padding.symmetric(horizontal=11),
+                alignment=ft.Alignment(0, 0),
+                ink=True,
+                on_click=on_click,
+                content=ft.Text(
+                    label,
+                    size=12,
+                    color=color,
+                    weight=ft.FontWeight.W_600,
+                    max_lines=1,
+                    overflow=ft.TextOverflow.ELLIPSIS,
+                ),
+            )
+
+        def unique_values(values: list[str]) -> list[str]:
+            result = []
+            for value in values:
+                text = str(value or "").strip()
+                if text and text not in result:
+                    result.append(text)
+            return result
+
+        def summary_line(label: str, value: str) -> ft.Control:
+            return ft.Row(
+                vertical_alignment=ft.CrossAxisAlignment.START,
+                controls=[
+                    ft.Container(
+                        width=105,
+                        content=ft.Text(label, size=13, color=TEXT_MUTED),
+                    ),
+                    ft.Text(
+                        value or "-",
+                        size=13,
+                        color=TEXT,
+                        weight=ft.FontWeight.W_600,
+                        expand=True,
+                    ),
+                ],
+            )
+
         def build_clean_form():
-            item_name_group, item_name_tf = form_text_field("項目名稱", "例如：S1-新清潔項目", required=True)
-            machine_group, machine_tf = form_text_field("機台 / 區位", "例如：S1線", required=True)
-            cycle_group, cycle_tf = form_text_field("週期天數", "例如：30", value="30", required=True, keyboard_type=ft.KeyboardType.NUMBER)
-            desc_group, desc_tf = form_text_field("說明", "可輸入保養說明或注意事項", multiline=True)
+            clean_areas = unique_values([
+                item.get("machine_area")
+                for item in get_all_items()
+                if item.get("maintenance_type") == "清潔"
+            ])
+            clean_suggestions = unique_values([
+                item.get("item_name")
+                for item in get_all_items()
+                if item.get("maintenance_type") == "清潔"
+            ])[:10]
+
+            area_group, area_tf = form_text_field(
+                "設備 / 區域",
+                "可選既有區域，或輸入新設備 / 新區域，例如：S1線、燒解爐、超音波區",
+                required=True,
+            )
+            item_name_group, item_name_tf = form_text_field(
+                "清潔項目名稱",
+                "例如：S1-旋風分離器、燒解爐廢料槽",
+                required=True,
+            )
+            location_group, location_tf = form_text_field(
+                "適用位置",
+                "例如：S1線、S2線、燒解爐；若與設備 / 區域相同可填同一個名稱",
+                required=True,
+            )
+            cycle_group, cycle_tf = form_text_field(
+                "建議清潔週期",
+                "例如：7、14、30",
+                value="30",
+                required=True,
+                keyboard_type=ft.KeyboardType.NUMBER,
+            )
+            desc_group, desc_tf = form_text_field(
+                "備註 / 注意事項",
+                "可輸入清潔方式、注意事項或判定基準",
+                multiline=True,
+            )
+
+            def choose_area(value: str):
+                area_tf.value = value
+                if not str(location_tf.value or "").strip():
+                    location_tf.value = value
+                try:
+                    area_tf.update()
+                    location_tf.update()
+                except Exception:
+                    page.update()
+
+            def choose_clean_item(value: str):
+                item_name_tf.value = value
+                try:
+                    item_name_tf.update()
+                except Exception:
+                    page.update()
+
+            existing_area_controls = [
+                option_chip(value, lambda _, v=value: choose_area(v), color=BLUE_BTN)
+                for value in clean_areas
+            ]
+            existing_item_controls = [
+                option_chip(value, lambda _, v=value: choose_clean_item(v), color=BLUE_BTN)
+                for value in clean_suggestions
+            ]
 
             submit_btn = stable_filled_button(
-                "新增清潔項目",
-                ft.Icons.ADD_OUTLINED,
+                "檢查並新增清潔項目",
+                ft.Icons.RULE_OUTLINED,
                 bg=BLUE_BTN,
-                on_click=lambda e: on_submit(e),
+                on_click=lambda e: on_prepare_submit(e),
                 height=46,
             )
 
-            def on_submit(_):
-                if submit_btn.disabled:
-                    return
-                set_button_loading(page, submit_btn)
+            def validate_payload() -> tuple[bool, str, dict]:
+                area = str(area_tf.value or "").strip()
+                item_name = str(item_name_tf.value or "").strip()
+                location = str(location_tf.value or "").strip()
+                cycle_days = to_int(cycle_tf.value, 0)
+                note = str(desc_tf.value or "").strip()
+
+                if not area:
+                    return False, "請輸入或選擇設備 / 區域。", {}
+                if not item_name:
+                    return False, "請輸入清潔項目名稱。", {}
+                if not location:
+                    return False, "請輸入適用位置。", {}
+                if cycle_days <= 0:
+                    return False, "建議清潔週期需為大於 0 的整數。", {}
+
+                description_parts = []
+                if area and area != location:
+                    description_parts.append(f"設備 / 區域：{area}")
+                if note:
+                    description_parts.append(note)
+
+                return True, "", {
+                    "area": area,
+                    "item_name": item_name,
+                    "machine_area": location,
+                    "cycle_days": cycle_days,
+                    "description": "\n".join(description_parts),
+                    "note": note,
+                }
+
+            def run_create(payload: dict):
                 result = create_cleaning_item(
-                    item_name=item_name_tf.value or "",
-                    machine_area=machine_tf.value or "",
-                    cycle_days=to_int(cycle_tf.value, 30),
+                    item_name=payload["item_name"],
+                    machine_area=payload["machine_area"],
+                    cycle_days=payload["cycle_days"],
                     sort_order=999,
-                    description=desc_tf.value or "",
+                    description=payload.get("description") or "",
                 )
+
                 if result.ok:
+                    if not is_active_view():
+                        return
                     state["active_extension_form"] = None
-                    load_data()
+                    load_data(update_sync_state=True)
                     rebuild()
+                    hide_sync_badge_later(3.0)
                     show_snack(result.message, success=True)
                 else:
-                    set_button_normal(page, submit_btn, "新增清潔項目", ft.Icons.ADD_OUTLINED)
+                    set_button_normal(page, submit_btn, "檢查並新增清潔項目", ft.Icons.RULE_OUTLINED)
                     show_snack(result.message, success=False)
 
-            submit_btn.on_click = on_submit
+            def open_confirm(payload: dict):
+                confirm_btn = stable_filled_button(
+                    "確認新增",
+                    ft.Icons.CHECK_CIRCLE_OUTLINE,
+                    bg=BLUE_BTN,
+                    height=44,
+                    expand=False,
+                    on_click=lambda e: confirm_create(e),
+                )
+
+                def confirm_create(_):
+                    if confirm_btn.disabled:
+                        return
+                    close_dialog(confirm_dialog)
+                    set_button_loading(page, submit_btn, "寫入中...")
+                    threading.Thread(target=lambda: run_create(payload), daemon=True).start()
+
+                confirm_dialog = ft.AlertDialog(
+                    modal=True,
+                    title=ft.Text("確認新增清潔項目", size=18, weight=ft.FontWeight.BOLD, color=TEXT),
+                    content=ft.Container(
+                        width=430,
+                        content=ft.Column(
+                            tight=True,
+                            spacing=10,
+                            controls=[
+                                ft.Text("請確認以下內容，確認後會新增到保養項目清單。", size=13, color=TEXT_MUTED),
+                                ft.Divider(height=8),
+                                summary_line("類型", "清潔"),
+                                summary_line("設備 / 區域", payload.get("area") or "-"),
+                                summary_line("清潔項目名稱", payload.get("item_name") or "-"),
+                                summary_line("適用位置", payload.get("machine_area") or "-"),
+                                summary_line("建議清潔週期", f"{payload.get('cycle_days')} 天"),
+                                summary_line("備註", payload.get("note") or "無"),
+                            ],
+                        ),
+                    ),
+                    actions=[
+                        ft.TextButton("返回修改", on_click=lambda _: close_dialog(confirm_dialog)),
+                        confirm_btn,
+                    ],
+                )
+                open_dialog(confirm_dialog)
+
+            def on_prepare_submit(_):
+                if submit_btn.disabled:
+                    return
+                ok, message, payload = validate_payload()
+                if not ok:
+                    show_snack(message, success=False)
+                    return
+                open_confirm(payload)
+
+            submit_btn.on_click = on_prepare_submit
+
+            controls = [
+                section_title("新增清潔項目", "依現場設備 / 區域引導填寫，避免直接面對空白欄位。"),
+                guided_hint("可先點選既有設備 / 區域；如果這次是全新設備或新區域，直接在欄位中輸入即可。"),
+            ]
+
+            if existing_area_controls:
+                controls.append(
+                    ft.Column(
+                        spacing=7,
+                        controls=[
+                            ft.Text("既有設備 / 區域", size=12, color=TEXT_MUTED, weight=ft.FontWeight.W_600),
+                            ft.Row(scroll=ft.ScrollMode.AUTO, spacing=8, controls=existing_area_controls),
+                        ],
+                    )
+                )
+
+            controls.extend([area_group])
+
+            if existing_item_controls:
+                controls.append(
+                    ft.Column(
+                        spacing=7,
+                        controls=[
+                            ft.Text("既有清潔項目可參考", size=12, color=TEXT_MUTED, weight=ft.FontWeight.W_600),
+                            ft.Row(scroll=ft.ScrollMode.AUTO, spacing=8, controls=existing_item_controls),
+                        ],
+                    )
+                )
+
+            controls.extend([
+                item_name_group,
+                location_group,
+                cycle_group,
+                desc_group,
+                ft.Row(
+                    spacing=10,
+                    controls=[
+                        stable_outline_button(
+                            "取消",
+                            ft.Icons.CLOSE,
+                            on_click=close_inline_form,
+                            height=46,
+                        ),
+                        ft.Container(expand=True, content=submit_btn),
+                    ],
+                ),
+            ])
 
             return card(
                 padding=16,
-                content=ft.Column(
-                    spacing=12,
-                    controls=[
-                        section_title("新增清潔項目", "新增後會顯示在保養項目清單中。"),
-                        item_name_group,
-                        machine_group,
-                        cycle_group,
-                        desc_group,
-                        ft.Row(
-                            spacing=10,
-                            controls=[
-                                stable_outline_button(
-                                    "取消",
-                                    ft.Icons.CLOSE,
-                                    on_click=close_inline_form,
-                                    height=46,
-                                ),
-                                ft.Container(expand=True, content=submit_btn),
-                            ],
-                        ),
-                    ],
-                ),
+                content=ft.Column(spacing=12, controls=controls),
             )
 
         def build_material_form():
-            main_group, main_tf = form_text_field("主分類", "例如：除濕機、燒解爐", required=True)
-            sub_group, sub_tf = form_text_field("子分類", "例如：A管，可空白")
-            item_name_group, item_name_tf = form_text_field("項目名稱", "例如：除油濾芯", required=True)
-            machine_group, machine_tf = form_text_field("機台 / 區位", "例如：除濕機A管", required=True)
-            cycle_group, cycle_tf = form_text_field("週期天數", "例如：180", value="30", required=True, keyboard_type=ft.KeyboardType.NUMBER)
-            desc_group, desc_tf = form_text_field("說明", "可輸入保養說明或注意事項", multiline=True)
+            existing_systems = unique_values([
+                item.get("main_category")
+                for item in get_all_items()
+                if item.get("maintenance_type") == "耗材更換"
+            ])
+            existing_sub_categories = unique_values([
+                item.get("sub_category")
+                for item in get_all_items()
+                if item.get("maintenance_type") == "耗材更換"
+            ])
+            existing_material_names = unique_values([
+                item.get("item_name")
+                for item in get_all_items()
+                if item.get("maintenance_type") == "耗材更換"
+            ])[:10]
+
+            common_sub_categories = unique_values(existing_sub_categories + ["A管", "B管", "冷卻水濾芯", "清洗藥水", "濾芯", "藥水"])
+
+            system_group, system_tf = form_text_field(
+                "設備 / 系統",
+                "可選既有設備，或輸入新設備 / 系統，例如：除濕機、燒解爐、超音波",
+                required=True,
+            )
+            sub_group, sub_tf = form_text_field(
+                "耗材類型 / 區段",
+                "例如：A管、B管、冷卻水濾芯、清洗藥水；可空白",
+            )
+            item_name_group, item_name_tf = form_text_field(
+                "耗材名稱",
+                "例如：除油濾芯、冷卻水濾芯-5um-20吋、Deconex FID 2000 清洗藥水",
+                required=True,
+            )
+            machine_group, machine_tf = form_text_field(
+                "適用位置",
+                "例如：除濕機A管、燒解爐、超音波機",
+                required=True,
+            )
+            cycle_group, cycle_tf = form_text_field(
+                "建議更換週期",
+                "例如：30、90、180",
+                value="30",
+                required=True,
+                keyboard_type=ft.KeyboardType.NUMBER,
+            )
+            desc_group, desc_tf = form_text_field(
+                "備註 / 注意事項",
+                "可輸入規格、廠牌、使用濃度、更換基準或注意事項",
+                multiline=True,
+            )
+
+            def choose_system(value: str):
+                system_tf.value = value
+                if not str(machine_tf.value or "").strip():
+                    machine_tf.value = value
+                try:
+                    system_tf.update()
+                    machine_tf.update()
+                except Exception:
+                    page.update()
+
+            def choose_sub(value: str):
+                sub_tf.value = value
+                try:
+                    sub_tf.update()
+                except Exception:
+                    page.update()
+
+            def choose_material_name(value: str):
+                item_name_tf.value = value
+                try:
+                    item_name_tf.update()
+                except Exception:
+                    page.update()
+
+            existing_system_controls = [
+                option_chip(value, lambda _, v=value: choose_system(v), color=ORANGE_BTN)
+                for value in existing_systems
+            ]
+            sub_controls = [
+                option_chip(value, lambda _, v=value: choose_sub(v), color=ORANGE_BTN)
+                for value in common_sub_categories
+            ]
+            material_name_controls = [
+                option_chip(value, lambda _, v=value: choose_material_name(v), color=ORANGE_BTN)
+                for value in existing_material_names
+            ]
 
             submit_btn = stable_filled_button(
-                "新增耗材項目",
-                ft.Icons.ADD_OUTLINED,
+                "檢查並新增耗材項目",
+                ft.Icons.RULE_OUTLINED,
                 bg=ORANGE_BTN,
-                on_click=lambda e: on_submit(e),
+                on_click=lambda e: on_prepare_submit(e),
                 height=46,
             )
 
-            def on_submit(_):
-                if submit_btn.disabled:
-                    return
-                set_button_loading(page, submit_btn)
+            def validate_payload() -> tuple[bool, str, dict]:
+                system = str(system_tf.value or "").strip()
+                sub_category = str(sub_tf.value or "").strip()
+                item_name = str(item_name_tf.value or "").strip()
+                machine_area = str(machine_tf.value or "").strip()
+                cycle_days = to_int(cycle_tf.value, 0)
+                note = str(desc_tf.value or "").strip()
+
+                if not system:
+                    return False, "請輸入或選擇設備 / 系統。", {}
+                if not item_name:
+                    return False, "請輸入耗材名稱。", {}
+                if not machine_area:
+                    return False, "請輸入適用位置。", {}
+                if cycle_days <= 0:
+                    return False, "建議更換週期需為大於 0 的整數。", {}
+
+                return True, "", {
+                    "main_category": system,
+                    "sub_category": sub_category,
+                    "item_name": item_name,
+                    "machine_area": machine_area,
+                    "cycle_days": cycle_days,
+                    "description": note,
+                    "note": note,
+                }
+
+            def run_create(payload: dict):
                 result = create_consumable_item(
-                    main_category=main_tf.value or "",
-                    sub_category=sub_tf.value or "",
-                    item_name=item_name_tf.value or "",
-                    machine_area=machine_tf.value or "",
-                    cycle_days=to_int(cycle_tf.value, 30),
+                    main_category=payload["main_category"],
+                    sub_category=payload.get("sub_category") or "",
+                    item_name=payload["item_name"],
+                    machine_area=payload["machine_area"],
+                    cycle_days=payload["cycle_days"],
                     sort_order=999,
-                    description=desc_tf.value or "",
+                    description=payload.get("description") or "",
                 )
+
                 if result.ok:
+                    if not is_active_view():
+                        return
                     state["active_extension_form"] = None
-                    load_data()
+                    load_data(update_sync_state=True)
                     rebuild()
+                    hide_sync_badge_later(3.0)
                     show_snack(result.message, success=True)
                 else:
-                    set_button_normal(page, submit_btn, "新增耗材項目", ft.Icons.ADD_OUTLINED)
+                    set_button_normal(page, submit_btn, "檢查並新增耗材項目", ft.Icons.RULE_OUTLINED)
                     show_snack(result.message, success=False)
 
-            submit_btn.on_click = on_submit
+            def open_confirm(payload: dict):
+                confirm_btn = stable_filled_button(
+                    "確認新增",
+                    ft.Icons.CHECK_CIRCLE_OUTLINE,
+                    bg=ORANGE_BTN,
+                    height=44,
+                    expand=False,
+                    on_click=lambda e: confirm_create(e),
+                )
+
+                def confirm_create(_):
+                    if confirm_btn.disabled:
+                        return
+                    close_dialog(confirm_dialog)
+                    set_button_loading(page, submit_btn, "寫入中...")
+                    threading.Thread(target=lambda: run_create(payload), daemon=True).start()
+
+                confirm_dialog = ft.AlertDialog(
+                    modal=True,
+                    title=ft.Text("確認新增耗材項目", size=18, weight=ft.FontWeight.BOLD, color=TEXT),
+                    content=ft.Container(
+                        width=430,
+                        content=ft.Column(
+                            tight=True,
+                            spacing=10,
+                            controls=[
+                                ft.Text("請確認以下內容，確認後會新增到保養項目清單。", size=13, color=TEXT_MUTED),
+                                ft.Divider(height=8),
+                                summary_line("類型", "耗材更換"),
+                                summary_line("設備 / 系統", payload.get("main_category") or "-"),
+                                summary_line("耗材類型 / 區段", payload.get("sub_category") or "-"),
+                                summary_line("耗材名稱", payload.get("item_name") or "-"),
+                                summary_line("適用位置", payload.get("machine_area") or "-"),
+                                summary_line("建議更換週期", f"{payload.get('cycle_days')} 天"),
+                                summary_line("備註", payload.get("note") or "無"),
+                            ],
+                        ),
+                    ),
+                    actions=[
+                        ft.TextButton("返回修改", on_click=lambda _: close_dialog(confirm_dialog)),
+                        confirm_btn,
+                    ],
+                )
+                open_dialog(confirm_dialog)
+
+            def on_prepare_submit(_):
+                if submit_btn.disabled:
+                    return
+                ok, message, payload = validate_payload()
+                if not ok:
+                    show_snack(message, success=False)
+                    return
+                open_confirm(payload)
+
+            submit_btn.on_click = on_prepare_submit
+
+            controls = [
+                section_title("新增耗材項目", "依設備 / 系統引導填寫；既有設備可直接點選，第一次建立的新設備也可直接輸入。"),
+                guided_hint("如果像超音波清洗藥水這種全新項目，請直接在設備 / 系統輸入「超音波」，再填耗材類型與耗材名稱。"),
+            ]
+
+            if existing_system_controls:
+                controls.append(
+                    ft.Column(
+                        spacing=7,
+                        controls=[
+                            ft.Text("既有設備 / 系統", size=12, color=TEXT_MUTED, weight=ft.FontWeight.W_600),
+                            ft.Row(scroll=ft.ScrollMode.AUTO, spacing=8, controls=existing_system_controls),
+                        ],
+                    )
+                )
+
+            controls.append(system_group)
+
+            if sub_controls:
+                controls.append(
+                    ft.Column(
+                        spacing=7,
+                        controls=[
+                            ft.Text("常用耗材類型 / 區段", size=12, color=TEXT_MUTED, weight=ft.FontWeight.W_600),
+                            ft.Row(scroll=ft.ScrollMode.AUTO, spacing=8, controls=sub_controls),
+                        ],
+                    )
+                )
+
+            controls.extend([sub_group])
+
+            if material_name_controls:
+                controls.append(
+                    ft.Column(
+                        spacing=7,
+                        controls=[
+                            ft.Text("既有耗材名稱可參考", size=12, color=TEXT_MUTED, weight=ft.FontWeight.W_600),
+                            ft.Row(scroll=ft.ScrollMode.AUTO, spacing=8, controls=material_name_controls),
+                        ],
+                    )
+                )
+
+            controls.extend([
+                item_name_group,
+                machine_group,
+                cycle_group,
+                desc_group,
+                ft.Row(
+                    spacing=10,
+                    controls=[
+                        stable_outline_button(
+                            "取消",
+                            ft.Icons.CLOSE,
+                            on_click=close_inline_form,
+                            height=46,
+                        ),
+                        ft.Container(expand=True, content=submit_btn),
+                    ],
+                ),
+            ])
 
             return card(
                 padding=16,
-                content=ft.Column(
-                    spacing=12,
-                    controls=[
-                        section_title("新增耗材項目", "新增後會顯示在保養項目清單中。"),
-                        main_group,
-                        sub_group,
-                        item_name_group,
-                        machine_group,
-                        cycle_group,
-                        desc_group,
-                        ft.Row(
-                            spacing=10,
-                            controls=[
-                                stable_outline_button(
-                                    "取消",
-                                    ft.Icons.CLOSE,
-                                    on_click=close_inline_form,
-                                    height=46,
-                                ),
-                                ft.Container(expand=True, content=submit_btn),
-                            ],
-                        ),
-                    ],
-                ),
+                content=ft.Column(spacing=12, controls=controls),
             )
 
         def build_period_form():
@@ -2436,7 +2828,6 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
                 keyboard_type=ft.KeyboardType.NUMBER,
             )
             active_dd = ft.Dropdown(
-                label="是否啟用",
                 value="啟用",
                 options=[ft.dropdown.Option("啟用"), ft.dropdown.Option("停用")],
                 border_radius=12,
@@ -2471,7 +2862,7 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
                             cycle_tf.update()
                             selected_hint.update()
                         except Exception:
-                            page.update()
+                            safe_page_update()
 
                     rows.append(
                         ft.Container(
@@ -2555,20 +2946,29 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
                     return
 
                 set_button_loading(page, submit_btn)
-                result = update_item_cycle(
-                    item_id=period_state.get("item_id") or "",
-                    cycle_days=cycle_days,
-                    sort_order=None,
-                    is_active=(active_dd.value == "啟用"),
-                )
-                if result.ok:
-                    state["active_extension_form"] = None
-                    load_data()
-                    rebuild()
-                    show_snack(result.message, success=True)
-                else:
-                    set_button_normal(page, submit_btn, "更新週期", ft.Icons.SAVE_OUTLINED)
-                    show_snack(result.message, success=False)
+
+                payload = {
+                    "item_id": period_state.get("item_id") or "",
+                    "cycle_days": cycle_days,
+                    "sort_order": None,
+                    "is_active": (active_dd.value == "啟用"),
+                }
+
+                def worker():
+                    result = update_item_cycle(**payload)
+                    if not is_active_view():
+                        return
+                    if result.ok:
+                        state["active_extension_form"] = None
+                        load_data(update_sync_state=True)
+                        rebuild()
+                        hide_sync_badge_later(3.0)
+                        show_snack(result.message, success=True)
+                    else:
+                        set_button_normal(page, submit_btn, "更新週期", ft.Icons.SAVE_OUTLINED)
+                        show_snack(result.message, success=False)
+
+                threading.Thread(target=worker, daemon=True).start()
 
             submit_btn.on_click = on_submit
 
@@ -2617,41 +3017,20 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
         controls = [
             ft.ResponsiveRow(
                 columns=12,
-                spacing=8,
-                run_spacing=8,
+                spacing=10,
+                run_spacing=10,
                 controls=[
                     ft.Container(
-                        col={"xs": 4, "sm": 4},
-                        content=extension_action_button(
-                            "新增清潔",
-                            ft.Icons.CLEANING_SERVICES_OUTLINED,
-                            BLUE_BTN,
-                            BLUE_SOFT,
-                            open_create_cleaning_dialog,
-                            "clean",
-                        ),
+                        col={"xs": 12, "sm": 4},
+                        content=extension_action_button("新增清潔項目", ft.Icons.CLEANING_SERVICES_OUTLINED, BLUE_BTN, BLUE_SOFT, open_create_cleaning_dialog),
                     ),
                     ft.Container(
-                        col={"xs": 4, "sm": 4},
-                        content=extension_action_button(
-                            "新增耗材",
-                            ft.Icons.INVENTORY_2_OUTLINED,
-                            ORANGE,
-                            ORANGE_SOFT,
-                            open_create_consumable_dialog,
-                            "material",
-                        ),
+                        col={"xs": 12, "sm": 4},
+                        content=extension_action_button("新增耗材項目", ft.Icons.INVENTORY_2_OUTLINED, ORANGE, ORANGE_SOFT, open_create_consumable_dialog),
                     ),
                     ft.Container(
-                        col={"xs": 4, "sm": 4},
-                        content=extension_action_button(
-                            "編輯週期",
-                            ft.Icons.EVENT_REPEAT_OUTLINED,
-                            PURPLE_BTN,
-                            PURPLE_SOFT,
-                            open_update_cycle_dialog,
-                            "period",
-                        ),
+                        col={"xs": 12, "sm": 4},
+                        content=extension_action_button("編輯週期", ft.Icons.EVENT_REPEAT_OUTLINED, PURPLE_BTN, PURPLE_SOFT, open_update_cycle_dialog),
                     ),
                 ],
             ),
@@ -2861,25 +3240,31 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
                 return
 
             set_button_loading(page, submit_btn)
+            payload = {
+                "maintenance_item_id": form_state.get("item_id") or "",
+                "executed_date": date_tf.value or "",
+                "operator_name": operator_tf.value or "",
+                "result": result_dd.value or "",
+                "note": note_tf.value or "",
+                "created_by_user_id": session_get("user_id"),
+                "created_by_name": session_get("user_name"),
+            }
 
-            result = submit_maintenance_record(
-                maintenance_item_id=form_state.get("item_id") or "",
-                executed_date=date_tf.value or "",
-                operator_name=operator_tf.value or "",
-                result=result_dd.value or "",
-                note=note_tf.value or "",
-                created_by_user_id=session_get("user_id"),
-                created_by_name=session_get("user_name"),
-            )
+            def worker():
+                result = submit_maintenance_record(**payload)
+                if not is_active_view():
+                    return
+                if result.ok:
+                    load_data(update_sync_state=True)
+                    clear_form()
+                    rebuild()
+                    hide_sync_badge_later(3.0)
+                    show_snack(result.message, success=True)
+                else:
+                    set_button_normal(page, submit_btn, "送出紀錄", ft.Icons.SAVE_OUTLINED)
+                    show_snack(result.message, success=False)
 
-            if result.ok:
-                load_data()
-                clear_form()
-                rebuild()
-                show_snack(result.message, success=True)
-            else:
-                set_button_normal(page, submit_btn, "送出紀錄", ft.Icons.SAVE_OUTLINED)
-                show_snack(result.message, success=False)
+            threading.Thread(target=worker, daemon=True).start()
 
         submit_btn.on_click = on_submit
 
@@ -2932,12 +3317,18 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
             bgcolor="#FFFFFF",
             padding=ft.padding.only(left=16, right=16, top=10, bottom=18),
             border=ft.border.only(top=ft.BorderSide(1, BORDER)),
-            content=stable_filled_button(
-                "新增保養紀錄",
-                ft.Icons.ADD_CIRCLE_OUTLINE,
-                bg=BLUE_BTN,
-                on_click=open_record_dialog,
+            content=ft.ElevatedButton(
                 height=54,
+                style=primary_button_style(),
+                content=ft.Row(
+                    alignment=ft.MainAxisAlignment.CENTER,
+                    spacing=8,
+                    controls=[
+                        ft.Icon(ft.Icons.ADD_CIRCLE_OUTLINE, size=22, color="#FFFFFF"),
+                        ft.Text("新增保養紀錄", size=16, weight=ft.FontWeight.BOLD, color="#FFFFFF"),
+                    ],
+                ),
+                on_click=open_record_dialog,
             ),
         )
 
@@ -2971,40 +3362,39 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
         page.bgcolor = BG
 
         body = ft.Container(
-            padding=ft.padding.only(left=16, right=16, top=18, bottom=24),
+            padding=ft.padding.only(left=16, right=16, top=18, bottom=96),
             content=ft.Column(
                 spacing=18,
                 controls=[
                     build_header(),
                     build_error_banner(),
                     build_summary_cards(is_mobile=True),
-                    ft.Container(
-                        content=stable_filled_button(
-                            "新增保養紀錄",
-                            ft.Icons.ADD_CIRCLE_OUTLINE,
-                            bg=BLUE_BTN,
-                            on_click=open_record_dialog,
-                            height=54,
-                        ),
-                    ),
                     build_type_tabs(),
                     build_filter_bar(),
                     build_today_tasks(),
                     build_item_list(),
                     build_recent_records(),
                     build_extension_settings(),
-                    ft.Container(height=72),
                 ],
             ),
         )
 
-        return ft.Container(
+        return ft.Stack(
             expand=True,
-            content=ft.Column(
-                expand=True,
-                scroll=ft.ScrollMode.AUTO,
-                controls=[body],
-            ),
+            controls=[
+                ft.Container(
+                    expand=True,
+                    content=ft.Column(
+                        expand=True,
+                        scroll=ft.ScrollMode.AUTO,
+                        controls=[body],
+                    ),
+                ),
+                ft.Container(
+                    alignment=ft.Alignment(0, 1),
+                    content=build_bottom_submit_button(),
+                ),
+            ],
         )
 
     # =========================
@@ -3066,6 +3456,6 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
 
     width = page.width or 390
     main_host.content = build_mobile_layout() if width < MOBILE_WIDTH else build_desktop_layout()
-    start_background_load(show_loading=True)
+    start_background_load(show_loading=True, render_loading=False)
 
     return root
