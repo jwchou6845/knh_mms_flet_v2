@@ -25,7 +25,7 @@ from services.maintenance_service import (
 
 
 # ============================================================
-# KNH MMS - 機台保養紀錄 maintenance.py v2.9.3 deep nonblocking actions
+# KNH MMS - 機台保養紀錄 maintenance.py v2.9.2 nonblocking sync guard
 # Flet 0.84 + Python + Supabase
 # ============================================================
 
@@ -419,9 +419,6 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
         "open_records_item_id": None,
         "item_records_cache": {},
         "delete_confirm_record_id": None,
-        "records_loading_item_id": None,
-        "delete_loading_record_id": None,
-        "action_message": "",
         # v2.5：手機 UX 收合狀態
         "items_expanded": True,
         "recent_expanded": False,
@@ -449,7 +446,6 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
         content=root_stack,
     )
     modal_ref = {"control": None}
-    ui_lock = threading.RLock()
 
     # 基礎離頁保護：背景 thread 回來時，如果使用者已切離 /maintenance，就不再更新舊畫面。
     view_token = f"maintenance-{time.time_ns()}"
@@ -471,9 +467,7 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
         if not is_active_view():
             return
         try:
-            with ui_lock:
-                if is_active_view():
-                    page.update()
+            page.update()
         except Exception:
             pass
 
@@ -543,7 +537,7 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
 
         modal_ref["control"] = modal_layer
         root_stack.controls.append(modal_layer)
-        safe_page_update()
+        page.update()
 
     def close_dialog(dialog: ft.AlertDialog | None = None):
         """
@@ -557,7 +551,10 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
 
         modal_ref["control"] = None
 
-        safe_page_update()
+        try:
+            page.update()
+        except Exception:
+            pass
 
     def show_snack(message: str, success: bool = True):
         """
@@ -572,7 +569,7 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
         except Exception:
             pass
         snack.open = True
-        safe_page_update()
+        page.update()
 
     def is_super_admin() -> bool:
         return session_get("role") == "超級管理員"
@@ -612,29 +609,26 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
         if not is_active_view():
             return
 
-        with ui_lock:
-            if not is_active_view():
-                return
+        width = page.width or 390
 
-            width = page.width or 390
+        if width < MOBILE_WIDTH:
+            main_host.content = build_mobile_layout()
+        else:
+            main_host.content = build_desktop_layout()
 
-            if width < MOBILE_WIDTH:
-                main_host.content = build_mobile_layout()
-            else:
-                main_host.content = build_desktop_layout()
-
-            try:
-                main_host.update()
-            except Exception:
-                safe_page_update()
+        try:
+            main_host.update()
+        except Exception:
+            safe_page_update()
 
     def start_background_load(show_loading: bool = True):
         if show_loading:
             set_sync_state("loading", "資料同步中", visible=True)
-            # 初始進頁時 root 可能尚未掛到 page，這裡只更新 state，不立即 page.update。
-            # 若是使用者手動重試，由 refresh() 先 rebuild，再啟動背景讀取。
 
         def worker():
+            if show_loading and is_active_view():
+                rebuild()
+
             ok = load_data(update_sync_state=True)
             if not is_active_view():
                 return
@@ -646,9 +640,7 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
         threading.Thread(target=worker, daemon=True).start()
 
     def refresh():
-        set_sync_state("loading", "資料同步中", visible=True)
-        rebuild()
-        start_background_load(show_loading=False)
+        start_background_load(show_loading=True)
 
     # =========================
     # 表單共用選項
@@ -973,40 +965,29 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
             if submit_btn.disabled:
                 return
 
-            payload = {
-                "maintenance_item_id": form_state.get("item_id") or "",
-                "executed_date": date_tf.value or "",
-                "operator_name": operator_tf.value or "",
-                "result": result_dd.value or "",
-                "note": note_tf.value or "",
-                "created_by_user_id": session_get("user_id"),
-                "created_by_name": session_get("user_name"),
-            }
-
             set_button_loading(page, submit_btn)
 
-            def worker():
+            result = submit_maintenance_record(
+                maintenance_item_id=form_state.get("item_id") or "",
+                executed_date=date_tf.value or "",
+                operator_name=operator_tf.value or "",
+                result=result_dd.value or "",
+                note=note_tf.value or "",
+                created_by_user_id=session_get("user_id"),
+                created_by_name=session_get("user_name"),
+            )
+
+            if result.ok:
+                close_dialog(dialog)
                 try:
-                    result = submit_maintenance_record(**payload)
-                except Exception as ex:
-                    if is_active_view():
-                        set_button_normal(page, submit_btn, "送出紀錄", ft.Icons.SAVE_OUTLINED)
-                        show_snack(f"新增保養紀錄失敗：{ex}", success=False)
-                    return
-
-                if not is_active_view():
-                    return
-
-                if result.ok:
-                    close_dialog(dialog)
-                    load_data(update_sync_state=False)
+                    load_data()
                     rebuild()
                     show_snack(result.message, success=True)
-                else:
-                    set_button_normal(page, submit_btn, "送出紀錄", ft.Icons.SAVE_OUTLINED)
-                    show_snack(result.message, success=False)
-
-            threading.Thread(target=worker, daemon=True).start()
+                except Exception as ex:
+                    show_snack(f"資料已寫入，但重新整理失敗：{ex}", success=False)
+            else:
+                set_button_normal(page, submit_btn, "送出紀錄", ft.Icons.SAVE_OUTLINED)
+                show_snack(result.message, success=False)
 
         submit_btn.on_click = on_submit
 
@@ -1053,9 +1034,6 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
     # =========================
 
     def open_create_cleaning_dialog(e=None):
-        if state.get("loading"):
-            show_snack("資料仍在同步中，請稍候再開啟新增清潔表單。", success=False)
-            return
         state["active_extension_form"] = None if state.get("active_extension_form") == "clean" else "clean"
         state["extension_expanded"] = True
         rebuild()
@@ -1065,9 +1043,6 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
     # =========================
 
     def open_create_consumable_dialog(e=None):
-        if state.get("loading"):
-            show_snack("資料仍在同步中，請稍候再開啟新增耗材表單。", success=False)
-            return
         state["active_extension_form"] = None if state.get("active_extension_form") == "material" else "material"
         state["extension_expanded"] = True
         rebuild()
@@ -1077,9 +1052,6 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
     # =========================
 
     def open_update_cycle_dialog(e=None):
-        if state.get("loading"):
-            show_snack("資料仍在同步中，請稍候再開啟週期編輯。", success=False)
-            return
         state["active_extension_form"] = None if state.get("active_extension_form") == "period" else "period"
         state["extension_expanded"] = True
         rebuild()
@@ -1461,40 +1433,26 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
             if submit_btn.disabled:
                 return
 
-            payload = {
-                "maintenance_item_id": item.get("id") or "",
-                "executed_date": date_tf.value or "",
-                "operator_name": operator_tf.value or "",
-                "result": result_dd.value or "",
-                "note": note_tf.value or "",
-                "created_by_user_id": session_get("user_id"),
-                "created_by_name": session_get("user_name"),
-            }
-
             set_button_loading(page, submit_btn)
 
-            def worker():
-                try:
-                    result = submit_maintenance_record(**payload)
-                except Exception as ex:
-                    if is_active_view():
-                        set_button_normal(page, submit_btn, "送出紀錄", ft.Icons.SAVE_OUTLINED)
-                        show_snack(f"新增保養紀錄失敗：{ex}", success=False)
-                    return
+            result = submit_maintenance_record(
+                maintenance_item_id=item.get("id") or "",
+                executed_date=date_tf.value or "",
+                operator_name=operator_tf.value or "",
+                result=result_dd.value or "",
+                note=note_tf.value or "",
+                created_by_user_id=session_get("user_id"),
+                created_by_name=session_get("user_name"),
+            )
 
-                if not is_active_view():
-                    return
-
-                if result.ok:
-                    state["inline_record_item_id"] = None
-                    load_data(update_sync_state=False)
-                    rebuild()
-                    show_snack(result.message, success=True)
-                else:
-                    set_button_normal(page, submit_btn, "送出紀錄", ft.Icons.SAVE_OUTLINED)
-                    show_snack(result.message, success=False)
-
-            threading.Thread(target=worker, daemon=True).start()
+            if result.ok:
+                state["inline_record_item_id"] = None
+                load_data()
+                rebuild()
+                show_snack(result.message, success=True)
+            else:
+                set_button_normal(page, submit_btn, "送出紀錄", ft.Icons.SAVE_OUTLINED)
+                show_snack(result.message, success=False)
 
         submit_btn.on_click = on_submit
 
@@ -1545,31 +1503,13 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
         if state.get("open_records_item_id") == item_id:
             state["open_records_item_id"] = None
             state["delete_confirm_record_id"] = None
-            state["records_loading_item_id"] = None
             rebuild()
             return
 
         state["open_records_item_id"] = item_id
         state["delete_confirm_record_id"] = None
-        state["records_loading_item_id"] = item_id
+        reload_item_records(item_id)
         rebuild()
-
-        def worker():
-            result = load_item_records(item_id=item_id, limit=20)
-
-            if not is_active_view() or state.get("open_records_item_id") != item_id:
-                return
-
-            if result.ok:
-                state["item_records_cache"][item_id] = result.data or []
-            else:
-                state["item_records_cache"][item_id] = []
-                show_snack(result.message or "讀取保養紀錄失敗。", success=False)
-
-            state["records_loading_item_id"] = None
-            rebuild()
-
-        threading.Thread(target=worker, daemon=True).start()
 
     def build_record_result_badge(result_text: str) -> ft.Container:
         color, bg = status_colors(result_text)
@@ -1595,22 +1535,7 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
             state["delete_confirm_record_id"] = None
             rebuild()
 
-        if state.get("records_loading_item_id") == item_id:
-            body = ft.Container(
-                padding=14,
-                border=ft.border.all(1, BORDER),
-                border_radius=12,
-                bgcolor="#FFFFFF",
-                content=ft.Row(
-                    spacing=8,
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                    controls=[
-                        ft.ProgressRing(width=16, height=16, stroke_width=2, color=PURPLE_BTN),
-                        ft.Text("正在讀取此項目保養紀錄...", size=13, color=TEXT_MUTED),
-                    ],
-                ),
-            )
-        elif not records:
+        if not records:
             body = ft.Container(
                 padding=14,
                 border=ft.border.all(1, BORDER),
@@ -1634,38 +1559,22 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
                     rebuild()
 
                 def confirm_delete(_, rid=record_id):
-                    if state.get("delete_loading_record_id"):
-                        return
+                    result = delete_maintenance_record(
+                        record_id=rid or "",
+                        deleted_by_user_id=session_get("user_id"),
+                        deleted_by_name=session_get("user_name"),
+                        delete_reason="超級管理員於保養紀錄頁面刪除",
+                        role=session_get("role"),
+                    )
 
-                    state["delete_loading_record_id"] = rid
-                    rebuild()
-
-                    def worker():
-                        result = delete_maintenance_record(
-                            record_id=rid or "",
-                            deleted_by_user_id=session_get("user_id"),
-                            deleted_by_name=session_get("user_name"),
-                            delete_reason="超級管理員於保養紀錄頁面刪除",
-                            role=session_get("role"),
-                        )
-
-                        if not is_active_view():
-                            return
-
-                        state["delete_loading_record_id"] = None
-
-                        if result.ok:
-                            state["delete_confirm_record_id"] = None
-                            records_result = load_item_records(item_id=item_id, limit=20)
-                            state["item_records_cache"][item_id] = records_result.data or [] if records_result.ok else []
-                            load_data(update_sync_state=False)
-                            rebuild()
-                            show_snack(result.message, success=True)
-                        else:
-                            rebuild()
-                            show_snack(result.message, success=False)
-
-                    threading.Thread(target=worker, daemon=True).start()
+                    if result.ok:
+                        state["delete_confirm_record_id"] = None
+                        reload_item_records(item_id)
+                        load_data()
+                        rebuild()
+                        show_snack(result.message, success=True)
+                    else:
+                        show_snack(result.message, success=False)
 
                 action_controls = []
 
@@ -2398,39 +2307,22 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
             def on_submit(_):
                 if submit_btn.disabled:
                     return
-
-                payload = {
-                    "item_name": item_name_tf.value or "",
-                    "machine_area": machine_tf.value or "",
-                    "cycle_days": to_int(cycle_tf.value, 30),
-                    "sort_order": 999,
-                    "description": desc_tf.value or "",
-                }
-
                 set_button_loading(page, submit_btn)
-
-                def worker():
-                    try:
-                        result = create_cleaning_item(**payload)
-                    except Exception as ex:
-                        if is_active_view():
-                            set_button_normal(page, submit_btn, "新增清潔項目", ft.Icons.ADD_OUTLINED)
-                            show_snack(f"新增清潔項目失敗：{ex}", success=False)
-                        return
-
-                    if not is_active_view():
-                        return
-
-                    if result.ok:
-                        state["active_extension_form"] = None
-                        load_data(update_sync_state=False)
-                        rebuild()
-                        show_snack(result.message, success=True)
-                    else:
-                        set_button_normal(page, submit_btn, "新增清潔項目", ft.Icons.ADD_OUTLINED)
-                        show_snack(result.message, success=False)
-
-                threading.Thread(target=worker, daemon=True).start()
+                result = create_cleaning_item(
+                    item_name=item_name_tf.value or "",
+                    machine_area=machine_tf.value or "",
+                    cycle_days=to_int(cycle_tf.value, 30),
+                    sort_order=999,
+                    description=desc_tf.value or "",
+                )
+                if result.ok:
+                    state["active_extension_form"] = None
+                    load_data()
+                    rebuild()
+                    show_snack(result.message, success=True)
+                else:
+                    set_button_normal(page, submit_btn, "新增清潔項目", ft.Icons.ADD_OUTLINED)
+                    show_snack(result.message, success=False)
 
             submit_btn.on_click = on_submit
 
@@ -2439,7 +2331,7 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
                 content=ft.Column(
                     spacing=12,
                     controls=[
-                        section_title("新增清潔項目", "新增項目會先排在清單最後，之後可再由管理功能調整顯示順序。"),
+                        section_title("新增清潔項目", "新增後會顯示在保養項目清單中。"),
                         item_name_group,
                         machine_group,
                         cycle_group,
@@ -2479,41 +2371,24 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
             def on_submit(_):
                 if submit_btn.disabled:
                     return
-
-                payload = {
-                    "main_category": main_tf.value or "",
-                    "sub_category": sub_tf.value or "",
-                    "item_name": item_name_tf.value or "",
-                    "machine_area": machine_tf.value or "",
-                    "cycle_days": to_int(cycle_tf.value, 30),
-                    "sort_order": 999,
-                    "description": desc_tf.value or "",
-                }
-
                 set_button_loading(page, submit_btn)
-
-                def worker():
-                    try:
-                        result = create_consumable_item(**payload)
-                    except Exception as ex:
-                        if is_active_view():
-                            set_button_normal(page, submit_btn, "新增耗材項目", ft.Icons.ADD_OUTLINED)
-                            show_snack(f"新增耗材項目失敗：{ex}", success=False)
-                        return
-
-                    if not is_active_view():
-                        return
-
-                    if result.ok:
-                        state["active_extension_form"] = None
-                        load_data(update_sync_state=False)
-                        rebuild()
-                        show_snack(result.message, success=True)
-                    else:
-                        set_button_normal(page, submit_btn, "新增耗材項目", ft.Icons.ADD_OUTLINED)
-                        show_snack(result.message, success=False)
-
-                threading.Thread(target=worker, daemon=True).start()
+                result = create_consumable_item(
+                    main_category=main_tf.value or "",
+                    sub_category=sub_tf.value or "",
+                    item_name=item_name_tf.value or "",
+                    machine_area=machine_tf.value or "",
+                    cycle_days=to_int(cycle_tf.value, 30),
+                    sort_order=999,
+                    description=desc_tf.value or "",
+                )
+                if result.ok:
+                    state["active_extension_form"] = None
+                    load_data()
+                    rebuild()
+                    show_snack(result.message, success=True)
+                else:
+                    set_button_normal(page, submit_btn, "新增耗材項目", ft.Icons.ADD_OUTLINED)
+                    show_snack(result.message, success=False)
 
             submit_btn.on_click = on_submit
 
@@ -2522,7 +2397,7 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
                 content=ft.Column(
                     spacing=12,
                     controls=[
-                        section_title("新增耗材項目", "新增項目會先排在清單最後，之後可再由管理功能調整顯示順序。"),
+                        section_title("新增耗材項目", "新增後會顯示在保養項目清單中。"),
                         main_group,
                         sub_group,
                         item_name_group,
@@ -2679,37 +2554,21 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
                     show_snack("週期天數需為大於 0 的整數。", success=False)
                     return
 
-                payload = {
-                    "item_id": period_state.get("item_id") or "",
-                    "cycle_days": cycle_days,
-                    "sort_order": None,
-                    "is_active": active_dd.value == "啟用",
-                }
-
                 set_button_loading(page, submit_btn)
-
-                def worker():
-                    try:
-                        result = update_item_cycle(**payload)
-                    except Exception as ex:
-                        if is_active_view():
-                            set_button_normal(page, submit_btn, "更新週期", ft.Icons.SAVE_OUTLINED)
-                            show_snack(f"更新週期失敗：{ex}", success=False)
-                        return
-
-                    if not is_active_view():
-                        return
-
-                    if result.ok:
-                        state["active_extension_form"] = None
-                        load_data(update_sync_state=False)
-                        rebuild()
-                        show_snack(result.message, success=True)
-                    else:
-                        set_button_normal(page, submit_btn, "更新週期", ft.Icons.SAVE_OUTLINED)
-                        show_snack(result.message, success=False)
-
-                threading.Thread(target=worker, daemon=True).start()
+                result = update_item_cycle(
+                    item_id=period_state.get("item_id") or "",
+                    cycle_days=cycle_days,
+                    sort_order=None,
+                    is_active=(active_dd.value == "啟用"),
+                )
+                if result.ok:
+                    state["active_extension_form"] = None
+                    load_data()
+                    rebuild()
+                    show_snack(result.message, success=True)
+                else:
+                    set_button_normal(page, submit_btn, "更新週期", ft.Icons.SAVE_OUTLINED)
+                    show_snack(result.message, success=False)
 
             submit_btn.on_click = on_submit
 
@@ -3001,45 +2860,26 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
             if submit_btn.disabled:
                 return
 
-            payload = {
-                "maintenance_item_id": form_state.get("item_id") or "",
-                "executed_date": date_tf.value or "",
-                "operator_name": operator_tf.value or "",
-                "result": result_dd.value or "",
-                "note": note_tf.value or "",
-                "created_by_user_id": session_get("user_id"),
-                "created_by_name": session_get("user_name"),
-            }
-
             set_button_loading(page, submit_btn)
 
-            def worker():
-                try:
-                    result = submit_maintenance_record(**payload)
-                except Exception as ex:
-                    if is_active_view():
-                        set_button_normal(page, submit_btn, "送出紀錄", ft.Icons.SAVE_OUTLINED)
-                        show_snack(f"新增保養紀錄失敗：{ex}", success=False)
-                    return
+            result = submit_maintenance_record(
+                maintenance_item_id=form_state.get("item_id") or "",
+                executed_date=date_tf.value or "",
+                operator_name=operator_tf.value or "",
+                result=result_dd.value or "",
+                note=note_tf.value or "",
+                created_by_user_id=session_get("user_id"),
+                created_by_name=session_get("user_name"),
+            )
 
-                if not is_active_view():
-                    return
-
-                if result.ok:
-                    load_data(update_sync_state=False)
-                    # 清空桌機右側表單，僅重設本地控制項，不呼叫 Supabase。
-                    form_state["item_id"] = None
-                    date_tf.value = today_string()
-                    operator_tf.value = session_get("user_name") or ""
-                    result_dd.value = "正常"
-                    note_tf.value = ""
-                    rebuild()
-                    show_snack(result.message, success=True)
-                else:
-                    set_button_normal(page, submit_btn, "送出紀錄", ft.Icons.SAVE_OUTLINED)
-                    show_snack(result.message, success=False)
-
-            threading.Thread(target=worker, daemon=True).start()
+            if result.ok:
+                load_data()
+                clear_form()
+                rebuild()
+                show_snack(result.message, success=True)
+            else:
+                set_button_normal(page, submit_btn, "送出紀錄", ft.Icons.SAVE_OUTLINED)
+                show_snack(result.message, success=False)
 
         submit_btn.on_click = on_submit
 
