@@ -1674,7 +1674,7 @@ def FeedContent(page: ft.Page):
             form_title_icon.color = PURPLE
             form_title_text.value = "輔助母粒作業"
             material_input_group.controls[0].controls[1].value = "領用母粒 *"
-            batch_input_group.controls[0].controls[1].value = "母粒批號（請補齊流水號） *"
+            batch_input_group.controls[0].controls[1].value = "母粒領用批號（請補齊流水號） *"
             batch_field.hint_text = f"例如：{aux_batch_example()}"
             batch_field.label = f"例如：{aux_batch_example()}"
             batch_field.error_text = None
