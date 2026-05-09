@@ -22,6 +22,7 @@ import flet as ft
 from services.reports_service import (
     build_report_filter_options,
     export_report_to_csv,
+    export_report_to_pdf,
     run_advanced_query,
     run_quick_report,
 )
@@ -446,7 +447,7 @@ def ReportsContent(page: ft.Page):
 
     def open_url(url: str) -> None:
         if not url:
-            show_msg("尚未產生可下載的 CSV。", ORANGE)
+            show_msg("尚未產生可下載的檔案。", ORANGE)
             return
 
         async def launch_url_task():
@@ -459,7 +460,7 @@ def ReportsContent(page: ft.Page):
                     await result
 
                 if is_active_view():
-                    show_msg("已開啟 CSV 下載連結。", GREEN)
+                    show_msg("已開啟下載連結。", GREEN)
 
             except Exception as ex:
                 if is_active_view():
@@ -472,7 +473,7 @@ def ReportsContent(page: ft.Page):
 
             if hasattr(page, "launch_url"):
                 page.launch_url(url)
-                show_msg("已開啟 CSV 下載連結。", GREEN)
+                show_msg("已開啟下載連結。", GREEN)
                 return
 
         except Exception as ex:
@@ -627,37 +628,40 @@ def ReportsContent(page: ft.Page):
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def export_csv_background(e=None):
+    def _build_export_url_from_result(data: dict[str, Any]) -> tuple[str, str, str, str]:
+        filename = str(data.get("filename") or "")
+        path_text = str(data.get("path") or data.get("absolute_path") or "")
+        raw_url_path = str(data.get("url_path") or data.get("asset_url_path") or data.get("download_path") or "")
+        url_path = normalize_export_url_path(raw_url_path, filename)
+        url = str(data.get("url") or data.get("download_url") or "")
+        if not url:
+            url = build_absolute_url(url_path)
+        return filename, path_text, url_path, url
+
+    def _run_export_background(kind: str, exporter, status_label: str):
         rows = current_report_data.get("rows") or []
         if not rows:
-            show_msg("目前沒有可匯出的資料。", ORANGE)
+            show_msg("目前沒有可下載的資料。", ORANGE)
             return
         if loading_state.get("active"):
             show_msg("報表仍在處理中，請稍候。", ORANGE)
             return
 
         loading_state["active"] = True
-        loading_state["message"] = "正在匯出 CSV"
-        set_status("正在匯出 CSV", "blue", True)
+        loading_state["message"] = f"正在產生 {kind}"
+        set_status(f"正在產生 {kind}", "blue", True)
         rebuild()
 
         def worker():
             try:
-                result = export_report_to_csv(current_report_data)
+                result = exporter(current_report_data)
                 if not is_active_view():
                     return
                 loading_state["active"] = False
+
                 if result.ok:
                     data = result.data or {}
-                    filename = str(data.get("filename") or "")
-                    path_text = str(data.get("path") or "")
-                    raw_url_path = str(data.get("url_path") or data.get("asset_url_path") or "")
-                    url_path = normalize_export_url_path(raw_url_path, filename)
-                    url = str(data.get("url") or data.get("download_url") or "")
-                    if not url:
-                        url = build_absolute_url(url_path)
-
-                    csv_content = str(data.get("csv_text") or "") or read_export_csv_text(path_text, current_report_data)
+                    filename, path_text, url_path, url = _build_export_url_from_result(data)
 
                     export_state.update(
                         {
@@ -665,24 +669,32 @@ def ReportsContent(page: ft.Page):
                             "path": path_text,
                             "url_path": url_path,
                             "url": url,
-                            "csv_content": csv_content,
+                            "csv_content": "",
                             "expires_after_days": data.get("expires_after_days"),
                             "cleanup": data.get("cleanup") or {},
+                            "last_export_type": kind,
                         }
                     )
-                    set_status("CSV 已匯出，可點擊下方按鈕下載", "green", True)
+                    set_status(f"{kind} 已產生，正在開啟下載", "green", True)
                     rebuild()
+                    open_url(url)
                 else:
-                    set_status(result.message or "CSV 匯出失敗", "red", True)
+                    set_status(result.message or f"{kind} 產生失敗", "red", True)
                     rebuild()
             except Exception as ex:
                 if not is_active_view():
                     return
                 loading_state["active"] = False
-                set_status(f"CSV 匯出失敗：{ex}", "red", True)
+                set_status(f"{kind} 產生失敗：{ex}", "red", True)
                 rebuild()
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def export_csv_background(e=None):
+        _run_export_background("CSV", export_report_to_csv, "下載 CSV")
+
+    def export_pdf_background(e=None):
+        _run_export_background("PDF", export_report_to_pdf, "下載 PDF")
 
     # =====================================================
     # 6. 報表動作
@@ -1225,68 +1237,7 @@ def ReportsContent(page: ft.Page):
         )
 
     def build_export_download_panel():
-        if not export_state.get("filename") and not export_state.get("csv_content"):
-            return ft.Container(height=0)
-
-        filename = export_state.get("filename") or "report.csv"
-        keep_days = export_state.get("expires_after_days") or 14
-        url_path = export_state.get("url_path") or ""
-        download_url = export_state.get("url") or build_absolute_url(url_path)
-
-        return ft.Container(
-            bgcolor=GREEN_SOFT,
-            border=ft.border.all(1, GREEN_BORDER),
-            border_radius=14,
-            padding=ft.padding.symmetric(horizontal=12, vertical=12),
-            content=ft.Column(
-                spacing=10,
-                controls=[
-                    ft.Row(
-                        controls=[
-                            ft.Icon(ft.Icons.CHECK_CIRCLE_OUTLINE, size=22, color=GREEN),
-                            ft.Column(
-                                expand=True,
-                                spacing=4,
-                                controls=[
-                                    ft.Text("CSV 已產生", size=16, color=GREEN, weight=ft.FontWeight.BOLD),
-                                    ft.Text(f"檔名：{filename}", size=12, color=TEXT_SUB, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
-                                    ft.Text(f"（產生之 CSV 檔案預設保留 {keep_days} 天）", size=12, color=TEXT_MUTED),
-                                ],
-                            ),
-                        ],
-                        spacing=8,
-                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                    ),
-                    ft.ResponsiveRow(
-                        columns=12,
-                        spacing=10,
-                        run_spacing=10,
-                        controls=[
-                            ft.Container(
-                                col={"xs": 12, "md": 6},
-                                content=stable_button(
-                                    "下載 CSV",
-                                    ft.Icons.FILE_DOWNLOAD_OUTLINED,
-                                    lambda e, u=download_url: open_url(u),
-                                    bg=GREEN,
-                                    fg="white",
-                                    disabled=not bool(download_url),
-                                ),
-                            ),
-                            ft.Container(
-                                col={"xs": 12, "md": 6},
-                                content=outline_button(
-                                    "重新匯出",
-                                    ft.Icons.REFRESH_OUTLINED,
-                                    export_csv_background,
-                                    color=GREEN,
-                                ),
-                            ),
-                        ],
-                    ),
-                ],
-            ),
-        )
+        return ft.Container(height=0)
 
     def build_preview_card():
         title = current_report_data.get("title") or "結果預覽"
@@ -1340,11 +1291,30 @@ def ReportsContent(page: ft.Page):
                         spacing=12,
                         run_spacing=12,
                         controls=[
-                            ft.Container(col={"xs": 12, "md": 6}, content=stable_button("匯出 CSV", ft.Icons.FILE_DOWNLOAD_OUTLINED, export_csv_background, bg=BLUE_BTN, fg="white", disabled=not bool(rows))),
-                            ft.Container(col={"xs": 12, "md": 6}, content=outline_button("清除結果", ft.Icons.REFRESH_OUTLINED, clear_conditions, color="#475569")),
+                            ft.Container(
+                                col={"xs": 6, "md": 6},
+                                content=stable_button(
+                                    "下載 CSV",
+                                    ft.Icons.FILE_DOWNLOAD_OUTLINED,
+                                    export_csv_background,
+                                    bg=BLUE_BTN,
+                                    fg="white",
+                                    disabled=not bool(rows),
+                                ),
+                            ),
+                            ft.Container(
+                                col={"xs": 6, "md": 6},
+                                content=stable_button(
+                                    "下載 PDF",
+                                    ft.Icons.PICTURE_AS_PDF_OUTLINED,
+                                    export_pdf_background,
+                                    bg=GREEN,
+                                    fg="white",
+                                    disabled=not bool(rows),
+                                ),
+                            ),
                         ],
                     ),
-                    build_export_download_panel(),
                 ],
             ),
         )

@@ -1030,7 +1030,7 @@ def resolve_export_folder(export_dir: str = DEFAULT_EXPORT_DIR) -> Path:
     Path("exports") 這種相對路徑。這裡一律以 services/ 的上一層
     專案根目錄為基準，對應 Nginx 的 /exports/ 靜態下載路徑。
     """
-    raw = clean_text(export_dir, DEFAULT_EXPORT_DIR).strip().strip("/")
+    raw = clean_text(export_dir, DEFAULT_EXPORT_DIR).strip()
 
     if not raw:
         raw = DEFAULT_EXPORT_DIR
@@ -1040,7 +1040,7 @@ def resolve_export_folder(export_dir: str = DEFAULT_EXPORT_DIR) -> Path:
     if candidate.is_absolute():
         folder = candidate
     else:
-        folder = BASE_DIR / raw
+        folder = BASE_DIR / raw.strip("/")
 
     folder.mkdir(parents=True, exist_ok=True)
     return folder
@@ -1142,3 +1142,229 @@ def export_report_to_csv(
 
     except Exception as exc:
         return ServiceResult(ok=False, message=f"CSV 匯出失敗：{exc}")
+
+
+def _register_pdf_font() -> str:
+    """
+    註冊 PDF 中文字型。
+
+    優先使用 VM 系統已安裝的 Noto / WenQuanYi / AR PL 字型；
+    若找不到，退回 ReportLab 內建 CID 字型 STSong-Light，避免直接失敗。
+    """
+    from reportlab.pdfbase import pdfmetrics
+
+    # 已註冊過就直接回傳。
+    try:
+        pdfmetrics.getFont("KNH_CJK")
+        return "KNH_CJK"
+    except Exception:
+        pass
+
+    font_candidates = [
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJKtc-Regular.otf",
+        "/usr/share/fonts/opentype/noto/NotoSansCJKtc-Regular.otc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+        "/usr/share/fonts/truetype/arphic/uming.ttc",
+        "/usr/share/fonts/truetype/arphic/ukai.ttc",
+    ]
+
+    try:
+        from reportlab.pdfbase.ttfonts import TTFont
+        for font_path in font_candidates:
+            path = Path(font_path)
+            if not path.exists():
+                continue
+            try:
+                pdfmetrics.registerFont(TTFont("KNH_CJK", str(path)))
+                return "KNH_CJK"
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    try:
+        from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+        pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
+        return "STSong-Light"
+    except Exception:
+        return "Helvetica"
+
+
+def _wrap_text_for_pdf(value: Any, max_chars: int = 18) -> str:
+    """讓中文表格內容可在 PDF 表格中換行，避免欄位過寬或文字溢出。"""
+    from xml.sax.saxutils import escape
+
+    text = clean_text(value, "-")
+    if not text:
+        text = "-"
+
+    wrapped_lines: list[str] = []
+    for raw_line in str(text).replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = raw_line.strip()
+        if not line:
+            wrapped_lines.append("")
+            continue
+        while len(line) > max_chars:
+            wrapped_lines.append(line[:max_chars])
+            line = line[max_chars:]
+        wrapped_lines.append(line)
+
+    return "<br/>".join(escape(line) for line in wrapped_lines)
+
+
+def export_report_to_pdf(
+    report_data: dict[str, Any],
+    export_dir: str = DEFAULT_EXPORT_DIR,
+) -> ServiceResult:
+    """
+    將報表資料輸出成 PDF。
+
+    - 寫入專案根目錄 exports/ 絕對路徑。
+    - 回傳 /exports/<filename>.pdf，由 Nginx 80 port 提供正式下載。
+    - 使用 ReportLab 產生；若 VM 缺少 reportlab，會回傳明確錯誤。
+    """
+    try:
+        try:
+            from reportlab.lib import colors
+            from reportlab.lib.pagesizes import A4, landscape
+            from reportlab.lib.styles import ParagraphStyle
+            from reportlab.lib.units import mm
+            from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+        except Exception as import_exc:
+            return ServiceResult(
+                ok=False,
+                message=(
+                    "PDF 匯出失敗：VM 尚未安裝 reportlab。"
+                    "請先執行 pip install reportlab，或將 reportlab 加入 requirements.txt。"
+                    f" 原始錯誤：{import_exc}"
+                ),
+            )
+
+        title = clean_text(report_data.get("title"), "report")
+        columns = report_data.get("columns") or []
+        rows = report_data.get("rows") or []
+        summary_text = clean_text(report_data.get("summary_text"), "")
+
+        if not columns:
+            return ServiceResult(ok=False, message="沒有可匯出的欄位。")
+
+        folder = resolve_export_folder(export_dir)
+        cleanup = cleanup_old_exports(export_dir, DEFAULT_EXPORT_RETENTION_DAYS)
+
+        timestamp = now_taipei().strftime("%Y%m%d_%H%M%S")
+        filename = f"{timestamp}_{safe_filename(title)}.pdf"
+        path = folder / filename
+
+        font_name = _register_pdf_font()
+        page_size = landscape(A4)
+
+        doc = SimpleDocTemplate(
+            str(path),
+            pagesize=page_size,
+            leftMargin=12 * mm,
+            rightMargin=12 * mm,
+            topMargin=12 * mm,
+            bottomMargin=12 * mm,
+            title=title,
+            author="KNH MMS",
+        )
+
+        title_style = ParagraphStyle(
+            "KNHTitle",
+            fontName=font_name,
+            fontSize=18,
+            leading=24,
+            textColor=colors.HexColor("#0F172A"),
+            spaceAfter=8,
+        )
+        meta_style = ParagraphStyle(
+            "KNHMeta",
+            fontName=font_name,
+            fontSize=9,
+            leading=13,
+            textColor=colors.HexColor("#64748B"),
+            spaceAfter=6,
+        )
+        header_style = ParagraphStyle(
+            "KNHHeader",
+            fontName=font_name,
+            fontSize=8.5,
+            leading=11,
+            textColor=colors.HexColor("#0F172A"),
+            alignment=1,
+        )
+        cell_style = ParagraphStyle(
+            "KNHCell",
+            fontName=font_name,
+            fontSize=8,
+            leading=10.5,
+            textColor=colors.HexColor("#1E293B"),
+        )
+
+        story = []
+        story.append(Paragraph(_wrap_text_for_pdf(title, 40), title_style))
+        story.append(
+            Paragraph(
+                f"產生時間：{now_taipei().strftime('%Y/%m/%d %H:%M')}｜共 {len(rows)} 筆資料",
+                meta_style,
+            )
+        )
+        if summary_text:
+            story.append(Paragraph(_wrap_text_for_pdf(summary_text, 60), meta_style))
+        story.append(Spacer(1, 6))
+
+        table_data = [[Paragraph(_wrap_text_for_pdf(col, 10), header_style) for col in columns]]
+        for row in rows:
+            table_data.append([
+                Paragraph(_wrap_text_for_pdf(row.get(col, ""), 18), cell_style)
+                for col in columns
+            ])
+
+        available_width = doc.width
+        column_count = max(1, len(columns))
+        col_widths = [available_width / column_count for _ in columns]
+
+        table = Table(
+            table_data,
+            colWidths=col_widths,
+            repeatRows=1,
+            splitByRow=True,
+        )
+        table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E5F0FF")),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#0F172A")),
+                    ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#DDE7F3")),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+                    ("TOPPADDING", (0, 0), (-1, -1), 5),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
+                ]
+            )
+        )
+        story.append(table)
+        doc.build(story)
+
+        url_path = build_export_url_path(filename)
+
+        return ServiceResult(
+            ok=True,
+            message=f"PDF 已匯出：{url_path}",
+            data={
+                "path": str(path),
+                "absolute_path": str(path),
+                "filename": filename,
+                "url_path": url_path,
+                "download_path": url_path,
+                "expires_after_days": DEFAULT_EXPORT_RETENTION_DAYS,
+                "cleanup": cleanup,
+            },
+        )
+
+    except Exception as exc:
+        return ServiceResult(ok=False, message=f"PDF 匯出失敗：{exc}")
