@@ -1692,25 +1692,37 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
                                     weight=ft.FontWeight.W_600,
                                 ),
                             ),
-                            ft.OutlinedButton(
+                            stable_outline_button(
                                 "取消",
-                                style=outline_button_style(),
+                                ft.Icons.CLOSE,
+                                color=BLUE_BTN,
+                                border_color=BLUE_BORDER,
+                                hover_bg=BLUE_SOFT,
                                 on_click=cancel_delete,
-                            ),
-                            ft.ElevatedButton(
-                                "確認刪除",
                                 height=38,
-                                style=primary_button_style(bg=RED, hover="#B91C1C", pressed="#991B1B"),
+                                expand=False,
+                            ),
+                            stable_filled_button(
+                                "確認刪除",
+                                ft.Icons.DELETE_OUTLINE,
+                                bg=RED,
                                 on_click=confirm_delete,
+                                height=38,
+                                expand=False,
                             ),
                         ]
                     else:
                         action_controls = [
                             ft.Container(expand=True),
-                            ft.OutlinedButton(
+                            stable_outline_button(
                                 "刪除",
-                                style=outline_button_style(color=RED, hover_bg=RED_SOFT, border_color="#FCA5A5"),
+                                ft.Icons.DELETE_OUTLINE,
+                                color=RED,
+                                border_color="#FCA5A5",
+                                hover_bg=RED_SOFT,
                                 on_click=ask_delete,
+                                height=38,
+                                expand=False,
                             ),
                         ]
 
@@ -1796,7 +1808,16 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
                                     ft.Text(item_display_name(item), size=12, color=TEXT_MUTED),
                                 ],
                             ),
-                            ft.OutlinedButton("收起", style=outline_button_style(), on_click=close_records),
+                            stable_outline_button(
+                                "收起",
+                                ft.Icons.KEYBOARD_ARROW_UP,
+                                color=PURPLE_BTN,
+                                border_color=PURPLE_BORDER,
+                                hover_bg=PURPLE_SOFT,
+                                on_click=close_records,
+                                height=38,
+                                expand=False,
+                            ),
                         ],
                     ),
                     ft.Text(
