@@ -549,7 +549,7 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
             set_sync_state("error", "資料同步失敗", visible=True)
         return False
 
-    def start_background_load(show_loading: bool = True) -> None:
+    def start_background_load(show_loading: bool = True, render_loading: bool = True) -> None:
         """
         非阻塞背景載入 + 離頁保護 + 逾時回退。
         - 背景 thread 只改 state，最後集中 rebuild。
@@ -561,7 +561,9 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
 
         if show_loading:
             set_sync_state("loading", "資料同步中", visible=True)
-            if is_active_view():
+            # 初次建立 View 時，control 尚未掛到 page，不能在這裡強制 update。
+            # 只有互動重試時才重畫 loading；初始化交給原本 skeleton 畫面即可。
+            if render_loading and is_active_view():
                 rebuild()
 
         def watchdog():
@@ -597,7 +599,7 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
         threading.Thread(target=worker, daemon=True).start()
 
     def refresh(_=None) -> None:
-        start_background_load(show_loading=True)
+        start_background_load(show_loading=True, render_loading=True)
 
     # =====================================================
     # 動作
@@ -1492,6 +1494,6 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
 
     width = page.width or 390
     main_host.content = build_mobile_layout() if width < MOBILE_WIDTH else build_desktop_layout()
-    start_background_load(show_loading=True)
+    start_background_load(show_loading=True, render_loading=False)
 
     return root
