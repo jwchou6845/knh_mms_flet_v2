@@ -4,6 +4,7 @@
 import flet as ft
 import time
 import json
+import threading
 from views.login import LoginView
 from views.dashboard import DashboardContent
 from views.inventory import InventoryContent
@@ -14,7 +15,11 @@ from views.feed import FeedContent
 from views.maintenance import MaintenanceContent
 from views.maintenance_items import MaintenanceItemsContent
 from services.auth_service import update_user_shortcuts
-from services.auth_session_service import restore_persistent_session, revoke_persistent_session
+from services.auth_session_service import (
+    cleanup_expired_user_sessions,
+    restore_persistent_session,
+    revoke_persistent_session,
+)
 from views.reports import ReportsContent
 
 
@@ -274,6 +279,36 @@ def main(page: ft.Page):
         page.session_data["_browser_storage_remove"] = browser_storage_remove
 
     register_session_helpers()
+
+    def start_user_session_cleanup_once():
+        """
+        機會式清理 12 小時免重登 user_sessions。
+        使用背景 thread 執行，避免阻塞登入檢查與畫面建立。
+        """
+        if page.session_data.get("_user_session_cleanup_started"):
+            return
+
+        page.session_data["_user_session_cleanup_started"] = True
+
+        def worker():
+            try:
+                result = cleanup_expired_user_sessions()
+                if result.ok:
+                    data = result.data or {}
+                    print(
+                        "USER_SESSION CLEANUP DONE:",
+                        "expired=", data.get("expired_deleted_count", 0),
+                        "revoked=", data.get("revoked_deleted_count", 0),
+                        "total=", data.get("total_deleted_count", 0),
+                    )
+                else:
+                    print("USER_SESSION CLEANUP FAILED:", result.message)
+            except Exception as ex:
+                print("USER_SESSION CLEANUP ERROR:", repr(ex))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    start_user_session_cleanup_once()
 
     def build_auth_check_view(message: str = "正在檢查登入狀態..."):
         return ft.View(
@@ -556,7 +591,7 @@ def main(page: ft.Page):
     # View Template（整合捲動雷達與個人化 FAB）
     # =====================================================
     def shell(route, title, body, nav_idx=0):
-        content_padding = 0 if route.startswith("/maintenance") else 20
+        content_padding = 0 if str(route or "").startswith("/maintenance") else 20
 
         content_col = ft.Column(
             controls=[
@@ -964,9 +999,39 @@ def main(page: ft.Page):
     # =====================================================
     route_state = {"building": False, "last_route": None, "last_time": 0.0}
 
+    def cleanup_route_scoped_views(next_route: str) -> None:
+        """
+        子頁 instance cleanup。
+        目前用於 /maintenance/items，避免背景 worker 在使用者切離後仍回寫舊畫面。
+        不覆蓋 page.on_route_change；只在主 router 內呼叫已註冊的 dispose callback。
+        """
+        route_text = str(next_route or "")
+        if route_text.startswith("/maintenance/items"):
+            return
+
+        cleanup = None
+        try:
+            cleanup = page.session_data.get("_maintenance_items_dispose")
+        except Exception:
+            cleanup = None
+
+        if callable(cleanup):
+            try:
+                cleanup(f"route_change to {route_text}")
+            except Exception as ex:
+                print("maintenance_items cleanup failed:", repr(ex))
+
+        try:
+            page.session_data.pop("_maintenance_items_dispose", None)
+            page.session_data.pop("_maintenance_items_instance_id", None)
+        except Exception:
+            pass
+
     def route_change(e):
         route = page.route
         now = time.monotonic()
+
+        cleanup_route_scoped_views(route)
 
         if route_state["building"]:
             print(f"ROUTE_CHANGE SKIP: already building route={route}")
@@ -1064,19 +1129,19 @@ def main(page: ft.Page):
                 )
                 
 
-            elif route == "/maintenance/items":
-                target_view = shell(
-                    "/maintenance/items",
-                    "保養項目管理",
-                    MaintenanceItemsContent(page),
-                    3,
-                )
-
             elif route == "/maintenance":
                 target_view = shell(
                     "/maintenance",
                     "機台保養紀錄",
                     MaintenanceContent(page),
+                    3,
+                )
+
+            elif route == "/maintenance/items":
+                target_view = shell(
+                    "/maintenance/items",
+                    "保養項目管理",
+                    MaintenanceItemsContent(page),
                     3,
                 )
 

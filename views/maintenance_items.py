@@ -65,8 +65,14 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
     if not hasattr(page, "session_data"):
         page.session_data = {}
 
-    view_token = f"maintenance-items-{time.time_ns()}"
-    page.session_data["_maintenance_items_view_token"] = view_token
+    previous_dispose = page.session_data.get("_maintenance_items_dispose")
+    if callable(previous_dispose):
+        try:
+            previous_dispose("replaced by new maintenance_items instance")
+        except Exception as ex:
+            print("MAINTENANCE_ITEMS PREVIOUS DISPOSE FAILED:", repr(ex))
+
+    instance_id = f"maintenance-items-{time.time_ns()}"
 
     state: dict[str, Any] = {
         "loading": True,
@@ -85,7 +91,20 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
         "active_form": None,
         "editing_item": None,
         "load_seq": 0,
+        # 本頁 instance 級存活旗標。
+        # 不再用 page.route 或 session_data token 當主要載入回寫判斷，
+        # 避免 Flet Web / VM 手動 route_change 時序造成 worker/watchdog 被誤擋。
+        "_alive": True,
     }
+
+    def dispose_this_view(reason: str = "") -> None:
+        if not state.get("_alive", True):
+            return
+        state["_alive"] = False
+        print(f"MAINTENANCE_ITEMS DISPOSE: instance={instance_id}, reason={reason}")
+
+    page.session_data["_maintenance_items_dispose"] = dispose_this_view
+    page.session_data["_maintenance_items_instance_id"] = instance_id
 
     ui_lock = threading.RLock()
     action_lock = threading.Lock()
@@ -109,16 +128,16 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
         """
         /maintenance/items 子頁的離頁保護。
 
-        注意：main.py 目前會在 page.go() 後手動補 route_change(None)，
-        在 Web / VM 環境可能短時間內建立兩個同頁 View。
-        如果用 page.session_data 的全域 token 當唯一條件，舊 View 可能被新 View 改掉 token，
-        但畫面仍停在舊 View，導致 worker / watchdog 都不更新，最後永遠顯示「資料同步中」。
+        這一頁不能只依賴 page.route 判斷是否可回寫，因為 main.py 的 navigate()
+        會在 page.go() 後手動補 route_change(None)，Web / VM 環境可能短時間內
+        讓 page.route 與目前畫面 instance 不同步。
 
-        因此此頁第一版只用 route 判斷是否仍在 /maintenance/items。
-        舊 thread 若嘗試更新已移除 control，rebuild() 內會捕捉例外，不讓頁面崩潰。
+        使用 instance-level alive flag 作為主要條件：
+        - worker / watchdog 不會因 route 短暫不一致而直接跳出。
+        - main.py 在切離本頁時會呼叫 dispose callback，把舊 instance 標記為死亡。
+        - 同頁重新建立時，新的 instance 也會先關閉上一個 instance。
         """
-        route = str(getattr(page, "route", "") or "")
-        return (not route) or route.startswith("/maintenance/items")
+        return bool(state.get("_alive", True))
 
     def safe_page_update() -> None:
         if not is_active_view():
@@ -131,6 +150,8 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
             print("maintenance_items page.update failed:", repr(ex))
 
     def navigate(route: str) -> None:
+        if not str(route or "").startswith("/maintenance/items"):
+            dispose_this_view(f"navigate to {route}")
         nav = session_get("_navigate")
         if callable(nav):
             nav(route)
@@ -559,7 +580,7 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
         非阻塞背景載入 + 離頁保護 + 逾時回退。
         - 背景 thread 只改 state，最後集中 rebuild。
         - 若 Supabase 或 service 等待過久，20 秒後顯示錯誤與重試按鈕。
-        - 若使用者切離本頁，舊 thread 不再更新 UI。
+        - worker/watchdog 不用 page.route 當主要回寫判斷，避免 route 競態讓畫面永久停在 loading。
         """
         state["load_seq"] = int(state.get("load_seq") or 0) + 1
         current_load_seq = state["load_seq"]
@@ -575,7 +596,7 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
         def watchdog():
             time.sleep(15)
             if not is_active_view():
-                print(f"MAINTENANCE_ITEMS WATCHDOG SKIP inactive: seq={current_load_seq}, route={getattr(page, 'route', '')}")
+                print(f"MAINTENANCE_ITEMS WATCHDOG SKIP inactive (alive=False): seq={current_load_seq}")
                 return
             if state.get("load_seq") != current_load_seq:
                 print(f"MAINTENANCE_ITEMS WATCHDOG SKIP old seq: seq={current_load_seq}, current={state.get('load_seq')}")
@@ -598,7 +619,7 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
                 ok = False
 
             if not is_active_view():
-                print(f"MAINTENANCE_ITEMS WORKER SKIP inactive: seq={current_load_seq}, route={getattr(page, 'route', '')}")
+                print(f"MAINTENANCE_ITEMS WORKER SKIP inactive (alive=False): seq={current_load_seq}")
                 return
             if state.get("load_seq") != current_load_seq:
                 print(f"MAINTENANCE_ITEMS WORKER SKIP old seq: seq={current_load_seq}, current={state.get('load_seq')}")
@@ -1508,8 +1529,9 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
     width = page.width or 390
     main_host.content = build_mobile_layout() if width < MOBILE_WIDTH else build_desktop_layout()
 
-    # 延後啟動背景載入：確保 root 已經交給 main.py shell 並掛到 page，
-    # 避免初始化階段 control 尚未上頁就觸發更新，造成資料同步中卡住。
+    # 延後啟動背景載入：確保 root 已經交給 main.py shell 並掛到 page。
+    # 初始化畫面本身已是 skeleton，不在啟動瞬間強制 update。
+    print(f"MAINTENANCE_ITEMS INIT: instance={instance_id}, route={getattr(page, 'route', '')}, role={session_get('role')}")
     try:
         threading.Timer(0.35, lambda: start_background_load(show_loading=True, render_loading=False)).start()
     except Exception as ex:
