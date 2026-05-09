@@ -448,14 +448,23 @@ def ReportsContent(page: ft.Page):
         if not url:
             show_msg("尚未產生可下載的 CSV。", ORANGE)
             return
+
         try:
             if hasattr(page, "launch_url"):
-                page.launch_url(url)
+                # Flet 0.84 的 page.launch_url() 在 Web / VM 環境會回傳 coroutine，
+                # 不能直接呼叫，否則會出現 RuntimeWarning: coroutine was never awaited，
+                # 使用 page.run_task() 讓 Flet 正確在事件迴圈中開啟下載網址。
+                if hasattr(page, "run_task"):
+                    page.run_task(page.launch_url, url)
+                else:
+                    page.launch_url(url)
+                show_msg("已開啟 CSV 下載連結。", GREEN)
                 return
         except Exception as ex:
             show_msg(f"無法自動開啟下載連結：{ex}", RED)
             return
-        show_msg("目前環境不支援自動開啟，請使用下方 CSV 內容文字框手動複製。", ORANGE)
+
+        show_msg("目前環境不支援自動開啟，請複製下方下載網址到瀏覽器。", ORANGE)
 
     def build_csv_text_from_report(report_data: dict[str, Any]) -> str:
         columns = report_data.get("columns") or []
@@ -1238,7 +1247,8 @@ def ReportsContent(page: ft.Page):
                                     ft.Text(filename, size=12, color=TEXT_SUB, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
                                     ft.Text(keep_text, size=12, color=TEXT_MUTED),
                                     ft.Text(cleanup_text, size=12, color=TEXT_MUTED, visible=bool(cleanup_text)),
-                                    ft.Text(f"下載路徑：{url_path}", size=12, color=TEXT_SUB, visible=bool(url_path), max_lines=2, overflow=ft.TextOverflow.VISIBLE),
+                                    ft.Text(f"下載網址：{download_url}", size=12, color=TEXT_SUB, visible=bool(download_url), max_lines=3, overflow=ft.TextOverflow.VISIBLE),
+                                    ft.Text(f"下載路徑：{url_path}", size=11, color=TEXT_MUTED, visible=bool(url_path), max_lines=2, overflow=ft.TextOverflow.VISIBLE),
                                     ft.Text(f"VM 檔案位置：{path_text}", size=11, color=TEXT_MUTED, visible=bool(path_text), max_lines=2, overflow=ft.TextOverflow.VISIBLE),
                                 ],
                             ),
@@ -1282,9 +1292,21 @@ def ReportsContent(page: ft.Page):
                             spacing=8,
                             controls=[
                                 ft.Text(
-                                    "正式下載已改走 Nginx /exports/ 路徑；下方 CSV 文字內容只作為無法下載時的備援。",
+                                    "下載按鈕會開啟下方完整網址；若瀏覽器阻擋開啟，請直接複製下載網址貼到網址列。CSV 文字內容只作為無法下載時的備援。",
                                     size=12,
                                     color=TEXT_SUB,
+                                ),
+                                ft.TextField(
+                                    value=download_url,
+                                    label="下載網址",
+                                    read_only=True,
+                                    multiline=False,
+                                    border_radius=10,
+                                    border_color=GREEN_BORDER,
+                                    focused_border_color=GREEN,
+                                    text_size=12,
+                                    bgcolor="#FFFFFF",
+                                    content_padding=ft.padding.symmetric(horizontal=10, vertical=10),
                                 ),
                                 ft.TextField(
                                     value=csv_content,
