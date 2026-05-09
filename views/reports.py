@@ -449,22 +449,37 @@ def ReportsContent(page: ft.Page):
             show_msg("尚未產生可下載的 CSV。", ORANGE)
             return
 
+        async def launch_url_task():
+            try:
+                result = page.launch_url(url)
+
+                # Flet 0.84 的 page.launch_url() 在 Web / VM 環境可能回傳 coroutine。
+                # 必須在 coroutine function 內 await，不能把 page.launch_url 直接丟給 page.run_task。
+                if hasattr(result, "__await__"):
+                    await result
+
+                if is_active_view():
+                    show_msg("已開啟 CSV 下載連結。", GREEN)
+
+            except Exception as ex:
+                if is_active_view():
+                    show_msg(f"無法自動開啟下載連結：{ex}", RED)
+
         try:
+            if hasattr(page, "launch_url") and hasattr(page, "run_task"):
+                page.run_task(launch_url_task)
+                return
+
             if hasattr(page, "launch_url"):
-                # Flet 0.84 的 page.launch_url() 在 Web / VM 環境會回傳 coroutine，
-                # 不能直接呼叫，否則會出現 RuntimeWarning: coroutine was never awaited，
-                # 使用 page.run_task() 讓 Flet 正確在事件迴圈中開啟下載網址。
-                if hasattr(page, "run_task"):
-                    page.run_task(page.launch_url, url)
-                else:
-                    page.launch_url(url)
+                page.launch_url(url)
                 show_msg("已開啟 CSV 下載連結。", GREEN)
                 return
+
         except Exception as ex:
             show_msg(f"無法自動開啟下載連結：{ex}", RED)
             return
 
-        show_msg("目前環境不支援自動開啟，請複製下方下載網址到瀏覽器。", ORANGE)
+        show_msg("目前環境不支援自動開啟下載連結。", ORANGE)
 
     def build_csv_text_from_report(report_data: dict[str, Any]) -> str:
         columns = report_data.get("columns") or []
@@ -1214,19 +1229,9 @@ def ReportsContent(page: ft.Page):
             return ft.Container(height=0)
 
         filename = export_state.get("filename") or "report.csv"
-        keep_days = export_state.get("expires_after_days")
-        cleanup = export_state.get("cleanup") or {}
-        deleted_count = cleanup.get("deleted_count") or 0
-        csv_content = export_state.get("csv_content") or ""
-        path_text = export_state.get("path") or ""
+        keep_days = export_state.get("expires_after_days") or 14
         url_path = export_state.get("url_path") or ""
         download_url = export_state.get("url") or build_absolute_url(url_path)
-
-        keep_text = f"此 CSV 為暫存檔，VM 上約保留 {keep_days} 天。" if keep_days else "此 CSV 為暫存檔。"
-        cleanup_text = f"本次已清理 {deleted_count} 個舊匯出檔。" if deleted_count else ""
-
-        if not csv_content:
-            csv_content = "CSV 檔案已產生，但目前無法讀取文字內容。正式下載按鈕仍可使用。"
 
         return ft.Container(
             bgcolor=GREEN_SOFT,
@@ -1243,13 +1248,9 @@ def ReportsContent(page: ft.Page):
                                 expand=True,
                                 spacing=4,
                                 controls=[
-                                    ft.Text("CSV 已產生，可正式下載", size=16, color=GREEN, weight=ft.FontWeight.BOLD),
-                                    ft.Text(filename, size=12, color=TEXT_SUB, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
-                                    ft.Text(keep_text, size=12, color=TEXT_MUTED),
-                                    ft.Text(cleanup_text, size=12, color=TEXT_MUTED, visible=bool(cleanup_text)),
-                                    ft.Text(f"下載網址：{download_url}", size=12, color=TEXT_SUB, visible=bool(download_url), max_lines=3, overflow=ft.TextOverflow.VISIBLE),
-                                    ft.Text(f"下載路徑：{url_path}", size=11, color=TEXT_MUTED, visible=bool(url_path), max_lines=2, overflow=ft.TextOverflow.VISIBLE),
-                                    ft.Text(f"VM 檔案位置：{path_text}", size=11, color=TEXT_MUTED, visible=bool(path_text), max_lines=2, overflow=ft.TextOverflow.VISIBLE),
+                                    ft.Text("CSV 已產生", size=16, color=GREEN, weight=ft.FontWeight.BOLD),
+                                    ft.Text(f"檔名：{filename}", size=12, color=TEXT_SUB, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
+                                    ft.Text(f"（產生之 CSV 檔案預設保留 {keep_days} 天）", size=12, color=TEXT_MUTED),
                                 ],
                             ),
                         ],
@@ -1282,47 +1283,6 @@ def ReportsContent(page: ft.Page):
                                 ),
                             ),
                         ],
-                    ),
-                    ft.Container(
-                        bgcolor="#FFFFFF",
-                        border=ft.border.all(1, GREEN_BORDER),
-                        border_radius=12,
-                        padding=12,
-                        content=ft.Column(
-                            spacing=8,
-                            controls=[
-                                ft.Text(
-                                    "下載按鈕會開啟下方完整網址；若瀏覽器阻擋開啟，請直接複製下載網址貼到網址列。CSV 文字內容只作為無法下載時的備援。",
-                                    size=12,
-                                    color=TEXT_SUB,
-                                ),
-                                ft.TextField(
-                                    value=download_url,
-                                    label="下載網址",
-                                    read_only=True,
-                                    multiline=False,
-                                    border_radius=10,
-                                    border_color=GREEN_BORDER,
-                                    focused_border_color=GREEN,
-                                    text_size=12,
-                                    bgcolor="#FFFFFF",
-                                    content_padding=ft.padding.symmetric(horizontal=10, vertical=10),
-                                ),
-                                ft.TextField(
-                                    value=csv_content,
-                                    read_only=True,
-                                    multiline=True,
-                                    min_lines=6,
-                                    max_lines=12,
-                                    border_radius=10,
-                                    border_color=GREEN_BORDER,
-                                    focused_border_color=GREEN,
-                                    text_size=12,
-                                    bgcolor="#FFFFFF",
-                                    content_padding=ft.padding.symmetric(horizontal=10, vertical=10),
-                                ),
-                            ],
-                        ),
                     ),
                 ],
             ),
