@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 import csv
 import re
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from repositories.reports_repo import (
@@ -26,6 +27,9 @@ from repositories.reports_repo import (
 
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
+BASE_DIR = Path(__file__).resolve().parent.parent
+DEFAULT_EXPORT_DIR = "exports"
+DEFAULT_EXPORT_RETENTION_DAYS = 14
 
 
 QUICK_REPORTS = [
@@ -773,18 +777,13 @@ def build_feed_result(rows: list[dict[str, Any]]) -> ServiceResult:
 
 
 def build_purchase_result(rows: list[dict[str, Any]]) -> ServiceResult:
-    """
-    建立入庫紀錄查詢結果。
-
-    purchase_records 目前沒有 category / material_category 欄位，
-    因此入庫紀錄不輸出「類別」，避免報表欄位與正式資料表不一致。
-    """
     output = []
 
     for row in rows:
         output.append(
             {
                 "日期": format_date(first_value(row, ["purchase_date", "created_at"])),
+                "類別": first_value(row, ["category", "material_category"], "-"),
                 "原料名稱": first_value(row, ["material_name", "name"], "-"),
                 "供應商": first_value(row, ["supplier"], "-"),
                 "數量": purchase_quantity_value(row),
@@ -795,7 +794,7 @@ def build_purchase_result(rows: list[dict[str, Any]]) -> ServiceResult:
 
     return build_result(
         title="入庫紀錄查詢",
-        columns=["日期", "原料名稱", "供應商", "數量", "單位", "人員"],
+        columns=["日期", "類別", "原料名稱", "供應商", "數量", "單位", "人員"],
         rows=output,
         summary_text=f"查詢到 {len(output)} 筆入庫紀錄。",
     )
@@ -876,9 +875,7 @@ def run_advanced_query(
 
         if data_type == "入庫紀錄":
             rows = get_purchase_records_between(start.isoformat(), end_exclusive.isoformat())
-            # purchase_records 沒有 category / material_category 欄位，
-            # 入庫紀錄查詢需忽略「類別」篩選，避免非「全部」時被全部濾掉。
-            rows = filter_common_rows(rows, "全部", material_name, supplier, machine, user_name)
+            rows = filter_common_rows(rows, category, material_name, supplier, machine, user_name)
             return build_purchase_result(rows)
 
         if data_type == "保養紀錄":
@@ -1016,7 +1013,7 @@ def build_report_filter_options() -> ServiceResult:
         )
 
 # ============================================================
-# CSV export
+# CSV / downloadable export helpers
 # ============================================================
 
 def safe_filename(value: str) -> str:
@@ -1025,13 +1022,81 @@ def safe_filename(value: str) -> str:
     return text.strip("_") or "report"
 
 
+def resolve_export_folder(export_dir: str = DEFAULT_EXPORT_DIR) -> Path:
+    """
+    取得報表匯出資料夾。
+
+    systemd 啟動時工作目錄不一定是專案根目錄，因此不能使用
+    Path("exports") 這種相對路徑。這裡一律以 services/ 的上一層
+    專案根目錄為基準，對應 Nginx 的 /exports/ 靜態下載路徑。
+    """
+    raw = clean_text(export_dir, DEFAULT_EXPORT_DIR).strip().strip("/")
+
+    if not raw:
+        raw = DEFAULT_EXPORT_DIR
+
+    candidate = Path(raw)
+
+    if candidate.is_absolute():
+        folder = candidate
+    else:
+        folder = BASE_DIR / raw
+
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
+def cleanup_old_exports(
+    export_dir: str = DEFAULT_EXPORT_DIR,
+    older_than_days: int = DEFAULT_EXPORT_RETENTION_DAYS,
+) -> dict[str, Any]:
+    """
+    機會式清理舊匯出檔。
+
+    目前 Nginx 已提供 /exports/ 靜態下載，匯出的 CSV / PDF 都會先放在 VM。
+    這裡先清理 csv/pdf/docx/xlsx，避免 exports 資料夾長期累積。
+    """
+    folder = resolve_export_folder(export_dir)
+    cutoff = now_taipei() - timedelta(days=max(1, older_than_days))
+    deleted_count = 0
+    failed: list[str] = []
+
+    for path in folder.iterdir():
+        if not path.is_file():
+            continue
+
+        if path.suffix.lower() not in [".csv", ".pdf", ".docx", ".xlsx"]:
+            continue
+
+        try:
+            modified_at = datetime.fromtimestamp(path.stat().st_mtime, TAIPEI_TZ)
+            if modified_at < cutoff:
+                path.unlink()
+                deleted_count += 1
+        except Exception:
+            failed.append(path.name)
+
+    return {
+        "deleted_count": deleted_count,
+        "failed": failed,
+        "older_than_days": older_than_days,
+    }
+
+
+def build_export_url_path(filename: str) -> str:
+    return f"/exports/{quote(filename)}"
+
+
 def export_report_to_csv(
     report_data: dict[str, Any],
-    export_dir: str = "exports",
+    export_dir: str = DEFAULT_EXPORT_DIR,
 ) -> ServiceResult:
     """
     將報表資料輸出成 CSV。
-    使用 utf-8-sig，方便 Windows Excel 直接開啟不亂碼。
+
+    - 寫入專案根目錄 exports/ 絕對路徑。
+    - 回傳 /exports/<filename>，由 Nginx 80 port 提供正式下載。
+    - 使用 utf-8-sig，方便 Windows Excel 直接開啟不亂碼。
     """
     try:
         title = clean_text(report_data.get("title"), "report")
@@ -1041,8 +1106,8 @@ def export_report_to_csv(
         if not columns:
             return ServiceResult(ok=False, message="沒有可匯出的欄位。")
 
-        folder = Path(export_dir)
-        folder.mkdir(parents=True, exist_ok=True)
+        folder = resolve_export_folder(export_dir)
+        cleanup = cleanup_old_exports(export_dir, DEFAULT_EXPORT_RETENTION_DAYS)
 
         timestamp = now_taipei().strftime("%Y%m%d_%H%M%S")
         filename = f"{timestamp}_{safe_filename(title)}.csv"
@@ -1059,12 +1124,19 @@ def export_report_to_csv(
             for row in rows:
                 writer.writerow({col: row.get(col, "") for col in columns})
 
+        url_path = build_export_url_path(filename)
+
         return ServiceResult(
             ok=True,
-            message=f"CSV 已匯出：{path}",
+            message=f"CSV 已匯出：{url_path}",
             data={
                 "path": str(path),
+                "absolute_path": str(path),
                 "filename": filename,
+                "url_path": url_path,
+                "download_path": url_path,
+                "expires_after_days": DEFAULT_EXPORT_RETENTION_DAYS,
+                "cleanup": cleanup,
             },
         )
 

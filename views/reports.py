@@ -1,7 +1,7 @@
 # views/reports.py
 # KNH MMS 報表中心 - Flet 0.84 + Supabase
-# 重點：快速報表一鍵產生、全條件篩選、查看全部、CSV 匯出與內容顯示
-# 注意：目前 VM / Flet Web 尚未打通正式 CSV 下載；先以頁面文字框顯示 CSV 內容作為穩定收尾。
+# 重點：快速報表一鍵產生、全條件篩選、查看全部、CSV 匯出與 Nginx /exports/ 正式下載
+# 注意：CSV 下載走 Nginx 80 port /exports/ 靜態路徑，文字框僅作為備援。
 
 from __future__ import annotations
 
@@ -386,28 +386,30 @@ def ReportsContent(page: ft.Page):
 
     def normalize_export_url_path(value: str, filename: str = "") -> str:
         """
-        Flet 以 ft.run(main, assets_dir=".") 啟動時，專案根目錄下的 exports/
-        應以 /assets/exports/... 對外讀取，而不是 /exports/...。
+        Nginx 已打通 /exports/ 靜態下載路徑。
+
+        舊版曾經嘗試透過 Flet assets 讀取 /assets/exports/...；
+        現在正式下載一律使用 /exports/<filename>。
         """
         raw = str(value or "").strip()
 
         if raw.startswith("http://") or raw.startswith("https://"):
             return raw
 
-        if raw.startswith("/assets/exports/"):
+        if raw.startswith("/exports/"):
             return raw
 
-        if raw.startswith("assets/exports/"):
+        if raw.startswith("exports/"):
             return "/" + raw
 
-        if raw.startswith("/exports/"):
-            return "/assets" + raw
+        if raw.startswith("/assets/exports/"):
+            return raw.replace("/assets/exports/", "/exports/", 1)
 
-        if raw.startswith("exports/"):
-            return "/assets/" + raw
+        if raw.startswith("assets/exports/"):
+            return "/" + raw.replace("assets/exports/", "exports/", 1)
 
         if filename:
-            return f"/assets/exports/{quote(filename)}"
+            return f"/exports/{quote(filename)}"
 
         return raw if raw.startswith("/") else f"/{raw}" if raw else ""
 
@@ -425,9 +427,12 @@ def ReportsContent(page: ft.Page):
         if page_url.startswith("http://") or page_url.startswith("https://"):
             parts = urlsplit(page_url)
             if parts.scheme and parts.netloc:
+                # VM 舊網址可能仍以 :8502 進入；正式下載固定走 Nginx 80 port。
+                if parts.port == 8502 and parts.hostname:
+                    return f"{parts.scheme}://{parts.hostname}"
                 return f"{parts.scheme}://{parts.netloc}"
 
-        return "http://104.198.146.124:8502"
+        return "http://104.198.146.124"
 
     def build_absolute_url(url_path: str) -> str:
         path = str(url_path or "").strip()
@@ -641,7 +646,7 @@ def ReportsContent(page: ft.Page):
                             "cleanup": data.get("cleanup") or {},
                         }
                     )
-                    set_status("CSV 已匯出，內容已顯示於下方文字框", "green", True)
+                    set_status("CSV 已匯出，可點擊下方按鈕下載", "green", True)
                     rebuild()
                 else:
                     set_status(result.message or "CSV 匯出失敗", "red", True)
@@ -1205,12 +1210,14 @@ def ReportsContent(page: ft.Page):
         deleted_count = cleanup.get("deleted_count") or 0
         csv_content = export_state.get("csv_content") or ""
         path_text = export_state.get("path") or ""
+        url_path = export_state.get("url_path") or ""
+        download_url = export_state.get("url") or build_absolute_url(url_path)
 
         keep_text = f"此 CSV 為暫存檔，VM 上約保留 {keep_days} 天。" if keep_days else "此 CSV 為暫存檔。"
-        cleanup_text = f"本次已清理 {deleted_count} 個舊 CSV。" if deleted_count else ""
+        cleanup_text = f"本次已清理 {deleted_count} 個舊匯出檔。" if deleted_count else ""
 
         if not csv_content:
-            csv_content = "CSV 檔案已產生，但目前無法讀取文字內容。請稍後再試，或由管理者至 VM exports 資料夾查看。"
+            csv_content = "CSV 檔案已產生，但目前無法讀取文字內容。正式下載按鈕仍可使用。"
 
         return ft.Container(
             bgcolor=GREEN_SOFT,
@@ -1227,16 +1234,44 @@ def ReportsContent(page: ft.Page):
                                 expand=True,
                                 spacing=4,
                                 controls=[
-                                    ft.Text("CSV 已產生", size=16, color=GREEN, weight=ft.FontWeight.BOLD),
+                                    ft.Text("CSV 已產生，可正式下載", size=16, color=GREEN, weight=ft.FontWeight.BOLD),
                                     ft.Text(filename, size=12, color=TEXT_SUB, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
                                     ft.Text(keep_text, size=12, color=TEXT_MUTED),
                                     ft.Text(cleanup_text, size=12, color=TEXT_MUTED, visible=bool(cleanup_text)),
+                                    ft.Text(f"下載路徑：{url_path}", size=12, color=TEXT_SUB, visible=bool(url_path), max_lines=2, overflow=ft.TextOverflow.VISIBLE),
                                     ft.Text(f"VM 檔案位置：{path_text}", size=11, color=TEXT_MUTED, visible=bool(path_text), max_lines=2, overflow=ft.TextOverflow.VISIBLE),
                                 ],
                             ),
                         ],
                         spacing=8,
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    ft.ResponsiveRow(
+                        columns=12,
+                        spacing=10,
+                        run_spacing=10,
+                        controls=[
+                            ft.Container(
+                                col={"xs": 12, "md": 6},
+                                content=stable_button(
+                                    "下載 CSV",
+                                    ft.Icons.FILE_DOWNLOAD_OUTLINED,
+                                    lambda e, u=download_url: open_url(u),
+                                    bg=GREEN,
+                                    fg="white",
+                                    disabled=not bool(download_url),
+                                ),
+                            ),
+                            ft.Container(
+                                col={"xs": 12, "md": 6},
+                                content=outline_button(
+                                    "重新匯出",
+                                    ft.Icons.REFRESH_OUTLINED,
+                                    export_csv_background,
+                                    color=GREEN,
+                                ),
+                            ),
+                        ],
                     ),
                     ft.Container(
                         bgcolor="#FFFFFF",
@@ -1247,17 +1282,7 @@ def ReportsContent(page: ft.Page):
                             spacing=8,
                             controls=[
                                 ft.Text(
-                                    "CSV 已產生；目前 VM / Flet Web 尚未打通穩定下載路徑，因此先顯示 CSV 內容供備援使用。",
-                                    size=12,
-                                    color=TEXT_SUB,
-                                ),
-                                ft.Text(
-                                    "正式下載功能將在之後改走 80 port / Nginx，打通 /exports/ 靜態下載路徑後再啟用。",
-                                    size=12,
-                                    color=TEXT_SUB,
-                                ),
-                                ft.Text(
-                                    "桌機操作建議：點進文字框 → Ctrl+A 全選 → Ctrl+C 複製 → 貼到記事本或 Excel；另存時副檔名使用 .csv。手機使用者若不易全選，請先以頁面查看報表為主。",
+                                    "正式下載已改走 Nginx /exports/ 路徑；下方 CSV 文字內容只作為無法下載時的備援。",
                                     size=12,
                                     color=TEXT_SUB,
                                 ),
@@ -1265,8 +1290,8 @@ def ReportsContent(page: ft.Page):
                                     value=csv_content,
                                     read_only=True,
                                     multiline=True,
-                                    min_lines=8,
-                                    max_lines=14,
+                                    min_lines=6,
+                                    max_lines=12,
                                     border_radius=10,
                                     border_color=GREEN_BORDER,
                                     focused_border_color=GREEN,
