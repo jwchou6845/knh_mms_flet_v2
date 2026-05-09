@@ -308,6 +308,46 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
         btn.on_click = handle_click
         return btn
 
+    def stable_filled_action_button(
+        label: str,
+        bg: str = BLUE_BTN,
+        on_click=None,
+        height: int = 44,
+    ) -> ft.Container:
+        """
+        手機 Web 穩定版填色按鈕。
+        iPhone / Safari Web 上 ElevatedButton 的背景 / 外框偶爾不渲染，
+        節點新增按鈕改用 Container + bgcolor + border，確保手機與桌機都清楚可見。
+        """
+        btn = ft.Container(
+            height=height,
+            border_radius=12,
+            bgcolor=bg,
+            border=ft.border.all(1, bg),
+            alignment=ft.Alignment(0, 0),
+            padding=ft.padding.symmetric(horizontal=16),
+            ink=True,
+            content=ft.Text(
+                label,
+                size=14,
+                color="#FFFFFF",
+                weight=ft.FontWeight.BOLD,
+                text_align=ft.TextAlign.CENTER,
+                max_lines=1,
+                overflow=ft.TextOverflow.ELLIPSIS,
+            ),
+        )
+        btn.disabled = False
+
+        def handle_click(e):
+            if getattr(btn, "disabled", False):
+                return
+            if callable(on_click):
+                on_click(e)
+
+        btn.on_click = handle_click
+        return btn
+
     def section_title(title: str, subtitle: str | None = None) -> ft.Column:
         controls: list[ft.Control] = [
             ft.Text(title, size=20, weight=ft.FontWeight.BOLD, color=TEXT),
@@ -1078,10 +1118,11 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
                             ft.Text(f"此位置共 {len(items)} 筆，啟用 {active} 筆，停用 {inactive} 筆。", size=13, color=TEXT_MUTED),
                         ],
                     ),
-                    ft.ElevatedButton(
+                    stable_filled_action_button(
                         create_label,
-                        style=primary_style(create_color),
+                        bg=create_color,
                         on_click=open_create_form,
+                        height=44,
                     ),
                 ],
             ),
