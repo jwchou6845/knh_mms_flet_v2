@@ -18,7 +18,6 @@ from services.maintenance_service import (
     create_cleaning_item,
     create_consumable_item,
     load_maintenance_items_page_data,
-    move_maintenance_item_location,
     set_maintenance_item_active,
     update_item_cycle,
 )
@@ -810,11 +809,6 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
         state["active_form"] = "edit_cycle"
         rebuild()
 
-    def open_move_item(item: dict[str, Any]) -> None:
-        state["editing_item"] = item
-        state["active_form"] = "move_item"
-        rebuild()
-
     def cancel_form(_=None) -> None:
         state["active_form"] = None
         state["editing_item"] = None
@@ -1133,15 +1127,6 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
                             ),
                             ft.Container(
                                 col={"xs": 6, "md": 4},
-                                content=stable_outline_action_button(
-                                    "移至位置",
-                                    color=BLUE_BTN,
-                                    border_color=BLUE_BORDER,
-                                    on_click=lambda _, current=item: open_move_item(current),
-                                ),
-                            ),
-                            ft.Container(
-                                col={"xs": 12, "md": 4},
                                 content=stable_outline_action_button(
                                     "停用" if active else "啟用",
                                     color=RED if active else GREEN,
@@ -1681,272 +1666,6 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
             ),
         )
 
-    def build_move_item_form() -> ft.Control:
-        item = state.get("editing_item") or {}
-        if not item:
-            return ft.Container(height=0)
-
-        maintenance_type = item.get("maintenance_type") or ""
-        current_path = item_path(item)
-        item_name = clean_text(item.get("item_name"), "未命名項目")
-
-        def option_chip(label: str, color: str, on_click) -> ft.Container:
-            return ft.Container(
-                height=34,
-                border_radius=17,
-                bgcolor="#FFFFFF",
-                border=ft.border.all(1, BORDER),
-                padding=ft.padding.symmetric(horizontal=11),
-                alignment=ft.Alignment(0, 0),
-                ink=True,
-                on_click=on_click,
-                content=ft.Text(
-                    label,
-                    size=12,
-                    color=color,
-                    weight=ft.FontWeight.W_600,
-                    max_lines=1,
-                    overflow=ft.TextOverflow.ELLIPSIS,
-                ),
-            )
-
-        def field_update(*fields):
-            try:
-                for field in fields:
-                    field.update()
-            except Exception:
-                safe_page_update()
-
-        if maintenance_type == "清潔":
-            machine_tf = make_field(
-                "新的設備 / 區域 *",
-                value=clean_text(item.get("machine_area")),
-                hint="可選既有位置，或直接輸入新位置，例如：S3線、空壓機房",
-            )
-            desc = ft.Text(
-                "此動作會把此清潔項目移到新的設備 / 區域；項目名稱與週期不會變更。",
-                size=12,
-                color=TEXT_MUTED,
-            )
-
-            machine_chips = [
-                option_chip(machine, BLUE_BTN, lambda _, m=machine: (setattr(machine_tf, "value", m), field_update(machine_tf)))
-                for machine in clean_machines()
-            ]
-
-            submit_btn = stable_filled_action_button("確認移動", bg=BLUE_BTN, height=46)
-
-            def submit(_=None):
-                if not action_lock.acquire(blocking=False):
-                    show_snack("資料寫入中，請稍候。", success=False)
-                    return
-
-                target_machine = clean_text(machine_tf.value)
-                if not target_machine:
-                    action_lock.release()
-                    show_snack("請輸入新的設備 / 區域。", success=False)
-                    return
-
-                def worker():
-                    try:
-                        result = move_maintenance_item_location(
-                            item_id=item.get("id") or "",
-                            maintenance_type="清潔",
-                            item_name=item_name,
-                            machine_area=target_machine,
-                            main_category="清潔項目",
-                            sub_category="",
-                        )
-                        if not is_active_view():
-                            return
-                        if result.ok:
-                            state["selected_type"] = "清潔"
-                            state["selected_machine"] = target_machine
-                            state["selected_main"] = ""
-                            state["selected_sub"] = ""
-                            run_after_write(result.message or "保養項目位置已更新。")
-                        else:
-                            show_snack(result.message or "移動保養項目失敗。", success=False)
-                    finally:
-                        try:
-                            action_lock.release()
-                        except Exception:
-                            pass
-
-                threading.Thread(target=worker, daemon=True).start()
-
-            submit_btn.on_click = submit
-
-            controls: list[ft.Control] = [
-                section_title("移動項目到其他位置", item_display_name(item)),
-                ft.Text(f"目前位置：{current_path}", size=13, color=TEXT_MUTED),
-                desc,
-            ]
-            if machine_chips:
-                controls.append(
-                    ft.Column(
-                        spacing=7,
-                        controls=[
-                            ft.Text("既有清潔位置", size=12, color=TEXT_MUTED, weight=ft.FontWeight.W_600),
-                            ft.Row(wrap=True, spacing=8, run_spacing=8, controls=machine_chips),
-                        ],
-                    )
-                )
-            controls.extend([
-                machine_tf,
-                ft.Row(
-                    spacing=10,
-                    controls=[
-                        ft.Container(expand=True, content=stable_outline_action_button("取消", color=TEXT_MUTED, border_color=BORDER, on_click=cancel_form, height=46)),
-                        ft.Container(expand=True, content=submit_btn),
-                    ],
-                ),
-            ])
-
-            return card(
-                padding=16,
-                bgcolor="#F8FAFC",
-                border_color=BLUE_BORDER,
-                content=ft.Column(spacing=12, controls=controls),
-            )
-
-        main_tf = make_field(
-            "新的設備 / 系統 *",
-            value=clean_text(item.get("main_category")),
-            hint="可選既有設備 / 系統，或直接輸入新設備，例如：超音波、冷卻水系統",
-        )
-        sub_tf = make_field(
-            "新的耗材類型 / 區段",
-            value=clean_text(item.get("sub_category")),
-            hint="可空白；例如：A管、B管、前置過濾、清洗藥水",
-        )
-        machine_tf = make_field(
-            "新的適用位置 *",
-            value=clean_text(item.get("machine_area")),
-            hint="例如：除濕機A管、超音波機、冷卻水系統前置過濾",
-        )
-
-        def choose_main(value: str):
-            main_tf.value = value
-            if not clean_text(machine_tf.value) or clean_text(machine_tf.value) == clean_text(item.get("machine_area")):
-                machine_tf.value = value
-            field_update(main_tf, machine_tf)
-
-        def choose_sub(value: str):
-            sub_tf.value = "" if value == "未分區" else value
-            if clean_text(main_tf.value):
-                machine_tf.value = f"{clean_text(main_tf.value)}{clean_text(sub_tf.value)}" if clean_text(sub_tf.value) else clean_text(main_tf.value)
-            field_update(sub_tf, machine_tf)
-
-        main_chips = [
-            option_chip(main, ORANGE_BTN, lambda _, m=main: choose_main(m))
-            for main in consumable_mains()
-        ]
-        sub_source = unique_values([
-            item_row.get("sub_category") or "未分區"
-            for item_row in all_items()
-            if item_row.get("maintenance_type") == "耗材更換"
-        ])
-        sub_chips = [
-            option_chip(sub, ORANGE_BTN, lambda _, s=sub: choose_sub(s))
-            for sub in sub_source
-        ]
-
-        submit_btn = stable_filled_action_button("確認移動", bg=ORANGE_BTN, height=46)
-
-        def submit(_=None):
-            if not action_lock.acquire(blocking=False):
-                show_snack("資料寫入中，請稍候。", success=False)
-                return
-
-            target_main = clean_text(main_tf.value)
-            target_sub = clean_text(sub_tf.value)
-            target_machine = clean_text(machine_tf.value)
-
-            if not target_main:
-                action_lock.release()
-                show_snack("請輸入新的設備 / 系統。", success=False)
-                return
-            if not target_machine:
-                action_lock.release()
-                show_snack("請輸入新的適用位置。", success=False)
-                return
-
-            def worker():
-                try:
-                    result = move_maintenance_item_location(
-                        item_id=item.get("id") or "",
-                        maintenance_type="耗材更換",
-                        item_name=item_name,
-                        machine_area=target_machine,
-                        main_category=target_main,
-                        sub_category=target_sub,
-                    )
-                    if not is_active_view():
-                        return
-                    if result.ok:
-                        state["selected_type"] = "耗材更換"
-                        state["selected_main"] = target_main
-                        state["selected_sub"] = target_sub or "未分區"
-                        state["selected_machine"] = ""
-                        run_after_write(result.message or "保養項目位置已更新。")
-                    else:
-                        show_snack(result.message or "移動保養項目失敗。", success=False)
-                finally:
-                    try:
-                        action_lock.release()
-                    except Exception:
-                        pass
-
-            threading.Thread(target=worker, daemon=True).start()
-
-        submit_btn.on_click = submit
-
-        controls = [
-            section_title("移動項目到其他位置", item_display_name(item)),
-            ft.Text(f"目前位置：{current_path}", size=13, color=TEXT_MUTED),
-            ft.Text("此動作會更新此耗材項目的設備 / 系統、區段與適用位置；項目名稱與週期不會變更。", size=12, color=TEXT_MUTED),
-        ]
-        if main_chips:
-            controls.append(
-                ft.Column(
-                    spacing=7,
-                    controls=[
-                        ft.Text("既有設備 / 系統", size=12, color=TEXT_MUTED, weight=ft.FontWeight.W_600),
-                        ft.Row(wrap=True, spacing=8, run_spacing=8, controls=main_chips),
-                    ],
-                )
-            )
-        controls.append(main_tf)
-        if sub_chips:
-            controls.append(
-                ft.Column(
-                    spacing=7,
-                    controls=[
-                        ft.Text("既有耗材類型 / 區段", size=12, color=TEXT_MUTED, weight=ft.FontWeight.W_600),
-                        ft.Row(wrap=True, spacing=8, run_spacing=8, controls=sub_chips),
-                    ],
-                )
-            )
-        controls.extend([
-            sub_tf,
-            machine_tf,
-            ft.Row(
-                spacing=10,
-                controls=[
-                    ft.Container(expand=True, content=stable_outline_action_button("取消", color=TEXT_MUTED, border_color=BORDER, on_click=cancel_form, height=46)),
-                    ft.Container(expand=True, content=submit_btn),
-                ],
-            ),
-        ])
-
-        return card(
-            padding=16,
-            bgcolor="#F8FAFC",
-            border_color=ORANGE_BORDER,
-            content=ft.Column(spacing=12, controls=controls),
-        )
-
     def build_edit_cycle_form() -> ft.Control:
         item = state.get("editing_item") or {}
         if not item:
@@ -2034,8 +1753,6 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
             return build_create_consumable_form()
         if active_form == "edit_cycle":
             return build_edit_cycle_form()
-        if active_form == "move_item":
-            return build_move_item_form()
         return None
 
     # =====================================================
@@ -2224,24 +1941,13 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
                     width = page.width or 390
                     main_host.content = build_mobile_layout() if width < MOBILE_WIDTH else build_desktop_layout()
 
-                # Flet Web / VM 上，背景 thread 修改 main_host.content 後，
-                # 單獨 main_host.update() 有時要等使用者滑動或互動才會重繪。
-                # 這裡改成整頁 page.update()，並補一次短延遲刷新，避免畫面停在「資料同步中」。
+                # 降載穩定版：只做一次整頁更新。
+                # 先前為了處理 VM / Web 偶發 repaint 延遲曾補 delayed page.update，
+                # 但在管理頁表單變多後容易讓瀏覽器出現繁忙提示，因此移除二次刷新。
                 try:
                     page.update()
                 except Exception as update_ex:
                     print("maintenance_items page.update failed during rebuild:", repr(update_ex), flush=True)
-
-                def delayed_flush():
-                    time.sleep(0.25)
-                    if not is_active_view():
-                        return
-                    try:
-                        page.update()
-                    except Exception as delayed_ex:
-                        print("maintenance_items delayed page.update failed:", repr(delayed_ex), flush=True)
-
-                threading.Thread(target=delayed_flush, daemon=True).start()
         except Exception as ex:
             print("maintenance_items rebuild failed:", repr(ex), flush=True)
 

@@ -644,19 +644,6 @@ def update_item_cycle(
 # 保養項目管理頁
 # =========================
 
-# =========================
-# 共用文字正規化
-# =========================
-
-def _normalize_duplicate_text(value: Any) -> str:
-    """
-    用於保養項目重複檢查與移動位置檢查。
-    統一處理全形空白、多重空白與大小寫差異。
-    """
-    text = str(value or "").strip().replace("　", " ")
-    return " ".join(text.split()).casefold()
-
-
 def _normalize_item_row(item: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": item.get("id"),
@@ -710,107 +697,6 @@ def load_maintenance_items_page_data(include_inactive: bool = True) -> ServiceRe
             data={"items": [], "count": 0, "active_count": 0, "inactive_count": 0},
         )
 
-
-
-def move_maintenance_item_location(
-    item_id: str,
-    maintenance_type: str,
-    item_name: str,
-    machine_area: str,
-    main_category: str = "",
-    sub_category: str = "",
-) -> ServiceResult:
-    """
-    移動保養項目到新的既有或新建立位置。
-    第一版不做拖拉；由管理頁表單指定新的位置欄位。
-    - 清潔：更新 machine_area，main_category 固定為「清潔項目」，sub_category 清空。
-    - 耗材更換：更新 main_category / sub_category / machine_area。
-    會檢查同目標位置是否已有相同 item_name，避免搬移後造成重複。
-    """
-    item_id = str(item_id or "").strip()
-    maintenance_type = str(maintenance_type or "").strip()
-    item_name = str(item_name or "").strip()
-    machine_area = str(machine_area or "").strip()
-    main_category = str(main_category or "").strip()
-    sub_category = str(sub_category or "").strip()
-
-    if not item_id:
-        return ServiceResult(ok=False, message="缺少保養項目 ID。")
-
-    if not item_name:
-        return ServiceResult(ok=False, message="缺少保養項目名稱，無法移動。")
-
-    if maintenance_type not in ["清潔", "耗材更換"]:
-        return ServiceResult(ok=False, message="保養類型不正確，無法移動。")
-
-    if not machine_area:
-        return ServiceResult(ok=False, message="請輸入新的適用位置。")
-
-    if maintenance_type == "耗材更換" and not main_category:
-        return ServiceResult(ok=False, message="請輸入耗材設備 / 系統。")
-
-    try:
-        rows = get_maintenance_items(include_inactive=True)
-
-        target_name = _normalize_duplicate_text(item_name)
-        target_machine = _normalize_duplicate_text(machine_area)
-        target_main = _normalize_duplicate_text(main_category)
-        target_sub = _normalize_duplicate_text(sub_category)
-
-        for row in rows:
-            if str(row.get("id") or "") == item_id:
-                continue
-
-            if str(row.get("maintenance_type") or "") != maintenance_type:
-                continue
-
-            same_name = _normalize_duplicate_text(row.get("item_name")) == target_name
-            same_machine = _normalize_duplicate_text(row.get("machine_area")) == target_machine
-
-            if maintenance_type == "清潔":
-                if same_name and same_machine:
-                    return ServiceResult(
-                        ok=False,
-                        message=f"目標位置已存在相同清潔項目：{item_name}｜{machine_area}，請先確認是否重複。",
-                        data=row,
-                    )
-            else:
-                same_main = _normalize_duplicate_text(row.get("main_category")) == target_main
-                same_sub = _normalize_duplicate_text(row.get("sub_category")) == target_sub
-                if same_main and same_sub and same_name and same_machine:
-                    return ServiceResult(
-                        ok=False,
-                        message=(
-                            "目標位置已存在相同耗材項目："
-                            f"{main_category}｜{sub_category or '-'}｜{item_name}｜{machine_area}，"
-                            "請先確認是否重複。"
-                        ),
-                        data=row,
-                    )
-
-        if maintenance_type == "清潔":
-            payload = {
-                "maintenance_type": "清潔",
-                "main_category": "清潔項目",
-                "sub_category": None,
-                "machine_area": machine_area,
-            }
-        else:
-            payload = {
-                "maintenance_type": "耗材更換",
-                "main_category": main_category,
-                "sub_category": sub_category or None,
-                "machine_area": machine_area,
-            }
-
-        updated = update_maintenance_item(item_id, payload)
-        if not updated:
-            return ServiceResult(ok=False, message="移動保養項目失敗，Supabase 未回傳資料。")
-
-        return ServiceResult(ok=True, message="保養項目位置已更新。", data=updated)
-
-    except Exception as exc:
-        return ServiceResult(ok=False, message=f"移動保養項目失敗：{exc}")
 
 def set_maintenance_item_active(
     item_id: str,
