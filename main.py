@@ -208,10 +208,15 @@ def main(page: ft.Page):
             page.go(route_path)
         except Exception as ex:
             print("page.go error:", ex)
-            try:
+
+        # Flet Web / VM 環境下 page.go() 可能是非同步更新 route。
+        # 若立刻手動補 route_change(None)，route_change 可能仍讀到舊的 page.route。
+        # 因此在 fallback route_change 前，先強制把 page.route 設成目標路由。
+        try:
+            if page.route != route_path:
                 page.route = route_path
-            except Exception as ex2:
-                print("set page.route error:", ex2)
+        except Exception as ex:
+            print("set page.route error:", ex)
 
         # 手機 Web / VM 登入後有時 page.go() 不會立即重建 view。
         # 這裡手動補一次；重複觸發會在 route_change 開頭被擋掉。
