@@ -267,6 +267,47 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
             padding=ft.padding.symmetric(horizontal=14, vertical=11),
         )
 
+    def stable_outline_action_button(
+        label: str,
+        color: str = BLUE_BTN,
+        border_color: str = BLUE_BORDER,
+        on_click=None,
+        height: int = 42,
+    ) -> ft.Container:
+        """
+        手機 Web 穩定版外框按鈕。
+        iPhone / Safari Web 上 OutlinedButton 的 side border 偶爾不渲染，
+        管理頁清單列的關鍵操作改用 Container border，確保桌機與手機都有外框。
+        """
+        btn = ft.Container(
+            height=height,
+            border_radius=12,
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, border_color),
+            alignment=ft.Alignment(0, 0),
+            padding=ft.padding.symmetric(horizontal=12),
+            ink=True,
+            content=ft.Text(
+                label,
+                size=14,
+                color=color,
+                weight=ft.FontWeight.BOLD,
+                text_align=ft.TextAlign.CENTER,
+                max_lines=1,
+                overflow=ft.TextOverflow.ELLIPSIS,
+            ),
+        )
+        btn.disabled = False
+
+        def handle_click(e):
+            if getattr(btn, "disabled", False):
+                return
+            if callable(on_click):
+                on_click(e)
+
+        btn.on_click = handle_click
+        return btn
+
     def section_title(title: str, subtitle: str | None = None) -> ft.Column:
         controls: list[ft.Control] = [
             ft.Text(title, size=20, weight=ft.FontWeight.BOLD, color=TEXT),
@@ -975,17 +1016,19 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
                         controls=[
                             ft.Container(
                                 col={"xs": 6, "md": 4},
-                                content=ft.OutlinedButton(
+                                content=stable_outline_action_button(
                                     "編輯週期",
-                                    style=outline_style(PURPLE_BTN, PURPLE_BORDER),
+                                    color=PURPLE_BTN,
+                                    border_color=PURPLE_BORDER,
                                     on_click=lambda _, current=item: open_edit_cycle(current),
                                 ),
                             ),
                             ft.Container(
                                 col={"xs": 6, "md": 4},
-                                content=ft.OutlinedButton(
+                                content=stable_outline_action_button(
                                     "停用" if active else "啟用",
-                                    style=outline_style(RED if active else GREEN, RED_BORDER if active else GREEN_BORDER),
+                                    color=RED if active else GREEN,
+                                    border_color=RED_BORDER if active else GREEN_BORDER,
                                     on_click=lambda _, current=item: toggle_active(current),
                                 ),
                             ),
