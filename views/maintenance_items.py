@@ -479,11 +479,11 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
                                     color=TEXT_MUTED,
                                     text_align=ft.TextAlign.CENTER,
                                 ),
-                                ft.ElevatedButton(
-                                    text="返回保養紀錄",
-                                    icon=ft.Icons.ARROW_BACK,
-                                    style=primary_style(BLUE_BTN),
+                                stable_filled_action_button(
+                                    "返回保養紀錄",
+                                    bg=BLUE_BTN,
                                     on_click=lambda _: navigate("/maintenance"),
+                                    height=46,
                                 ),
                             ],
                         ),
@@ -616,6 +616,31 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
             ):
                 return item
         return None
+
+    def has_clean_machine(machine_area: str) -> bool:
+        target = normalize_duplicate_text(machine_area)
+        if not target:
+            return False
+        for item in all_items():
+            if item.get("maintenance_type") != "清潔":
+                continue
+            if normalize_duplicate_text(item.get("machine_area")) == target:
+                return True
+        return False
+
+    def has_consumable_node(main_category: str, sub_category: str) -> bool:
+        target_main = normalize_duplicate_text(main_category)
+        target_sub = normalize_duplicate_text(sub_category)
+        if not target_main:
+            return False
+        for item in all_items():
+            if item.get("maintenance_type") != "耗材更換":
+                continue
+            if normalize_duplicate_text(item.get("main_category")) != target_main:
+                continue
+            if normalize_duplicate_text(item.get("sub_category")) == target_sub:
+                return True
+        return False
 
     def load_data(update_sync_state: bool = True) -> bool:
         """
@@ -765,6 +790,18 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
                 show_snack("請先選擇耗材更換的設備 / 系統。", success=False)
                 return
             state["active_form"] = "create_consumable"
+        rebuild()
+
+    def open_create_new_clean_node(_=None) -> None:
+        state["selected_type"] = "清潔"
+        state["editing_item"] = None
+        state["active_form"] = "create_new_clean_node"
+        rebuild()
+
+    def open_create_new_consumable_node(_=None) -> None:
+        state["selected_type"] = "耗材更換"
+        state["editing_item"] = None
+        state["active_form"] = "create_new_consumable_node"
         rebuild()
 
     def open_edit_cycle(item: dict[str, Any]) -> None:
@@ -984,8 +1021,33 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
             content=ft.Column(
                 spacing=14,
                 controls=[
-                    section_title("保養項目地圖", "從既有結構選擇新增位置。"),
+                    section_title("保養項目地圖", "從既有結構選擇新增位置；若沒有合適位置，可先建立新位置與第一個項目。"),
                     type_switch(),
+                    ft.Row(
+                        spacing=8,
+                        controls=[
+                            ft.Container(
+                                expand=True,
+                                content=stable_outline_action_button(
+                                    "新增清潔位置",
+                                    color=BLUE_BTN,
+                                    border_color=BLUE_BORDER,
+                                    on_click=open_create_new_clean_node,
+                                    height=40,
+                                ),
+                            ),
+                            ft.Container(
+                                expand=True,
+                                content=stable_outline_action_button(
+                                    "新增耗材位置",
+                                    color=ORANGE_BTN,
+                                    border_color=ORANGE_BORDER,
+                                    on_click=open_create_new_consumable_node,
+                                    height=40,
+                                ),
+                            ),
+                        ],
+                    ),
                     ft.Divider(height=4),
                     ft.Text("清潔", size=13, color=BLUE_BTN, weight=ft.FontWeight.BOLD),
                     ft.Column(spacing=8, controls=clean_controls or [ft.Text("尚無清潔項目。", size=13, color=TEXT_MUTED)]),
@@ -1162,6 +1224,270 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
             content_padding=ft.padding.symmetric(horizontal=12, vertical=11),
         )
 
+    def build_create_new_clean_node_form() -> ft.Control:
+        area_tf = make_field(
+            "新增清潔設備 / 區域 *",
+            hint="例如：S3線、空壓機房、冷卻水系統",
+        )
+        item_tf = make_field(
+            "第一個清潔項目名稱 *",
+            hint="例如：旋風分離器、油劑槽周邊、濾網清潔",
+        )
+        cycle_tf = make_field(
+            "週期天數 *",
+            value="30",
+            hint="例如：7、14、30",
+            keyboard_type=ft.KeyboardType.NUMBER,
+        )
+        desc_tf = make_field(
+            "備註 / 注意事項",
+            hint="可輸入此區域清潔方式、判定基準或注意事項",
+            multiline=True,
+        )
+
+        def submit(_=None):
+            if not action_lock.acquire(blocking=False):
+                show_snack("資料寫入中，請稍候。", success=False)
+                return
+
+            machine_area = clean_text(area_tf.value)
+            item_name = clean_text(item_tf.value)
+            cycle_days = to_int(cycle_tf.value, 0)
+            desc = clean_text(desc_tf.value)
+
+            validation_failed = False
+            try:
+                if not machine_area:
+                    validation_failed = True
+                    show_snack("請輸入新的清潔設備 / 區域。", success=False)
+                    return
+                if has_clean_machine(machine_area):
+                    validation_failed = True
+                    show_snack("此清潔設備 / 區域已存在，請回到既有節點新增項目。", success=False)
+                    return
+                if not item_name:
+                    validation_failed = True
+                    show_snack("請輸入第一個清潔項目名稱。", success=False)
+                    return
+                if cycle_days <= 0:
+                    validation_failed = True
+                    show_snack("週期天數必須大於 0。", success=False)
+                    return
+                if has_duplicate_cleaning(item_name, machine_area):
+                    validation_failed = True
+                    show_snack("此區域已存在相同清潔項目。", success=False)
+                    return
+            finally:
+                if validation_failed:
+                    try:
+                        action_lock.release()
+                    except Exception:
+                        pass
+
+            def worker():
+                try:
+                    result = create_cleaning_item(
+                        item_name=item_name,
+                        machine_area=machine_area,
+                        cycle_days=cycle_days,
+                        sort_order=999,
+                        description=desc,
+                    )
+                    if not is_active_view():
+                        return
+                    if result.ok:
+                        state["selected_type"] = "清潔"
+                        state["selected_machine"] = machine_area
+                        state["selected_main"] = ""
+                        state["selected_sub"] = ""
+                        run_after_write(result.message or "新清潔區域與第一個清潔項目已新增。")
+                    else:
+                        show_snack(result.message or "新增清潔區域失敗。", success=False)
+                finally:
+                    try:
+                        action_lock.release()
+                    except Exception:
+                        pass
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        submit_btn = stable_filled_action_button("建立新清潔位置", bg=BLUE_BTN, on_click=submit, height=46)
+
+        return card(
+            padding=16,
+            bgcolor="#F8FAFC",
+            border_color=BLUE_BORDER,
+            content=ft.Column(
+                spacing=12,
+                controls=[
+                    section_title("新增新清潔位置", "建立新的清潔設備 / 區域，並同時新增此位置的第一個清潔項目。"),
+                    ft.Container(
+                        bgcolor=BLUE_SOFT,
+                        border=ft.border.all(1, BLUE_BORDER),
+                        border_radius=12,
+                        padding=12,
+                        content=ft.Text(
+                            "第一版不建立空節點；請同時輸入第一個清潔項目，建立後此位置會出現在保養項目地圖。",
+                            size=12,
+                            color=BLUE_BTN,
+                        ),
+                    ),
+                    area_tf,
+                    item_tf,
+                    cycle_tf,
+                    desc_tf,
+                    ft.Row(
+                        spacing=10,
+                        controls=[
+                            ft.Container(expand=True, content=stable_outline_action_button("取消", color=TEXT_MUTED, border_color=BORDER, on_click=cancel_form, height=46)),
+                            ft.Container(expand=True, content=submit_btn),
+                        ],
+                    ),
+                ],
+            ),
+        )
+
+    def build_create_new_consumable_node_form() -> ft.Control:
+        main_tf = make_field(
+            "新增耗材設備 / 系統 *",
+            hint="例如：空壓系統、冷卻水系統、新除濕機",
+        )
+        sub_tf = make_field(
+            "耗材類型 / 區段",
+            hint="例如：A管、B管、前置過濾、清洗藥水；可空白",
+        )
+        item_tf = make_field(
+            "第一個耗材名稱 *",
+            hint="例如：除油濾芯、濾袋、清洗藥水",
+        )
+        machine_tf = make_field(
+            "適用位置 *",
+            hint="例如：空壓系統前置過濾、冷卻水系統",
+        )
+        cycle_tf = make_field(
+            "週期天數 *",
+            value="30",
+            hint="例如：30、90、180",
+            keyboard_type=ft.KeyboardType.NUMBER,
+        )
+        desc_tf = make_field(
+            "備註 / 注意事項",
+            hint="可輸入規格、廠牌、使用濃度、更換基準或注意事項",
+            multiline=True,
+        )
+
+        def submit(_=None):
+            if not action_lock.acquire(blocking=False):
+                show_snack("資料寫入中，請稍候。", success=False)
+                return
+
+            main_category = clean_text(main_tf.value)
+            sub_category = clean_text(sub_tf.value)
+            item_name = clean_text(item_tf.value)
+            machine_area = clean_text(machine_tf.value)
+            cycle_days = to_int(cycle_tf.value, 0)
+            desc = clean_text(desc_tf.value)
+
+            validation_failed = False
+            try:
+                if not main_category:
+                    validation_failed = True
+                    show_snack("請輸入新的耗材設備 / 系統。", success=False)
+                    return
+                if has_consumable_node(main_category, sub_category):
+                    validation_failed = True
+                    show_snack("此耗材位置已存在，請回到既有節點新增項目。", success=False)
+                    return
+                if not item_name:
+                    validation_failed = True
+                    show_snack("請輸入第一個耗材名稱。", success=False)
+                    return
+                if not machine_area:
+                    validation_failed = True
+                    show_snack("請輸入適用位置。", success=False)
+                    return
+                if cycle_days <= 0:
+                    validation_failed = True
+                    show_snack("週期天數必須大於 0。", success=False)
+                    return
+                if has_duplicate_consumable(main_category, sub_category, item_name, machine_area):
+                    validation_failed = True
+                    show_snack("此位置已存在相同耗材項目。", success=False)
+                    return
+            finally:
+                if validation_failed:
+                    try:
+                        action_lock.release()
+                    except Exception:
+                        pass
+
+            def worker():
+                try:
+                    result = create_consumable_item(
+                        main_category=main_category,
+                        sub_category=sub_category,
+                        item_name=item_name,
+                        machine_area=machine_area,
+                        cycle_days=cycle_days,
+                        sort_order=999,
+                        description=desc,
+                    )
+                    if not is_active_view():
+                        return
+                    if result.ok:
+                        state["selected_type"] = "耗材更換"
+                        state["selected_machine"] = ""
+                        state["selected_main"] = main_category
+                        state["selected_sub"] = sub_category or "未分區"
+                        run_after_write(result.message or "新耗材位置與第一個耗材項目已新增。")
+                    else:
+                        show_snack(result.message or "新增耗材位置失敗。", success=False)
+                finally:
+                    try:
+                        action_lock.release()
+                    except Exception:
+                        pass
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        submit_btn = stable_filled_action_button("建立新耗材位置", bg=ORANGE_BTN, on_click=submit, height=46)
+
+        return card(
+            padding=16,
+            bgcolor="#F8FAFC",
+            border_color=ORANGE_BORDER,
+            content=ft.Column(
+                spacing=12,
+                controls=[
+                    section_title("新增新耗材位置", "建立新的耗材設備 / 系統或新區段，並同時新增此位置的第一個耗材項目。"),
+                    ft.Container(
+                        bgcolor=ORANGE_SOFT,
+                        border=ft.border.all(1, ORANGE_BORDER),
+                        border_radius=12,
+                        padding=12,
+                        content=ft.Text(
+                            "第一版不建立空節點；請同時輸入第一個耗材項目，建立後此位置會出現在保養項目地圖。",
+                            size=12,
+                            color=ORANGE_BTN,
+                        ),
+                    ),
+                    main_tf,
+                    sub_tf,
+                    item_tf,
+                    machine_tf,
+                    cycle_tf,
+                    desc_tf,
+                    ft.Row(
+                        spacing=10,
+                        controls=[
+                            ft.Container(expand=True, content=stable_outline_action_button("取消", color=TEXT_MUTED, border_color=BORDER, on_click=cancel_form, height=46)),
+                            ft.Container(expand=True, content=submit_btn),
+                        ],
+                    ),
+                ],
+            ),
+        )
+
     def build_create_clean_form() -> ft.Control:
         machine = clean_text(state.get("selected_machine"))
         item_tf = make_field("清潔項目名稱 *", hint="例如：旋風分離器、油劑槽周邊")
@@ -1169,7 +1495,7 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
         cycle_tf = make_field("週期天數 *", value="30", hint="例如：7、14、30", keyboard_type=ft.KeyboardType.NUMBER)
         desc_tf = make_field("備註 / 注意事項", hint="可輸入清潔方式或判定基準", multiline=True)
 
-        submit_btn = ft.ElevatedButton("確認新增", style=primary_style(BLUE_BTN))
+        submit_btn = stable_filled_action_button("確認新增", bg=BLUE_BTN, height=46)
 
         def submit(_=None):
             if not action_lock.acquire(blocking=False):
@@ -1235,8 +1561,8 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
                     ft.Row(
                         spacing=10,
                         controls=[
-                            ft.OutlinedButton("取消", style=outline_style(), on_click=cancel_form),
-                            submit_btn,
+                            ft.Container(expand=True, content=stable_outline_action_button("取消", color=TEXT_MUTED, border_color=BORDER, on_click=cancel_form, height=46)),
+                            ft.Container(expand=True, content=submit_btn),
                         ],
                     ),
                 ],
@@ -1257,7 +1583,7 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
         cycle_tf = make_field("週期天數 *", value="30", hint="例如：30、90、180", keyboard_type=ft.KeyboardType.NUMBER)
         desc_tf = make_field("備註 / 注意事項", hint="可輸入規格、廠牌或更換基準", multiline=True)
 
-        submit_btn = ft.ElevatedButton("確認新增", style=primary_style(ORANGE_BTN))
+        submit_btn = stable_filled_action_button("確認新增", bg=ORANGE_BTN, height=46)
 
         def submit(_=None):
             if not action_lock.acquire(blocking=False):
@@ -1332,8 +1658,8 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
                     ft.Row(
                         spacing=10,
                         controls=[
-                            ft.OutlinedButton("取消", style=outline_style(), on_click=cancel_form),
-                            submit_btn,
+                            ft.Container(expand=True, content=stable_outline_action_button("取消", color=TEXT_MUTED, border_color=BORDER, on_click=cancel_form, height=46)),
+                            ft.Container(expand=True, content=submit_btn),
                         ],
                     ),
                 ],
@@ -1356,7 +1682,7 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
             bgcolor="#FFFFFF",
             filled=True,
         )
-        submit_btn = ft.ElevatedButton("儲存週期", style=primary_style(PURPLE_BTN))
+        submit_btn = stable_filled_action_button("儲存週期", bg=PURPLE_BTN, height=46)
 
         def submit(_=None):
             if not action_lock.acquire(blocking=False):
@@ -1407,8 +1733,8 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
                     ft.Row(
                         spacing=10,
                         controls=[
-                            ft.OutlinedButton("取消", style=outline_style(PURPLE_BTN, PURPLE_BORDER), on_click=cancel_form),
-                            submit_btn,
+                            ft.Container(expand=True, content=stable_outline_action_button("取消", color=TEXT_MUTED, border_color=BORDER, on_click=cancel_form, height=46)),
+                            ft.Container(expand=True, content=submit_btn),
                         ],
                     ),
                 ],
@@ -1417,6 +1743,10 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
 
     def build_active_form() -> ft.Control | None:
         active_form = state.get("active_form")
+        if active_form == "create_new_clean_node":
+            return build_create_new_clean_node_form()
+        if active_form == "create_new_consumable_node":
+            return build_create_new_consumable_node_form()
         if active_form == "create_clean":
             return build_create_clean_form()
         if active_form == "create_consumable":
@@ -1455,6 +1785,15 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
         ]
 
         if state["selected_type"] == "清潔":
+            controls.append(
+                stable_outline_action_button(
+                    "沒有合適位置？新增新清潔位置",
+                    color=BLUE_BTN,
+                    border_color=BLUE_BORDER,
+                    on_click=open_create_new_clean_node,
+                    height=46,
+                )
+            )
             controls.append(section_title("步驟 2：選擇設備 / 區域", "選定後下方會列出此位置既有項目。"))
             machine_controls = [
                 mobile_chip(machine, state.get("selected_machine") == machine, BLUE_BTN, lambda _, m=machine: select_clean_machine(m))
@@ -1462,6 +1801,15 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
             ]
             controls.append(ft.Row(wrap=True, spacing=8, run_spacing=8, controls=machine_controls or [ft.Text("尚無清潔節點。", size=13, color=TEXT_MUTED)]))
         else:
+            controls.append(
+                stable_outline_action_button(
+                    "沒有合適位置？新增新耗材位置",
+                    color=ORANGE_BTN,
+                    border_color=ORANGE_BORDER,
+                    on_click=open_create_new_consumable_node,
+                    height=46,
+                )
+            )
             controls.append(section_title("步驟 2：選擇設備 / 系統", "再選耗材所在設備或系統。"))
             main_controls = [
                 mobile_chip(main, state.get("selected_main") == main, ORANGE_BTN, lambda _, m=main: select_consumable_node(m, ""))
@@ -1495,7 +1843,7 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
                 controls=[
                     ft.Icon(ft.Icons.ERROR_OUTLINE, color=RED, size=22),
                     ft.Text(state.get("error_message") or "", expand=True, size=13, color=RED),
-                    ft.TextButton("重試", on_click=refresh),
+                    stable_outline_action_button("重試", color=RED, border_color=RED_BORDER, on_click=refresh, height=40),
                 ],
             ),
         )
