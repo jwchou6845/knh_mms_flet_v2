@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 from repositories.user_repo import get_user_by_id
 from repositories.user_session_repo import (
+    cleanup_expired_user_sessions as repo_cleanup_expired_user_sessions,
     create_user_session as repo_create_user_session,
     get_user_session_by_token,
     revoke_user_session as repo_revoke_user_session,
@@ -17,6 +18,7 @@ from repositories.user_session_repo import (
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 SESSION_HOURS = 12
+REVOKED_SESSION_KEEP_DAYS = 7
 
 
 @dataclass
@@ -51,6 +53,52 @@ def parse_datetime(value: Any) -> datetime | None:
 
 def create_session_token() -> str:
     return secrets.token_urlsafe(32)
+
+
+def cleanup_expired_user_sessions(
+    include_revoked_old: bool = True,
+    revoked_keep_days: int = REVOKED_SESSION_KEEP_DAYS,
+) -> ServiceResult:
+    """
+    機會式清理 user_sessions。
+
+    第一版採保守策略：
+    1. 刪除 expires_at 已早於目前 Asia/Taipei 時間的 session。
+    2. 額外刪除 revoked = true 且 created_at 已超過 revoked_keep_days 的舊資料。
+
+    這個函式不參與登入成功與否判斷；即使清理失敗，也不應阻斷登入流程。
+    """
+    try:
+        now = now_taipei()
+        revoked_before = None
+
+        if include_revoked_old:
+            keep_days = max(int(revoked_keep_days or 0), 1)
+            revoked_before = (now - timedelta(days=keep_days)).isoformat()
+
+        cleanup_result = repo_cleanup_expired_user_sessions(
+            now_iso=now.isoformat(),
+            revoked_before_iso=revoked_before,
+        )
+
+        expired_deleted = int(cleanup_result.get("expired_deleted_count") or 0)
+        revoked_deleted = int(cleanup_result.get("revoked_deleted_count") or 0)
+        total_deleted = expired_deleted + revoked_deleted
+
+        return ServiceResult(
+            ok=True,
+            message=f"user_sessions 清理完成，共刪除 {total_deleted} 筆。",
+            data={
+                "expired_deleted_count": expired_deleted,
+                "revoked_deleted_count": revoked_deleted,
+                "total_deleted_count": total_deleted,
+                "now": now.isoformat(),
+                "revoked_before": revoked_before,
+            },
+        )
+
+    except Exception as exc:
+        return ServiceResult(ok=False, message=f"user_sessions 清理失敗：{exc}")
 
 
 def create_persistent_session(
