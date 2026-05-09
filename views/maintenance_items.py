@@ -584,7 +584,7 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
         """
         state["load_seq"] = int(state.get("load_seq") or 0) + 1
         current_load_seq = state["load_seq"]
-        print(f"MAINTENANCE_ITEMS LOAD START: seq={current_load_seq}, route={getattr(page, 'route', '')}")
+        print(f"MAINTENANCE_ITEMS LOAD START: seq={current_load_seq}, route={getattr(page, 'route', '')}", flush=True)
 
         if show_loading:
             set_sync_state("loading", "資料同步中", visible=True)
@@ -611,7 +611,7 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
             ok = False
             try:
                 ok = load_data(update_sync_state=True)
-                print(f"MAINTENANCE_ITEMS LOAD DONE: seq={current_load_seq}, ok={ok}, count={state.get('count')}")
+                print(f"MAINTENANCE_ITEMS LOAD DONE: seq={current_load_seq}, ok={ok}, count={state.get('count')}", flush=True)
             except Exception as exc:
                 print(f"MAINTENANCE_ITEMS LOAD ERROR: seq={current_load_seq}, error={exc!r}")
                 state["error_message"] = f"讀取保養項目管理資料失敗：{exc}"
@@ -976,8 +976,7 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
                             ft.Container(
                                 col={"xs": 6, "md": 4},
                                 content=ft.OutlinedButton(
-                                    text="編輯週期",
-                                    icon=ft.Icons.EVENT_REPEAT_OUTLINED,
+                                    "編輯週期",
                                     style=outline_style(PURPLE_BTN, PURPLE_BORDER),
                                     on_click=lambda _, current=item: open_edit_cycle(current),
                                 ),
@@ -985,8 +984,7 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
                             ft.Container(
                                 col={"xs": 6, "md": 4},
                                 content=ft.OutlinedButton(
-                                    text="停用" if active else "啟用",
-                                    icon=ft.Icons.PAUSE_CIRCLE_OUTLINE if active else ft.Icons.PLAY_CIRCLE_OUTLINE,
+                                    "停用" if active else "啟用",
                                     style=outline_style(RED if active else GREEN, RED_BORDER if active else GREEN_BORDER),
                                     on_click=lambda _, current=item: toggle_active(current),
                                 ),
@@ -1038,8 +1036,7 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
                         ],
                     ),
                     ft.ElevatedButton(
-                        text=create_label,
-                        icon=create_icon,
+                        create_label,
                         style=primary_style(create_color),
                         on_click=open_create_form,
                     ),
@@ -1088,7 +1085,7 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
         cycle_tf = make_field("週期天數 *", value="30", hint="例如：7、14、30", keyboard_type=ft.KeyboardType.NUMBER)
         desc_tf = make_field("備註 / 注意事項", hint="可輸入清潔方式或判定基準", multiline=True)
 
-        submit_btn = ft.ElevatedButton(text="確認新增", icon=ft.Icons.CHECK_CIRCLE_OUTLINE, style=primary_style(BLUE_BTN))
+        submit_btn = ft.ElevatedButton("確認新增", style=primary_style(BLUE_BTN))
 
         def submit(_=None):
             if not action_lock.acquire(blocking=False):
@@ -1154,7 +1151,7 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
                     ft.Row(
                         spacing=10,
                         controls=[
-                            ft.OutlinedButton(text="取消", icon=ft.Icons.CLOSE, style=outline_style(), on_click=cancel_form),
+                            ft.OutlinedButton("取消", style=outline_style(), on_click=cancel_form),
                             submit_btn,
                         ],
                     ),
@@ -1176,7 +1173,7 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
         cycle_tf = make_field("週期天數 *", value="30", hint="例如：30、90、180", keyboard_type=ft.KeyboardType.NUMBER)
         desc_tf = make_field("備註 / 注意事項", hint="可輸入規格、廠牌或更換基準", multiline=True)
 
-        submit_btn = ft.ElevatedButton(text="確認新增", icon=ft.Icons.CHECK_CIRCLE_OUTLINE, style=primary_style(ORANGE_BTN))
+        submit_btn = ft.ElevatedButton("確認新增", style=primary_style(ORANGE_BTN))
 
         def submit(_=None):
             if not action_lock.acquire(blocking=False):
@@ -1251,7 +1248,7 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
                     ft.Row(
                         spacing=10,
                         controls=[
-                            ft.OutlinedButton(text="取消", icon=ft.Icons.CLOSE, style=outline_style(), on_click=cancel_form),
+                            ft.OutlinedButton("取消", style=outline_style(), on_click=cancel_form),
                             submit_btn,
                         ],
                     ),
@@ -1275,7 +1272,7 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
             bgcolor="#FFFFFF",
             filled=True,
         )
-        submit_btn = ft.ElevatedButton(text="儲存週期", icon=ft.Icons.SAVE_OUTLINED, style=primary_style(PURPLE_BTN))
+        submit_btn = ft.ElevatedButton("儲存週期", style=primary_style(PURPLE_BTN))
 
         def submit(_=None):
             if not action_lock.acquire(blocking=False):
@@ -1326,7 +1323,7 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
                     ft.Row(
                         spacing=10,
                         controls=[
-                            ft.OutlinedButton(text="取消", icon=ft.Icons.CLOSE, style=outline_style(PURPLE_BTN, PURPLE_BORDER), on_click=cancel_form),
+                            ft.OutlinedButton("取消", style=outline_style(PURPLE_BTN, PURPLE_BORDER), on_click=cancel_form),
                             submit_btn,
                         ],
                     ),
@@ -1414,7 +1411,7 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
                 controls=[
                     ft.Icon(ft.Icons.ERROR_OUTLINE, color=RED, size=22),
                     ft.Text(state.get("error_message") or "", expand=True, size=13, color=RED),
-                    ft.TextButton(text="重試", on_click=refresh),
+                    ft.TextButton("重試", on_click=refresh),
                 ],
             ),
         )
@@ -1512,12 +1509,26 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
                     width = page.width or 390
                     main_host.content = build_mobile_layout() if width < MOBILE_WIDTH else build_desktop_layout()
 
+                # Flet Web / VM 上，背景 thread 修改 main_host.content 後，
+                # 單獨 main_host.update() 有時要等使用者滑動或互動才會重繪。
+                # 這裡改成整頁 page.update()，並補一次短延遲刷新，避免畫面停在「資料同步中」。
                 try:
-                    main_host.update()
-                except Exception:
                     page.update()
+                except Exception as update_ex:
+                    print("maintenance_items page.update failed during rebuild:", repr(update_ex), flush=True)
+
+                def delayed_flush():
+                    time.sleep(0.25)
+                    if not is_active_view():
+                        return
+                    try:
+                        page.update()
+                    except Exception as delayed_ex:
+                        print("maintenance_items delayed page.update failed:", repr(delayed_ex), flush=True)
+
+                threading.Thread(target=delayed_flush, daemon=True).start()
         except Exception as ex:
-            print("maintenance_items rebuild failed:", repr(ex))
+            print("maintenance_items rebuild failed:", repr(ex), flush=True)
 
     # =====================================================
     # 初始化
@@ -1531,7 +1542,7 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
 
     # 延後啟動背景載入：確保 root 已經交給 main.py shell 並掛到 page。
     # 初始化畫面本身已是 skeleton，不在啟動瞬間強制 update。
-    print(f"MAINTENANCE_ITEMS INIT: instance={instance_id}, route={getattr(page, 'route', '')}, role={session_get('role')}")
+    print(f"MAINTENANCE_ITEMS INIT: instance={instance_id}, route={getattr(page, 'route', '')}, role={session_get('role')}", flush=True)
     try:
         threading.Timer(0.35, lambda: start_background_load(show_loading=True, render_loading=False)).start()
     except Exception as ex:
