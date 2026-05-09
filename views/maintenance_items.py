@@ -106,14 +106,19 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
         return session_get("role") == "超級管理員"
 
     def is_active_view() -> bool:
-        try:
-            if page.session_data.get("_maintenance_items_view_token") != view_token:
-                return False
-        except Exception:
-            return False
+        """
+        /maintenance/items 子頁的離頁保護。
 
+        注意：main.py 目前會在 page.go() 後手動補 route_change(None)，
+        在 Web / VM 環境可能短時間內建立兩個同頁 View。
+        如果用 page.session_data 的全域 token 當唯一條件，舊 View 可能被新 View 改掉 token，
+        但畫面仍停在舊 View，導致 worker / watchdog 都不更新，最後永遠顯示「資料同步中」。
+
+        因此此頁第一版只用 route 判斷是否仍在 /maintenance/items。
+        舊 thread 若嘗試更新已移除 control，rebuild() 內會捕捉例外，不讓頁面崩潰。
+        """
         route = str(getattr(page, "route", "") or "")
-        return not route or route.startswith("/maintenance/items")
+        return (not route) or route.startswith("/maintenance/items")
 
     def safe_page_update() -> None:
         if not is_active_view():
@@ -558,6 +563,7 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
         """
         state["load_seq"] = int(state.get("load_seq") or 0) + 1
         current_load_seq = state["load_seq"]
+        print(f"MAINTENANCE_ITEMS LOAD START: seq={current_load_seq}, route={getattr(page, 'route', '')}")
 
         if show_loading:
             set_sync_state("loading", "資料同步中", visible=True)
@@ -567,12 +573,15 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
                 rebuild()
 
         def watchdog():
-            time.sleep(20)
+            time.sleep(15)
             if not is_active_view():
+                print(f"MAINTENANCE_ITEMS WATCHDOG SKIP inactive: seq={current_load_seq}, route={getattr(page, 'route', '')}")
                 return
             if state.get("load_seq") != current_load_seq:
+                print(f"MAINTENANCE_ITEMS WATCHDOG SKIP old seq: seq={current_load_seq}, current={state.get('load_seq')}")
                 return
             if state.get("loading"):
+                print(f"MAINTENANCE_ITEMS LOAD TIMEOUT: seq={current_load_seq}")
                 state["error_message"] = "保養項目管理資料同步逾時，請按重試。"
                 set_sync_state("error", "資料同步逾時", visible=True)
                 rebuild()
@@ -581,14 +590,18 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
             ok = False
             try:
                 ok = load_data(update_sync_state=True)
+                print(f"MAINTENANCE_ITEMS LOAD DONE: seq={current_load_seq}, ok={ok}, count={state.get('count')}")
             except Exception as exc:
+                print(f"MAINTENANCE_ITEMS LOAD ERROR: seq={current_load_seq}, error={exc!r}")
                 state["error_message"] = f"讀取保養項目管理資料失敗：{exc}"
                 set_sync_state("error", "資料同步失敗", visible=True)
                 ok = False
 
             if not is_active_view():
+                print(f"MAINTENANCE_ITEMS WORKER SKIP inactive: seq={current_load_seq}, route={getattr(page, 'route', '')}")
                 return
             if state.get("load_seq") != current_load_seq:
+                print(f"MAINTENANCE_ITEMS WORKER SKIP old seq: seq={current_load_seq}, current={state.get('load_seq')}")
                 return
 
             rebuild()
@@ -1494,6 +1507,13 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
 
     width = page.width or 390
     main_host.content = build_mobile_layout() if width < MOBILE_WIDTH else build_desktop_layout()
-    start_background_load(show_loading=True, render_loading=False)
+
+    # 延後啟動背景載入：確保 root 已經交給 main.py shell 並掛到 page，
+    # 避免初始化階段 control 尚未上頁就觸發更新，造成資料同步中卡住。
+    try:
+        threading.Timer(0.35, lambda: start_background_load(show_loading=True, render_loading=False)).start()
+    except Exception as ex:
+        print("MAINTENANCE_ITEMS TIMER START FAILED:", repr(ex))
+        start_background_load(show_loading=True, render_loading=False)
 
     return root
