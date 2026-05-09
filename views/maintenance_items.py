@@ -84,6 +84,7 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
         "selected_sub": "",
         "active_form": None,
         "editing_item": None,
+        "load_seq": 0,
     }
 
     ui_lock = threading.RLock()
@@ -112,7 +113,7 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
             return False
 
         route = str(getattr(page, "route", "") or "")
-        return not route or route == "/maintenance/items"
+        return not route or route.startswith("/maintenance/items")
 
     def safe_page_update() -> None:
         if not is_active_view():
@@ -510,7 +511,22 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
         return None
 
     def load_data(update_sync_state: bool = True) -> bool:
-        result = load_maintenance_items_page_data(include_inactive=True)
+        """
+        管理子頁資料載入。
+        這裡必須把任何例外轉成錯誤狀態，避免畫面永久停在「資料同步中」。
+        """
+        try:
+            result = load_maintenance_items_page_data(include_inactive=True)
+        except Exception as exc:
+            state["items"] = []
+            state["count"] = 0
+            state["active_count"] = 0
+            state["inactive_count"] = 0
+            state["error_message"] = f"讀取保養項目管理資料失敗：{exc}"
+            if update_sync_state:
+                set_sync_state("error", "資料同步失敗", visible=True)
+            return False
+
         data = result.data if isinstance(result.data, dict) else {}
 
         if result.ok:
@@ -528,24 +544,56 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
         state["count"] = 0
         state["active_count"] = 0
         state["inactive_count"] = 0
-        state["error_message"] = result.message or "讀取失敗"
+        state["error_message"] = result.message or "讀取保養項目管理資料失敗。"
         if update_sync_state:
             set_sync_state("error", "資料同步失敗", visible=True)
         return False
 
     def start_background_load(show_loading: bool = True) -> None:
+        """
+        非阻塞背景載入 + 離頁保護 + 逾時回退。
+        - 背景 thread 只改 state，最後集中 rebuild。
+        - 若 Supabase 或 service 等待過久，20 秒後顯示錯誤與重試按鈕。
+        - 若使用者切離本頁，舊 thread 不再更新 UI。
+        """
+        state["load_seq"] = int(state.get("load_seq") or 0) + 1
+        current_load_seq = state["load_seq"]
+
         if show_loading:
             set_sync_state("loading", "資料同步中", visible=True)
-            rebuild()
+            if is_active_view():
+                rebuild()
 
-        def worker():
-            ok = load_data(update_sync_state=True)
+        def watchdog():
+            time.sleep(20)
             if not is_active_view():
                 return
+            if state.get("load_seq") != current_load_seq:
+                return
+            if state.get("loading"):
+                state["error_message"] = "保養項目管理資料同步逾時，請按重試。"
+                set_sync_state("error", "資料同步逾時", visible=True)
+                rebuild()
+
+        def worker():
+            ok = False
+            try:
+                ok = load_data(update_sync_state=True)
+            except Exception as exc:
+                state["error_message"] = f"讀取保養項目管理資料失敗：{exc}"
+                set_sync_state("error", "資料同步失敗", visible=True)
+                ok = False
+
+            if not is_active_view():
+                return
+            if state.get("load_seq") != current_load_seq:
+                return
+
             rebuild()
             if ok:
                 hide_sync_badge_later(3.0)
 
+        threading.Thread(target=watchdog, daemon=True).start()
         threading.Thread(target=worker, daemon=True).start()
 
     def refresh(_=None) -> None:

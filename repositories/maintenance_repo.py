@@ -12,23 +12,30 @@ def get_maintenance_items(include_inactive: bool = False) -> list[dict[str, Any]
     """
     讀取保養項目。
     include_inactive=True 時包含已停用項目，供超級管理員項目管理頁使用。
+
+    注意：管理頁需要所有項目後再由 service 端整理成樹狀。
+    這裡避免在 Supabase query 端連續 order 多個可能含 NULL 的欄位，
+    降低新子頁初次同步時卡住或排序欄位異常的風險。
     """
     query = supabase.table(TABLE_ITEMS).select("*")
 
     if not include_inactive:
         query = query.eq("is_active", True)
 
-    res = (
-        query
-        .order("maintenance_type", desc=False)
-        .order("main_category", desc=False)
-        .order("sub_category", desc=False)
-        .order("machine_area", desc=False)
-        .order("sort_order", desc=False)
-        .execute()
-    )
+    res = query.execute()
+    rows = res.data or []
 
-    return res.data or []
+    def sort_key(row: dict[str, Any]):
+        return (
+            str(row.get("maintenance_type") or ""),
+            str(row.get("main_category") or ""),
+            str(row.get("sub_category") or ""),
+            str(row.get("machine_area") or ""),
+            int(row.get("sort_order") or 999),
+            str(row.get("item_name") or ""),
+        )
+
+    return sorted(rows, key=sort_key)
 
 
 def get_active_maintenance_items() -> list[dict[str, Any]]:
