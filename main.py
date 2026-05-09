@@ -4,7 +4,6 @@
 import flet as ft
 import time
 import json
-import threading
 from views.login import LoginView
 from views.dashboard import DashboardContent
 from views.inventory import InventoryContent
@@ -13,12 +12,9 @@ from views.handover import HandoverContent
 from views.handover_tasks import HandoverTasksContent
 from views.feed import FeedContent
 from views.maintenance import MaintenanceContent
+from views.maintenance_items import MaintenanceItemsContent
 from services.auth_service import update_user_shortcuts
-from services.auth_session_service import (
-    cleanup_expired_user_sessions,
-    restore_persistent_session,
-    revoke_persistent_session,
-)
+from services.auth_session_service import restore_persistent_session, revoke_persistent_session
 from views.reports import ReportsContent
 
 
@@ -278,36 +274,6 @@ def main(page: ft.Page):
         page.session_data["_browser_storage_remove"] = browser_storage_remove
 
     register_session_helpers()
-
-    def start_user_session_cleanup_once():
-        """
-        機會式清理 12 小時免重登 user_sessions。
-        使用背景 thread 執行，避免阻塞登入檢查與畫面建立。
-        """
-        if page.session_data.get("_user_session_cleanup_started"):
-            return
-
-        page.session_data["_user_session_cleanup_started"] = True
-
-        def worker():
-            try:
-                result = cleanup_expired_user_sessions()
-                if result.ok:
-                    data = result.data or {}
-                    print(
-                        "USER_SESSION CLEANUP DONE:",
-                        "expired=", data.get("expired_deleted_count", 0),
-                        "revoked=", data.get("revoked_deleted_count", 0),
-                        "total=", data.get("total_deleted_count", 0),
-                    )
-                else:
-                    print("USER_SESSION CLEANUP FAILED:", result.message)
-            except Exception as ex:
-                print("USER_SESSION CLEANUP ERROR:", repr(ex))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    start_user_session_cleanup_once()
 
     def build_auth_check_view(message: str = "正在檢查登入狀態..."):
         return ft.View(
@@ -590,7 +556,7 @@ def main(page: ft.Page):
     # View Template（整合捲動雷達與個人化 FAB）
     # =====================================================
     def shell(route, title, body, nav_idx=0):
-        content_padding = 0 if route == "/maintenance" else 20
+        content_padding = 0 if route.startswith("/maintenance") else 20
 
         content_col = ft.Column(
             controls=[
@@ -1097,6 +1063,14 @@ def main(page: ft.Page):
                     0,
                 )
                 
+
+            elif route == "/maintenance/items":
+                target_view = shell(
+                    "/maintenance/items",
+                    "保養項目管理",
+                    MaintenanceItemsContent(page),
+                    3,
+                )
 
             elif route == "/maintenance":
                 target_view = shell(

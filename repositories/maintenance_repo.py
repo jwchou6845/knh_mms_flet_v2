@@ -7,6 +7,30 @@ TABLE_ITEMS = "maintenance_items"
 TABLE_RECORDS = "maintenance_records"
 
 
+
+def get_maintenance_items(include_inactive: bool = False) -> list[dict[str, Any]]:
+    """
+    讀取保養項目。
+    include_inactive=True 時包含已停用項目，供超級管理員項目管理頁使用。
+    """
+    query = supabase.table(TABLE_ITEMS).select("*")
+
+    if not include_inactive:
+        query = query.eq("is_active", True)
+
+    res = (
+        query
+        .order("maintenance_type", desc=False)
+        .order("main_category", desc=False)
+        .order("sub_category", desc=False)
+        .order("machine_area", desc=False)
+        .order("sort_order", desc=False)
+        .execute()
+    )
+
+    return res.data or []
+
+
 def get_active_maintenance_items() -> list[dict[str, Any]]:
     """
     讀取啟用中的保養項目。

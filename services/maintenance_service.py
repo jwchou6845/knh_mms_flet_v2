@@ -9,6 +9,7 @@ from repositories.maintenance_repo import (
     create_maintenance_item,
     create_maintenance_record,
     get_active_maintenance_items,
+    get_maintenance_items,
     get_recent_maintenance_records,
     get_records_by_item_id,
     soft_delete_maintenance_record,
@@ -510,68 +511,6 @@ def submit_maintenance_record(
 
 
 # =========================
-# 保養項目重複檢查
-# =========================
-
-def _normalize_duplicate_text(value: Any) -> str:
-    text = str(value or "").strip().replace("　", " ")
-    return " ".join(text.split()).casefold()
-
-
-def _find_duplicate_cleaning_item(item_name: str, machine_area: str) -> dict[str, Any] | None:
-    target_name = _normalize_duplicate_text(item_name)
-    target_machine = _normalize_duplicate_text(machine_area)
-
-    if not target_name or not target_machine:
-        return None
-
-    items = get_active_maintenance_items()
-
-    for item in items:
-        if item.get("maintenance_type") != "清潔":
-            continue
-
-        same_name = _normalize_duplicate_text(item.get("item_name")) == target_name
-        same_machine = _normalize_duplicate_text(item.get("machine_area")) == target_machine
-
-        if same_name and same_machine:
-            return item
-
-    return None
-
-
-def _find_duplicate_consumable_item(
-    main_category: str,
-    sub_category: str,
-    item_name: str,
-    machine_area: str,
-) -> dict[str, Any] | None:
-    target_main = _normalize_duplicate_text(main_category)
-    target_sub = _normalize_duplicate_text(sub_category)
-    target_name = _normalize_duplicate_text(item_name)
-    target_machine = _normalize_duplicate_text(machine_area)
-
-    if not target_main or not target_name or not target_machine:
-        return None
-
-    items = get_active_maintenance_items()
-
-    for item in items:
-        if item.get("maintenance_type") != "耗材更換":
-            continue
-
-        same_main = _normalize_duplicate_text(item.get("main_category")) == target_main
-        same_sub = _normalize_duplicate_text(item.get("sub_category")) == target_sub
-        same_name = _normalize_duplicate_text(item.get("item_name")) == target_name
-        same_machine = _normalize_duplicate_text(item.get("machine_area")) == target_machine
-
-        if same_main and same_sub and same_name and same_machine:
-            return item
-
-    return None
-
-
-# =========================
 # 新增清潔項目
 # =========================
 
@@ -590,20 +529,6 @@ def create_cleaning_item(
 
     if cycle_days <= 0:
         return ServiceResult(ok=False, message="週期天數必須大於 0。")
-
-    item_name = str(item_name or "").strip()
-    machine_area = str(machine_area or "").strip()
-
-    try:
-        duplicate = _find_duplicate_cleaning_item(item_name, machine_area)
-        if duplicate:
-            return ServiceResult(
-                ok=False,
-                message=f"已存在相同清潔項目：{duplicate.get('item_name') or item_name}｜{duplicate.get('machine_area') or machine_area}，請改用『編輯週期』或直接新增保養紀錄。",
-                data=duplicate,
-            )
-    except Exception as exc:
-        return ServiceResult(ok=False, message=f"檢查清潔項目是否重複失敗：{exc}")
 
     payload = {
         "item_name": item_name,
@@ -653,34 +578,6 @@ def create_consumable_item(
 
     if cycle_days <= 0:
         return ServiceResult(ok=False, message="週期天數必須大於 0。")
-
-    main_category = str(main_category or "").strip()
-    sub_category = str(sub_category or "").strip()
-    item_name = str(item_name or "").strip()
-    machine_area = str(machine_area or "").strip()
-
-    try:
-        duplicate = _find_duplicate_consumable_item(
-            main_category=main_category,
-            sub_category=sub_category,
-            item_name=item_name,
-            machine_area=machine_area,
-        )
-        if duplicate:
-            return ServiceResult(
-                ok=False,
-                message=(
-                    "已存在相同耗材項目："
-                    f"{duplicate.get('main_category') or main_category}｜"
-                    f"{duplicate.get('sub_category') or '-'}｜"
-                    f"{duplicate.get('item_name') or item_name}｜"
-                    f"{duplicate.get('machine_area') or machine_area}，"
-                    "請改用『編輯週期』或直接新增保養紀錄。"
-                ),
-                data=duplicate,
-            )
-    except Exception as exc:
-        return ServiceResult(ok=False, message=f"檢查耗材項目是否重複失敗：{exc}")
 
     payload = {
         "item_name": item_name,
@@ -742,3 +639,89 @@ def update_item_cycle(
 
     except Exception as exc:
         return ServiceResult(ok=False, message=f"更新週期失敗：{exc}")
+
+# =========================
+# 保養項目管理頁
+# =========================
+
+def _normalize_item_row(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": item.get("id"),
+        "item_name": item.get("item_name") or "",
+        "maintenance_type": item.get("maintenance_type") or "",
+        "main_category": item.get("main_category") or "",
+        "sub_category": item.get("sub_category") or "",
+        "machine_area": item.get("machine_area") or "",
+        "cycle_days": item.get("cycle_days") or 30,
+        "sort_order": item.get("sort_order") or 999,
+        "description": item.get("description") or "",
+        "is_active": bool(item.get("is_active", True)),
+        "raw": item,
+    }
+
+
+def load_maintenance_items_page_data(include_inactive: bool = True) -> ServiceResult:
+    """
+    讀取保養項目管理頁資料。
+    管理頁需要看見已停用項目，避免重複新增同名項目。
+    """
+    try:
+        rows = get_maintenance_items(include_inactive=include_inactive)
+        items = [_normalize_item_row(row) for row in rows]
+
+        items.sort(
+            key=lambda item: (
+                item.get("maintenance_type") or "",
+                item.get("main_category") or "",
+                item.get("sub_category") or "",
+                item.get("machine_area") or "",
+                item.get("sort_order") or 999,
+                item.get("item_name") or "",
+            )
+        )
+
+        return ServiceResult(
+            ok=True,
+            data={
+                "items": items,
+                "count": len(items),
+                "active_count": len([item for item in items if item.get("is_active")]),
+                "inactive_count": len([item for item in items if not item.get("is_active")]),
+            },
+        )
+
+    except Exception as exc:
+        return ServiceResult(
+            ok=False,
+            message=f"讀取保養項目管理資料失敗：{exc}",
+            data={"items": [], "count": 0, "active_count": 0, "inactive_count": 0},
+        )
+
+
+def set_maintenance_item_active(
+    item_id: str,
+    is_active: bool,
+) -> ServiceResult:
+    """
+    啟用 / 停用保養項目。
+    僅供超級管理員頁面呼叫；權限仍由 view 層判斷。
+    """
+    if not item_id:
+        return ServiceResult(ok=False, message="缺少保養項目 ID。")
+
+    payload = {"is_active": bool(is_active)}
+
+    try:
+        updated = update_maintenance_item(item_id, payload)
+        if not updated:
+            return ServiceResult(ok=False, message="更新項目啟用狀態失敗，Supabase 未回傳資料。")
+
+        return ServiceResult(
+            ok=True,
+            message="保養項目已啟用。" if is_active else "保養項目已停用。",
+            data=updated,
+        )
+
+    except Exception as exc:
+        return ServiceResult(ok=False, message=f"更新項目啟用狀態失敗：{exc}")
+

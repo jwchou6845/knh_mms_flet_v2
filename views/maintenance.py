@@ -687,62 +687,6 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
 
         return options
 
-
-    def normalize_duplicate_text(value) -> str:
-        """
-        第二階段防呆：新增保養項目前先用目前已載入的 active items 做前端重複檢查。
-        這層是操作提示；service 端仍會再檢查一次，避免多裝置同時新增。
-        """
-        text = str(value or "").strip().replace("　", " ")
-        return " ".join(text.split()).casefold()
-
-    def find_duplicate_cleaning_item(item_name: str, machine_area: str) -> dict | None:
-        target_name = normalize_duplicate_text(item_name)
-        target_machine = normalize_duplicate_text(machine_area)
-
-        if not target_name or not target_machine:
-            return None
-
-        for item in get_all_items():
-            if item.get("maintenance_type") != "清潔":
-                continue
-
-            same_name = normalize_duplicate_text(item.get("item_name")) == target_name
-            same_machine = normalize_duplicate_text(item.get("machine_area")) == target_machine
-
-            if same_name and same_machine:
-                return item
-
-        return None
-
-    def find_duplicate_consumable_item(
-        main_category: str,
-        sub_category: str,
-        item_name: str,
-        machine_area: str,
-    ) -> dict | None:
-        target_main = normalize_duplicate_text(main_category)
-        target_sub = normalize_duplicate_text(sub_category)
-        target_name = normalize_duplicate_text(item_name)
-        target_machine = normalize_duplicate_text(machine_area)
-
-        if not target_main or not target_name or not target_machine:
-            return None
-
-        for item in get_all_items():
-            if item.get("maintenance_type") != "耗材更換":
-                continue
-
-            same_main = normalize_duplicate_text(item.get("main_category")) == target_main
-            same_sub = normalize_duplicate_text(item.get("sub_category")) == target_sub
-            same_name = normalize_duplicate_text(item.get("item_name")) == target_name
-            same_machine = normalize_duplicate_text(item.get("machine_area")) == target_machine
-
-            if same_main and same_sub and same_name and same_machine:
-                return item
-
-        return None
-
     # =========================
     # Dialog：篩選
     # =========================
@@ -1213,6 +1157,69 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
         return ft.Column(
             spacing=10 if show_badge else 0,
             controls=controls,
+        )
+
+
+    # =========================
+    # 超級管理員入口：保養項目管理
+    # =========================
+
+    def navigate(route_path: str) -> None:
+        nav = session_get("_navigate")
+        if callable(nav):
+            nav(route_path)
+            return
+        page.go(route_path)
+
+    def build_admin_items_entry() -> ft.Control:
+        """
+        管理功能回收給超級管理員。
+        maintenance.py 主頁只保留日常保養作業；新增清潔、耗材、編輯週期等管理功能改由 /maintenance/items 處理。
+        """
+        if not is_super_admin():
+            return ft.Container(height=0)
+
+        return card(
+            padding=16,
+            content=ft.Column(
+                spacing=12,
+                controls=[
+                    ft.Row(
+                        spacing=12,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[
+                            ft.Container(
+                                width=48,
+                                height=48,
+                                border_radius=16,
+                                bgcolor=PURPLE_SOFT,
+                                alignment=ft.Alignment(0, 0),
+                                content=ft.Icon(ft.Icons.ACCOUNT_TREE_OUTLINED, color=PURPLE_BTN, size=26),
+                            ),
+                            ft.Column(
+                                expand=True,
+                                spacing=3,
+                                controls=[
+                                    ft.Text("保養項目管理", size=17, weight=ft.FontWeight.BOLD, color=TEXT),
+                                    ft.Text(
+                                        "管理功能僅限超級管理員：新增清潔 / 耗材、編輯週期、啟用或停用項目。",
+                                        size=12,
+                                        color=TEXT_MUTED,
+                                        max_lines=3,
+                                    ),
+                                ],
+                            ),
+                        ],
+                    ),
+                    stable_filled_button(
+                        "進入保養項目管理",
+                        ft.Icons.ARROW_FORWARD_OUTLINED,
+                        bg=PURPLE_BTN,
+                        on_click=lambda _: navigate("/maintenance/items"),
+                        height=48,
+                    ),
+                ],
+            ),
         )
 
     # =========================
@@ -2542,18 +2549,6 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
                 if not ok:
                     show_snack(message, success=False)
                     return
-
-                duplicate = find_duplicate_cleaning_item(
-                    payload.get("item_name") or "",
-                    payload.get("machine_area") or "",
-                )
-                if duplicate:
-                    show_snack(
-                        f"已存在相同清潔項目：{item_display_name(duplicate)}｜{duplicate.get('machine_area') or '-'}，請改用『編輯週期』或直接新增保養紀錄。",
-                        success=False,
-                    )
-                    return
-
                 open_confirm(payload)
 
             submit_btn.on_click = on_prepare_submit
@@ -2808,20 +2803,6 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
                 if not ok:
                     show_snack(message, success=False)
                     return
-
-                duplicate = find_duplicate_consumable_item(
-                    payload.get("main_category") or "",
-                    payload.get("sub_category") or "",
-                    payload.get("item_name") or "",
-                    payload.get("machine_area") or "",
-                )
-                if duplicate:
-                    show_snack(
-                        f"已存在相同耗材項目：{duplicate.get('main_category') or '-'}｜{duplicate.get('sub_category') or '-'}｜{duplicate.get('item_name') or '-'}｜{duplicate.get('machine_area') or '-'}，請改用『編輯週期』或直接新增保養紀錄。",
-                        success=False,
-                    )
-                    return
-
                 open_confirm(payload)
 
             submit_btn.on_click = on_prepare_submit
@@ -3463,7 +3444,7 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
                     build_today_tasks(),
                     build_item_list(),
                     build_recent_records(),
-                    build_extension_settings(),
+                    build_admin_items_entry(),
                     ft.Container(height=72),
                 ],
             ),
@@ -3514,10 +3495,7 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
                 spacing=18,
                 controls=[
                     build_desktop_record_form(),
-                    card(
-                        padding=18,
-                        content=build_extension_settings(),
-                    ),
+                    build_admin_items_entry(),
                 ],
             ),
         )
