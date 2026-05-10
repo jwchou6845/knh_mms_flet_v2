@@ -18,8 +18,13 @@ from repositories.maintenance_repo import (
     get_recent_maintenance_records,
     get_records_by_item_id,
     get_root_maintenance_node,
+    soft_delete_maintenance_item,
+    soft_delete_maintenance_node,
     soft_delete_maintenance_record,
+    restore_maintenance_item,
+    restore_maintenance_node,
     update_maintenance_item,
+    update_maintenance_node,
 )
 
 
@@ -531,6 +536,10 @@ def _normalize_node_row(node: dict[str, Any]) -> dict[str, Any]:
         "description": node.get("description") or "",
         "is_active": bool(node.get("is_active", True)),
         "is_deleted": bool(node.get("is_deleted", False)),
+        "deleted_at": node.get("deleted_at"),
+        "deleted_by_user_id": node.get("deleted_by_user_id"),
+        "deleted_by_name": node.get("deleted_by_name") or "",
+        "delete_reason": node.get("delete_reason") or "",
         "raw": node,
     }
 
@@ -972,6 +981,10 @@ def _normalize_item_row(item: dict[str, Any]) -> dict[str, Any]:
         "description": item.get("description") or "",
         "is_active": bool(item.get("is_active", True)),
         "is_deleted": bool(item.get("is_deleted", False)),
+        "deleted_at": item.get("deleted_at"),
+        "deleted_by_user_id": item.get("deleted_by_user_id"),
+        "deleted_by_name": item.get("deleted_by_name") or "",
+        "delete_reason": item.get("delete_reason") or "",
         "raw": item,
     }
 
@@ -1060,4 +1073,270 @@ def set_maintenance_item_active(
 
     except Exception as exc:
         return ServiceResult(ok=False, message=f"更新項目啟用狀態失敗：{exc}")
+
+
+# =========================
+# 保養項目 / 節點軟刪除與還原
+# =========================
+
+def _node_path_text_from_rows(node_id: str | None, nodes: list[dict[str, Any]]) -> str:
+    node_map = {str(node.get("id") or ""): node for node in nodes}
+    current = node_map.get(str(node_id or ""))
+    names: list[str] = []
+    visited: set[str] = set()
+
+    while current:
+        current_id = str(current.get("id") or "")
+        if not current_id or current_id in visited:
+            break
+        visited.add(current_id)
+        name = str(current.get("node_name") or "").strip()
+        if name:
+            names.append(name)
+        current = node_map.get(str(current.get("parent_id") or ""))
+
+    return " > ".join(reversed(names)) if names else "-"
+
+
+def load_deleted_maintenance_entities_page_data() -> ServiceResult:
+    """
+    讀取已刪除保養項目與節點。
+    all_nodes 會同時包含未刪除與已刪除節點，供 deleted page 顯示完整路徑。
+    """
+    try:
+        item_rows = get_maintenance_items(include_inactive=True, include_deleted=True)
+        node_rows = get_maintenance_nodes(include_inactive=True, include_deleted=True)
+
+        all_nodes = [_normalize_node_row(row) for row in node_rows]
+        deleted_items = [_normalize_item_row(row) for row in item_rows if row.get("is_deleted")]
+        deleted_nodes = [_normalize_node_row(row) for row in node_rows if row.get("is_deleted")]
+
+        for item in deleted_items:
+            item["node_path"] = _node_path_text_from_rows(item.get("node_id"), all_nodes)
+
+        for node in deleted_nodes:
+            node["node_path"] = _node_path_text_from_rows(node.get("id"), all_nodes)
+
+        deleted_items.sort(
+            key=lambda item: (
+                str(item.get("deleted_at") or ""),
+                item.get("maintenance_type") or "",
+                item.get("node_path") or "",
+                item.get("item_name") or "",
+            ),
+            reverse=True,
+        )
+        deleted_nodes.sort(
+            key=lambda node: (
+                str(node.get("deleted_at") or ""),
+                node.get("maintenance_type") or "",
+                node.get("node_path") or "",
+            ),
+            reverse=True,
+        )
+
+        return ServiceResult(
+            ok=True,
+            data={
+                "deleted_items": deleted_items,
+                "deleted_nodes": deleted_nodes,
+                "all_nodes": all_nodes,
+                "deleted_item_count": len(deleted_items),
+                "deleted_node_count": len(deleted_nodes),
+            },
+        )
+
+    except Exception as exc:
+        return ServiceResult(
+            ok=False,
+            message=f"讀取已刪除保養資料失敗：{exc}",
+            data={
+                "deleted_items": [],
+                "deleted_nodes": [],
+                "all_nodes": [],
+                "deleted_item_count": 0,
+                "deleted_node_count": 0,
+            },
+        )
+
+
+def delete_maintenance_item(
+    item_id: str,
+    deleted_by_user_id: str | None,
+    deleted_by_name: str | None,
+    delete_reason: str = "超級管理員於保養項目管理頁刪除",
+    role: str | None = None,
+) -> ServiceResult:
+    if role != "超級管理員":
+        return ServiceResult(ok=False, message="權限不足，只有超級管理員可以刪除保養項目。")
+
+    if not item_id:
+        return ServiceResult(ok=False, message="缺少保養項目 ID。")
+
+    item = get_maintenance_item_by_id(item_id)
+    if not item:
+        return ServiceResult(ok=False, message="找不到保養項目。")
+
+    if item.get("is_deleted"):
+        return ServiceResult(ok=False, message="此保養項目已是刪除狀態。")
+
+    payload = {
+        "is_deleted": True,
+        "deleted_at": now_taipei_iso(),
+        "deleted_by_user_id": deleted_by_user_id,
+        "deleted_by_name": deleted_by_name or "未命名管理員",
+        "delete_reason": delete_reason or "超級管理員於保養項目管理頁刪除",
+        "updated_at": now_taipei_iso(),
+    }
+
+    try:
+        deleted = soft_delete_maintenance_item(item_id=item_id, payload=payload)
+        if not deleted:
+            return ServiceResult(ok=False, message="刪除失敗，可能項目不存在或已被刪除。")
+        return ServiceResult(ok=True, message="保養項目已刪除。", data=deleted)
+    except Exception as exc:
+        return ServiceResult(ok=False, message=f"刪除保養項目失敗：{exc}")
+
+
+def restore_deleted_maintenance_item(
+    item_id: str,
+    role: str | None = None,
+) -> ServiceResult:
+    if role != "超級管理員":
+        return ServiceResult(ok=False, message="權限不足，只有超級管理員可以還原保養項目。")
+
+    if not item_id:
+        return ServiceResult(ok=False, message="缺少保養項目 ID。")
+
+    item = get_maintenance_item_by_id(item_id)
+    if not item:
+        return ServiceResult(ok=False, message="找不到保養項目。")
+
+    if not item.get("is_deleted"):
+        return ServiceResult(ok=False, message="此保養項目目前不是刪除狀態。")
+
+    node_id = str(item.get("node_id") or "")
+    node = get_maintenance_node_by_id(node_id) if node_id else None
+    if node and node.get("is_deleted"):
+        return ServiceResult(ok=False, message="所屬節點仍為已刪除，請先還原節點。")
+
+    duplicate = _find_duplicate_item_in_node(node_id=node_id, item_name=item.get("item_name") or "") if node_id else None
+    if duplicate:
+        return ServiceResult(ok=False, message="同一位置已存在相同名稱的保養項目，無法還原。")
+
+    payload = {
+        "is_deleted": False,
+        "deleted_at": None,
+        "deleted_by_user_id": None,
+        "deleted_by_name": None,
+        "delete_reason": None,
+        "updated_at": now_taipei_iso(),
+    }
+
+    try:
+        restored = restore_maintenance_item(item_id=item_id, payload=payload)
+        if not restored:
+            return ServiceResult(ok=False, message="還原失敗，可能項目不存在或已被還原。")
+        return ServiceResult(ok=True, message="保養項目已還原。", data=restored)
+    except Exception as exc:
+        return ServiceResult(ok=False, message=f"還原保養項目失敗：{exc}")
+
+
+def delete_maintenance_node(
+    node_id: str,
+    deleted_by_user_id: str | None,
+    deleted_by_name: str | None,
+    delete_reason: str = "超級管理員於保養項目管理頁刪除空節點",
+    role: str | None = None,
+) -> ServiceResult:
+    if role != "超級管理員":
+        return ServiceResult(ok=False, message="權限不足，只有超級管理員可以刪除保養節點。")
+
+    if not node_id:
+        return ServiceResult(ok=False, message="缺少保養節點 ID。")
+
+    node = get_maintenance_node_by_id(node_id)
+    if not node:
+        return ServiceResult(ok=False, message="找不到保養節點。")
+
+    if node.get("is_deleted"):
+        return ServiceResult(ok=False, message="此保養節點已是刪除狀態。")
+
+    if int(node.get("node_level") or 0) == 0 or node.get("parent_id") is None:
+        return ServiceResult(ok=False, message="根節點不可刪除。")
+
+    active_nodes = get_maintenance_nodes(include_inactive=True, include_deleted=False)
+    if any(str(child.get("parent_id") or "") == str(node_id) for child in active_nodes):
+        return ServiceResult(ok=False, message="此節點底下仍有子節點，請先整理子節點。")
+
+    active_items = get_maintenance_items(include_inactive=True, include_deleted=False)
+    if any(str(item.get("node_id") or "") == str(node_id) for item in active_items):
+        return ServiceResult(ok=False, message="此節點底下仍有保養項目，請先刪除或移動項目。")
+
+    payload = {
+        "is_deleted": True,
+        "deleted_at": now_taipei_iso(),
+        "deleted_by_user_id": deleted_by_user_id,
+        "deleted_by_name": deleted_by_name or "未命名管理員",
+        "delete_reason": delete_reason or "超級管理員於保養項目管理頁刪除空節點",
+        "updated_at": now_taipei_iso(),
+    }
+
+    try:
+        deleted = soft_delete_maintenance_node(node_id=node_id, payload=payload)
+        if not deleted:
+            return ServiceResult(ok=False, message="刪除失敗，可能節點不存在或已被刪除。")
+        return ServiceResult(ok=True, message="空節點已刪除。", data=deleted)
+    except Exception as exc:
+        return ServiceResult(ok=False, message=f"刪除保養節點失敗：{exc}")
+
+
+def restore_deleted_maintenance_node(
+    node_id: str,
+    role: str | None = None,
+) -> ServiceResult:
+    if role != "超級管理員":
+        return ServiceResult(ok=False, message="權限不足，只有超級管理員可以還原保養節點。")
+
+    if not node_id:
+        return ServiceResult(ok=False, message="缺少保養節點 ID。")
+
+    node = get_maintenance_node_by_id(node_id)
+    if not node:
+        return ServiceResult(ok=False, message="找不到保養節點。")
+
+    if not node.get("is_deleted"):
+        return ServiceResult(ok=False, message="此保養節點目前不是刪除狀態。")
+
+    parent_id = str(node.get("parent_id") or "")
+    if parent_id:
+        parent = get_maintenance_node_by_id(parent_id)
+        if parent and parent.get("is_deleted"):
+            return ServiceResult(ok=False, message="上層節點仍為已刪除，請先還原上層節點。")
+
+    active_nodes = get_maintenance_nodes(include_inactive=True, include_deleted=False)
+    target_name = str(node.get("node_name") or "").strip()
+    if any(
+        str(row.get("parent_id") or "") == parent_id
+        and str(row.get("node_name") or "").strip() == target_name
+        for row in active_nodes
+    ):
+        return ServiceResult(ok=False, message="同一層級已有相同名稱節點，無法還原。")
+
+    payload = {
+        "is_deleted": False,
+        "deleted_at": None,
+        "deleted_by_user_id": None,
+        "deleted_by_name": None,
+        "delete_reason": None,
+        "updated_at": now_taipei_iso(),
+    }
+
+    try:
+        restored = restore_maintenance_node(node_id=node_id, payload=payload)
+        if not restored:
+            return ServiceResult(ok=False, message="還原失敗，可能節點不存在或已被還原。")
+        return ServiceResult(ok=True, message="保養節點已還原。", data=restored)
+    except Exception as exc:
+        return ServiceResult(ok=False, message=f"還原保養節點失敗：{exc}")
 

@@ -19,6 +19,8 @@ from services.maintenance_service import (
     create_cleaning_position_with_first_item,
     create_consumable_item,
     create_consumable_position_with_first_item,
+    delete_maintenance_item,
+    delete_maintenance_node,
     load_maintenance_items_page_data,
     set_maintenance_item_active,
     update_item_cycle,
@@ -93,6 +95,8 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
         "selected_sub": "",
         "active_form": None,
         "editing_item": None,
+        "delete_confirm_item_id": None,
+        "delete_confirm_node_id": None,
         "load_seq": 0,
         # 本頁 instance 級存活旗標。
         # 不再用 page.route 或 session_data token 當主要載入回寫判斷，
@@ -934,6 +938,105 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def go_deleted_page(_=None) -> None:
+        navigate("/maintenance/items/deleted")
+
+    def current_node() -> dict[str, Any] | None:
+        return node_by_id(current_node_id())
+
+    def current_node_has_children() -> bool:
+        node = current_node()
+        return bool(node and child_nodes(node.get("id")))
+
+    def ask_delete_item(item: dict[str, Any]) -> None:
+        state["delete_confirm_item_id"] = item.get("id")
+        rebuild()
+
+    def cancel_delete_item(_=None) -> None:
+        state["delete_confirm_item_id"] = None
+        rebuild()
+
+    def confirm_delete_item(item: dict[str, Any]) -> None:
+        item_id = item.get("id") or ""
+        if not item_id:
+            show_snack("缺少保養項目 ID。", success=False)
+            return
+
+        if not action_lock.acquire(blocking=False):
+            show_snack("資料寫入中，請稍候。", success=False)
+            return
+
+        def worker():
+            try:
+                result = delete_maintenance_item(
+                    item_id=item_id,
+                    deleted_by_user_id=session_get("user_id"),
+                    deleted_by_name=session_get("user_name"),
+                    delete_reason="超級管理員於保養項目管理頁刪除",
+                    role=session_get("role"),
+                )
+                if not is_active_view():
+                    return
+                if result.ok:
+                    state["delete_confirm_item_id"] = None
+                    run_after_write(result.message or "保養項目已刪除。")
+                else:
+                    show_snack(result.message or "刪除保養項目失敗。", success=False)
+            finally:
+                try:
+                    action_lock.release()
+                except Exception:
+                    pass
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def ask_delete_node(_=None) -> None:
+        node = current_node()
+        if not node:
+            show_snack("請先選擇可刪除的節點。", success=False)
+            return
+        state["delete_confirm_node_id"] = node.get("id")
+        rebuild()
+
+    def cancel_delete_node(_=None) -> None:
+        state["delete_confirm_node_id"] = None
+        rebuild()
+
+    def confirm_delete_node(_=None) -> None:
+        node = current_node()
+        node_id = str(node.get("id") or "") if node else ""
+        if not node_id:
+            show_snack("缺少保養節點 ID。", success=False)
+            return
+
+        if not action_lock.acquire(blocking=False):
+            show_snack("資料寫入中，請稍候。", success=False)
+            return
+
+        def worker():
+            try:
+                result = delete_maintenance_node(
+                    node_id=node_id,
+                    deleted_by_user_id=session_get("user_id"),
+                    deleted_by_name=session_get("user_name"),
+                    delete_reason="超級管理員於保養項目管理頁刪除空節點",
+                    role=session_get("role"),
+                )
+                if not is_active_view():
+                    return
+                if result.ok:
+                    state["delete_confirm_node_id"] = None
+                    run_after_write(result.message or "空節點已刪除。")
+                else:
+                    show_snack(result.message or "刪除節點失敗。", success=False)
+            finally:
+                try:
+                    action_lock.release()
+                except Exception:
+                    pass
+
+        threading.Thread(target=worker, daemon=True).start()
+
     # =====================================================
     # UI：統計 / 樹 / 清單
     # =====================================================
@@ -1164,6 +1267,13 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
                             ),
                         ],
                     ),
+                    stable_outline_action_button(
+                        "查看已刪除項目",
+                        color=TEXT_MUTED,
+                        border_color=BORDER,
+                        on_click=go_deleted_page,
+                        height=40,
+                    ),
                     ft.Divider(height=4),
                     ft.Text("清潔", size=13, color=BLUE_BTN, weight=ft.FontWeight.BOLD),
                     ft.Column(spacing=8, controls=clean_controls or [ft.Text("尚無清潔節點。", size=13, color=TEXT_MUTED)]),
@@ -1193,6 +1303,96 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
         active = bool(item.get("is_active"))
         icon = ft.Icons.CLEANING_SERVICES_OUTLINED if item.get("maintenance_type") == "清潔" else ft.Icons.INVENTORY_2_OUTLINED
         color = BLUE_BTN if item.get("maintenance_type") == "清潔" else ORANGE_BTN
+        is_delete_confirm = state.get("delete_confirm_item_id") == item.get("id")
+
+        controls: list[ft.Control] = [
+            ft.Row(
+                spacing=10,
+                vertical_alignment=ft.CrossAxisAlignment.START,
+                controls=[
+                    ft.Container(
+                        width=44,
+                        height=44,
+                        border_radius=22,
+                        bgcolor=BLUE_SOFT if color == BLUE_BTN else ORANGE_SOFT,
+                        alignment=ft.Alignment(0, 0),
+                        content=ft.Icon(icon, size=22, color=color),
+                    ),
+                    ft.Column(
+                        expand=True,
+                        spacing=4,
+                        controls=[
+                            ft.Text(item_display_name(item), size=16, color=TEXT, weight=ft.FontWeight.BOLD, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
+                            ft.Text(item_path(item), size=12, color=TEXT_MUTED, max_lines=2),
+                            ft.Text(f"週期：{item.get('cycle_days') or 0} 天｜排序：{item.get('sort_order') or 999}", size=12, color=TEXT_MUTED),
+                        ],
+                    ),
+                    status_badge(item),
+                ],
+            ),
+            ft.ResponsiveRow(
+                columns=12,
+                spacing=10,
+                run_spacing=10,
+                controls=[
+                    ft.Container(
+                        col={"xs": 6, "md": 4},
+                        content=stable_outline_action_button(
+                            "編輯週期",
+                            color=PURPLE_BTN,
+                            border_color=PURPLE_BORDER,
+                            on_click=lambda _, current=item: open_edit_cycle(current),
+                        ),
+                    ),
+                    ft.Container(
+                        col={"xs": 6, "md": 4},
+                        content=stable_outline_action_button(
+                            "停用" if active else "啟用",
+                            color=RED if active else GREEN,
+                            border_color=RED_BORDER if active else GREEN_BORDER,
+                            on_click=lambda _, current=item: toggle_active(current),
+                        ),
+                    ),
+                    ft.Container(
+                        col={"xs": 12, "md": 4},
+                        content=stable_outline_action_button(
+                            "刪除項目",
+                            color=RED,
+                            border_color=RED_BORDER,
+                            on_click=lambda _, current=item: ask_delete_item(current),
+                        ),
+                    ),
+                ],
+            ),
+        ]
+
+        if is_delete_confirm:
+            controls.append(
+                ft.Container(
+                    bgcolor=RED_SOFT,
+                    border=ft.border.all(1, RED_BORDER),
+                    border_radius=12,
+                    padding=12,
+                    content=ft.Column(
+                        spacing=10,
+                        controls=[
+                            ft.Text(
+                                "確認刪除此保養項目？刪除後不會實體移除，可到「已刪除項目」還原。",
+                                size=12,
+                                color=RED,
+                                weight=ft.FontWeight.W_600,
+                            ),
+                            ft.Row(
+                                spacing=10,
+                                controls=[
+                                    ft.Container(expand=True, content=stable_outline_action_button("取消", color=TEXT_MUTED, border_color=BORDER, on_click=cancel_delete_item, height=40)),
+                                    ft.Container(expand=True, content=stable_filled_action_button("確認刪除", bg=RED, on_click=lambda _, current=item: confirm_delete_item(current), height=40)),
+                                ],
+                            ),
+                        ],
+                    ),
+                )
+            )
 
         return ft.Container(
             bgcolor="#FFFFFF",
@@ -1200,69 +1400,20 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
             border_radius=14,
             padding=14,
             opacity=1 if active else 0.72,
-            content=ft.Column(
-                spacing=12,
-                controls=[
-                    ft.Row(
-                        spacing=10,
-                        vertical_alignment=ft.CrossAxisAlignment.START,
-                        controls=[
-                            ft.Container(
-                                width=44,
-                                height=44,
-                                border_radius=22,
-                                bgcolor=BLUE_SOFT if color == BLUE_BTN else ORANGE_SOFT,
-                                alignment=ft.Alignment(0, 0),
-                                content=ft.Icon(icon, size=22, color=color),
-                            ),
-                            ft.Column(
-                                expand=True,
-                                spacing=4,
-                                controls=[
-                                    ft.Text(item_display_name(item), size=16, color=TEXT, weight=ft.FontWeight.BOLD, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
-                                    ft.Text(item_path(item), size=12, color=TEXT_MUTED, max_lines=2),
-                                    ft.Text(f"週期：{item.get('cycle_days') or 0} 天｜排序：{item.get('sort_order') or 999}", size=12, color=TEXT_MUTED),
-                                ],
-                            ),
-                            status_badge(item),
-                        ],
-                    ),
-                    ft.ResponsiveRow(
-                        columns=12,
-                        spacing=10,
-                        run_spacing=10,
-                        controls=[
-                            ft.Container(
-                                col={"xs": 6, "md": 4},
-                                content=stable_outline_action_button(
-                                    "編輯週期",
-                                    color=PURPLE_BTN,
-                                    border_color=PURPLE_BORDER,
-                                    on_click=lambda _, current=item: open_edit_cycle(current),
-                                ),
-                            ),
-                            ft.Container(
-                                col={"xs": 6, "md": 4},
-                                content=stable_outline_action_button(
-                                    "停用" if active else "啟用",
-                                    color=RED if active else GREEN,
-                                    border_color=RED_BORDER if active else GREEN_BORDER,
-                                    on_click=lambda _, current=item: toggle_active(current),
-                                ),
-                            ),
-                        ],
-                    ),
-                ],
-            ),
+            content=ft.Column(spacing=12, controls=controls),
         )
 
     def build_node_detail() -> ft.Control:
         items = current_node_items()
         active = len([item for item in items if item.get("is_active")])
         inactive = len(items) - active
+        node = current_node()
+        node_id = str(node.get("id") or "") if node else ""
+        node_has_children = current_node_has_children()
+        can_delete_current_node = bool(node_id and node and int(node.get("node_level") or 0) > 0 and not items and not node_has_children)
+        is_delete_node_confirm = state.get("delete_confirm_node_id") == node_id and bool(node_id)
 
         create_label = "在此位置新增清潔項目" if state["selected_type"] == "清潔" else "在此位置新增耗材項目"
-        create_icon = ft.Icons.CLEANING_SERVICES_OUTLINED if state["selected_type"] == "清潔" else ft.Icons.INVENTORY_2_OUTLINED
         create_color = BLUE_BTN if state["selected_type"] == "清潔" else ORANGE_BTN
 
         item_controls = [build_item_row(item) for item in items]
@@ -1283,6 +1434,26 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
                 )
             ]
 
+        action_buttons: list[ft.Control] = [
+            stable_filled_action_button(
+                create_label,
+                bg=create_color,
+                on_click=open_create_form,
+                height=44,
+            )
+        ]
+
+        if can_delete_current_node:
+            action_buttons.append(
+                stable_outline_action_button(
+                    "刪除空節點",
+                    color=RED,
+                    border_color=RED_BORDER,
+                    on_click=ask_delete_node,
+                    height=44,
+                )
+            )
+
         controls: list[ft.Control] = [
             ft.Row(
                 vertical_alignment=ft.CrossAxisAlignment.START,
@@ -1296,15 +1467,38 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
                             ft.Text(f"此位置共 {len(items)} 筆，啟用 {active} 筆，停用 {inactive} 筆。", size=13, color=TEXT_MUTED),
                         ],
                     ),
-                    stable_filled_action_button(
-                        create_label,
-                        bg=create_color,
-                        on_click=open_create_form,
-                        height=44,
-                    ),
+                    ft.Column(spacing=8, controls=action_buttons),
                 ],
             ),
         ]
+
+        if is_delete_node_confirm:
+            controls.append(
+                ft.Container(
+                    bgcolor=RED_SOFT,
+                    border=ft.border.all(1, RED_BORDER),
+                    border_radius=12,
+                    padding=12,
+                    content=ft.Column(
+                        spacing=10,
+                        controls=[
+                            ft.Text(
+                                "確認刪除此空節點？節點刪除後可到「已刪除項目」還原。",
+                                size=12,
+                                color=RED,
+                                weight=ft.FontWeight.W_600,
+                            ),
+                            ft.Row(
+                                spacing=10,
+                                controls=[
+                                    ft.Container(expand=True, content=stable_outline_action_button("取消", color=TEXT_MUTED, border_color=BORDER, on_click=cancel_delete_node, height=40)),
+                                    ft.Container(expand=True, content=stable_filled_action_button("確認刪除", bg=RED, on_click=confirm_delete_node, height=40)),
+                                ],
+                            ),
+                        ],
+                    ),
+                )
+            )
 
         form = build_active_form()
         if form:
@@ -1904,6 +2098,13 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
         controls: list[ft.Control] = [
             section_title("步驟 1：選擇類型", "先選清潔或耗材更換。"),
             type_switch(),
+            stable_outline_action_button(
+                "查看已刪除項目",
+                color=TEXT_MUTED,
+                border_color=BORDER,
+                on_click=go_deleted_page,
+                height=46,
+            ),
         ]
 
         if state["selected_type"] == "清潔":

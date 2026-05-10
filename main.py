@@ -14,6 +14,7 @@ from views.handover_tasks import HandoverTasksContent
 from views.feed import FeedContent
 from views.maintenance import MaintenanceContent
 from views.maintenance_items import MaintenanceItemsContent
+from views.maintenance_items_deleted import MaintenanceItemsDeletedContent
 from services.auth_service import update_user_shortcuts
 from services.auth_session_service import (
     cleanup_expired_user_sessions,
@@ -1147,6 +1148,14 @@ def main(page: ft.Page):
                     "/maintenance/items",
                     "保養項目管理",
                     MaintenanceItemsContent(page),
+                    3,
+                )
+
+            elif route == "/maintenance/items/deleted":
+                target_view = shell(
+                    "/maintenance/items/deleted",
+                    "已刪除保養項目",
+                    MaintenanceItemsDeletedContent(page),
                     3,
                 )
 

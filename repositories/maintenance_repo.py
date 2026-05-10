@@ -170,6 +170,59 @@ def create_maintenance_node(payload: dict[str, Any]) -> dict[str, Any] | None:
 
     return res.data[0]
 
+def update_maintenance_node(node_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    """
+    更新保養節點。
+    用於：軟刪除、還原、啟用停用、調整排序與重新命名。
+    """
+    res = (
+        supabase.table(TABLE_NODES)
+        .update(payload)
+        .eq("id", node_id)
+        .execute()
+    )
+
+    if not res.data:
+        return None
+
+    return res.data[0]
+
+
+def soft_delete_maintenance_node(node_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    """
+    軟刪除保養節點，不做實體 delete。
+    """
+    res = (
+        supabase.table(TABLE_NODES)
+        .update(payload)
+        .eq("id", node_id)
+        .eq("is_deleted", False)
+        .execute()
+    )
+
+    if not res.data:
+        return None
+
+    return res.data[0]
+
+
+def restore_maintenance_node(node_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    """
+    還原已刪除的保養節點。
+    """
+    res = (
+        supabase.table(TABLE_NODES)
+        .update(payload)
+        .eq("id", node_id)
+        .eq("is_deleted", True)
+        .execute()
+    )
+
+    if not res.data:
+        return None
+
+    return res.data[0]
+
 
 def get_recent_maintenance_records(limit: int = 10) -> list[dict[str, Any]]:
     """
@@ -277,6 +330,41 @@ def create_maintenance_item(payload: dict[str, Any]) -> dict[str, Any] | None:
     res = (
         supabase.table(TABLE_ITEMS)
         .insert(payload)
+        .execute()
+    )
+
+    if not res.data:
+        return None
+
+    return res.data[0]
+
+def soft_delete_maintenance_item(item_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    """
+    軟刪除保養項目，不做實體 delete。
+    """
+    res = (
+        supabase.table(TABLE_ITEMS)
+        .update(payload)
+        .eq("id", item_id)
+        .eq("is_deleted", False)
+        .execute()
+    )
+
+    if not res.data:
+        return None
+
+    return res.data[0]
+
+
+def restore_maintenance_item(item_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    """
+    還原已刪除的保養項目。
+    """
+    res = (
+        supabase.table(TABLE_ITEMS)
+        .update(payload)
+        .eq("id", item_id)
+        .eq("is_deleted", True)
         .execute()
     )
 
