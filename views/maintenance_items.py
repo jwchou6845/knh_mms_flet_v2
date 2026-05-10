@@ -16,7 +16,9 @@ import flet as ft
 
 from services.maintenance_service import (
     create_cleaning_item,
+    create_cleaning_position_with_first_item,
     create_consumable_item,
+    create_consumable_position_with_first_item,
     load_maintenance_items_page_data,
     set_maintenance_item_active,
     update_item_cycle,
@@ -81,6 +83,7 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
         "sync_badge_visible": True,
         "error_message": "",
         "items": [],
+        "nodes": [],
         "count": 0,
         "active_count": 0,
         "inactive_count": 0,
@@ -185,6 +188,94 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
         text = str(value or "").strip().replace("　", " ")
         return " ".join(text.split()).casefold()
 
+    def all_nodes() -> list[dict[str, Any]]:
+        return list(state.get("nodes") or [])
+
+    def node_by_id(node_id: str | None) -> dict[str, Any] | None:
+        if not node_id:
+            return None
+        for node in all_nodes():
+            if str(node.get("id") or "") == str(node_id):
+                return node
+        return None
+
+    def root_node(maintenance_type: str) -> dict[str, Any] | None:
+        for node in all_nodes():
+            if (
+                node.get("maintenance_type") == maintenance_type
+                and node.get("parent_id") is None
+                and int(node.get("node_level") or 0) == 0
+            ):
+                return node
+        return None
+
+    def child_nodes(parent_id: str | None) -> list[dict[str, Any]]:
+        rows = [node for node in all_nodes() if str(node.get("parent_id") or "") == str(parent_id or "")]
+        return sorted(
+            rows,
+            key=lambda node: (
+                int(node.get("sort_order") or 999),
+                clean_text(node.get("node_name")),
+            ),
+        )
+
+    def find_child_node(parent_id: str | None, node_name: str) -> dict[str, Any] | None:
+        target = normalize_duplicate_text(node_name)
+        for node in child_nodes(parent_id):
+            if normalize_duplicate_text(node.get("node_name")) == target:
+                return node
+        return None
+
+    def node_path_names(node_id: str | None) -> list[str]:
+        result: list[str] = []
+        current = node_by_id(node_id)
+        visited: set[str] = set()
+
+        while current and str(current.get("id") or "") not in visited:
+            current_id = str(current.get("id") or "")
+            visited.add(current_id)
+            name = clean_text(current.get("node_name"))
+            if name:
+                result.append(name)
+            current = node_by_id(current.get("parent_id"))
+
+        return list(reversed(result))
+
+    def node_path_text(node_id: str | None, fallback: str = "-") -> str:
+        names = node_path_names(node_id)
+        return " > ".join(names) if names else fallback
+
+    def clean_node_by_name(machine_area: str) -> dict[str, Any] | None:
+        root = root_node("清潔")
+        return find_child_node(root.get("id") if root else None, machine_area)
+
+    def consumable_main_node_by_name(main_category: str) -> dict[str, Any] | None:
+        root = root_node("耗材更換")
+        return find_child_node(root.get("id") if root else None, main_category)
+
+    def consumable_sub_node_by_name(main_category: str, sub_category: str) -> dict[str, Any] | None:
+        main_node = consumable_main_node_by_name(main_category)
+        if not main_node or not sub_category or sub_category == "未分區":
+            return None
+        return find_child_node(main_node.get("id"), sub_category)
+
+    def current_node_id() -> str:
+        if state["selected_type"] == "清潔":
+            node = clean_node_by_name(state.get("selected_machine") or "")
+            return str(node.get("id") or "") if node else ""
+
+        main = clean_text(state.get("selected_main"))
+        sub = clean_text(state.get("selected_sub"))
+        main_node = consumable_main_node_by_name(main)
+        if not main_node:
+            return ""
+
+        if sub and sub != "未分區":
+            sub_node = consumable_sub_node_by_name(main, sub)
+            return str(sub_node.get("id") or "") if sub_node else ""
+
+        return str(main_node.get("id") or "")
+
     def item_display_name(item: dict[str, Any]) -> str:
         sub = clean_text(item.get("sub_category"))
         name = clean_text(item.get("item_name"), "未命名項目")
@@ -193,6 +284,10 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
         return name
 
     def item_path(item: dict[str, Any]) -> str:
+        node_path = node_path_text(item.get("node_id"), fallback="")
+        if node_path:
+            return node_path
+
         if item.get("maintenance_type") == "清潔":
             return f"清潔 > {item.get('machine_area') or '-'}"
 
@@ -519,128 +614,115 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
         return [item for item in all_items() if item.get("is_active")]
 
     def clean_machines() -> list[str]:
-        return unique_values([
-            item.get("machine_area")
-            for item in all_items()
-            if item.get("maintenance_type") == "清潔"
-        ])
+        root = root_node("清潔")
+        return [clean_text(node.get("node_name")) for node in child_nodes(root.get("id") if root else None)]
 
     def consumable_mains() -> list[str]:
-        return unique_values([
-            item.get("main_category")
-            for item in all_items()
-            if item.get("maintenance_type") == "耗材更換"
-        ])
+        root = root_node("耗材更換")
+        return [clean_text(node.get("node_name")) for node in child_nodes(root.get("id") if root else None)]
 
     def consumable_subs(main_category: str) -> list[str]:
-        return unique_values([
-            item.get("sub_category") or "未分區"
-            for item in all_items()
-            if item.get("maintenance_type") == "耗材更換"
-            and clean_text(item.get("main_category")) == main_category
-        ])
+        main_node = consumable_main_node_by_name(main_category)
+        if not main_node:
+            return []
+
+        result = [clean_text(node.get("node_name")) for node in child_nodes(main_node.get("id"))]
+
+        direct_items = [
+            item for item in all_items()
+            if str(item.get("node_id") or "") == str(main_node.get("id") or "")
+        ]
+        if direct_items:
+            result = ["未分區"] + result
+
+        return result
 
     def ensure_default_selection() -> None:
         if state["selected_type"] == "清潔":
             machines = clean_machines()
-            if not state.get("selected_machine") and machines:
-                state["selected_machine"] = machines[0]
+            if state.get("selected_machine") not in machines:
+                state["selected_machine"] = machines[0] if machines else ""
             return
 
         mains = consumable_mains()
-        if not state.get("selected_main") and mains:
-            state["selected_main"] = mains[0]
+        if state.get("selected_main") not in mains:
+            state["selected_main"] = mains[0] if mains else ""
+
         subs = consumable_subs(state.get("selected_main") or "")
-        if not state.get("selected_sub") and subs:
-            state["selected_sub"] = subs[0]
+        if state.get("selected_sub") not in subs:
+            state["selected_sub"] = subs[0] if subs else ""
 
     def current_path_text() -> str:
+        node_id = current_node_id()
+        if node_id:
+            return node_path_text(node_id)
+
         if state["selected_type"] == "清潔":
-            return f"清潔 > {state.get('selected_machine') or '未選擇'}"
-        sub = state.get("selected_sub") or ""
-        if sub and sub != "未分區":
-            return f"耗材更換 > {state.get('selected_main') or '未選擇'} > {sub}"
-        return f"耗材更換 > {state.get('selected_main') or '未選擇'}"
+            return "清潔 > 未選擇"
+
+        return "耗材更換 > 未選擇"
 
     def current_node_items() -> list[dict[str, Any]]:
-        items = all_items()
-        if state["selected_type"] == "清潔":
-            machine = clean_text(state.get("selected_machine"))
-            return [
-                item for item in items
-                if item.get("maintenance_type") == "清潔"
-                and clean_text(item.get("machine_area")) == machine
-            ]
-
-        main = clean_text(state.get("selected_main"))
-        sub = clean_text(state.get("selected_sub"))
-        result = [
-            item for item in items
-            if item.get("maintenance_type") == "耗材更換"
-            and clean_text(item.get("main_category")) == main
+        node_id = current_node_id()
+        if not node_id:
+            return []
+        return [
+            item for item in all_items()
+            if str(item.get("node_id") or "") == str(node_id)
         ]
-        if sub and sub != "未分區":
-            result = [item for item in result if clean_text(item.get("sub_category")) == sub]
-        elif sub == "未分區":
-            result = [item for item in result if not clean_text(item.get("sub_category"))]
-
-        return result
 
     def has_duplicate_cleaning(item_name: str, machine_area: str) -> dict[str, Any] | None:
+        node = clean_node_by_name(machine_area)
+        node_id = str(node.get("id") or "") if node else ""
         target_name = normalize_duplicate_text(item_name)
-        target_machine = normalize_duplicate_text(machine_area)
-        if not target_name or not target_machine:
+
+        if not node_id or not target_name:
             return None
+
         for item in all_items():
-            if item.get("maintenance_type") != "清潔":
-                continue
-            if normalize_duplicate_text(item.get("item_name")) == target_name and normalize_duplicate_text(item.get("machine_area")) == target_machine:
+            if (
+                str(item.get("node_id") or "") == node_id
+                and normalize_duplicate_text(item.get("item_name")) == target_name
+            ):
                 return item
         return None
 
     def has_duplicate_consumable(main_category: str, sub_category: str, item_name: str, machine_area: str) -> dict[str, Any] | None:
-        target_main = normalize_duplicate_text(main_category)
-        target_sub = normalize_duplicate_text(sub_category)
-        target_name = normalize_duplicate_text(item_name)
-        target_machine = normalize_duplicate_text(machine_area)
-        if not target_main or not target_name or not target_machine:
+        del machine_area  # 節點樹接管後，同一節點 + 同名項目即可視為重複。
+        main_node = consumable_main_node_by_name(main_category)
+        if not main_node:
             return None
+
+        if sub_category:
+            sub_node = consumable_sub_node_by_name(main_category, sub_category)
+            node_id = str(sub_node.get("id") or "") if sub_node else ""
+        else:
+            node_id = str(main_node.get("id") or "")
+
+        target_name = normalize_duplicate_text(item_name)
+        if not node_id or not target_name:
+            return None
+
         for item in all_items():
-            if item.get("maintenance_type") != "耗材更換":
-                continue
             if (
-                normalize_duplicate_text(item.get("main_category")) == target_main
-                and normalize_duplicate_text(item.get("sub_category")) == target_sub
+                str(item.get("node_id") or "") == node_id
                 and normalize_duplicate_text(item.get("item_name")) == target_name
-                and normalize_duplicate_text(item.get("machine_area")) == target_machine
             ):
                 return item
         return None
 
     def has_clean_machine(machine_area: str) -> bool:
-        target = normalize_duplicate_text(machine_area)
-        if not target:
-            return False
-        for item in all_items():
-            if item.get("maintenance_type") != "清潔":
-                continue
-            if normalize_duplicate_text(item.get("machine_area")) == target:
-                return True
-        return False
+        return clean_node_by_name(machine_area) is not None
 
     def has_consumable_node(main_category: str, sub_category: str) -> bool:
-        target_main = normalize_duplicate_text(main_category)
-        target_sub = normalize_duplicate_text(sub_category)
-        if not target_main:
+        main_node = consumable_main_node_by_name(main_category)
+        if not main_node:
             return False
-        for item in all_items():
-            if item.get("maintenance_type") != "耗材更換":
-                continue
-            if normalize_duplicate_text(item.get("main_category")) != target_main:
-                continue
-            if normalize_duplicate_text(item.get("sub_category")) == target_sub:
-                return True
-        return False
+
+        if sub_category:
+            return consumable_sub_node_by_name(main_category, sub_category) is not None
+
+        return True
 
     def load_data(update_sync_state: bool = True) -> bool:
         """
@@ -663,6 +745,7 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
 
         if result.ok:
             state["items"] = data.get("items") or []
+            state["nodes"] = data.get("nodes") or []
             state["count"] = data.get("count", len(state["items"]))
             state["active_count"] = data.get("active_count", 0)
             state["inactive_count"] = data.get("inactive_count", 0)
@@ -673,6 +756,7 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
             return True
 
         state["items"] = data.get("items") or []
+        state["nodes"] = data.get("nodes") or []
         state["count"] = 0
         state["active_count"] = 0
         state["inactive_count"] = 0
@@ -751,16 +835,16 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
         if value == "清潔":
             state["selected_main"] = ""
             state["selected_sub"] = ""
-            if not state.get("selected_machine"):
+            if state.get("selected_machine") not in clean_machines():
                 machines = clean_machines()
                 state["selected_machine"] = machines[0] if machines else ""
         else:
             state["selected_machine"] = ""
-            if not state.get("selected_main"):
+            if state.get("selected_main") not in consumable_mains():
                 mains = consumable_mains()
                 state["selected_main"] = mains[0] if mains else ""
             subs = consumable_subs(state.get("selected_main") or "")
-            state["selected_sub"] = subs[0] if subs else ""
+            state["selected_sub"] = subs[0] if state.get("selected_sub") not in subs and subs else state.get("selected_sub", "")
         rebuild()
 
     def select_clean_machine(machine: str) -> None:
@@ -781,12 +865,12 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
     def open_create_form(_=None) -> None:
         state["editing_item"] = None
         if state["selected_type"] == "清潔":
-            if not state.get("selected_machine"):
+            if not current_node_id():
                 show_snack("請先選擇清潔項目的設備 / 區域。", success=False)
                 return
             state["active_form"] = "create_clean"
         else:
-            if not state.get("selected_main"):
+            if not current_node_id():
                 show_snack("請先選擇耗材更換的設備 / 系統。", success=False)
                 return
             state["active_form"] = "create_consumable"
@@ -934,17 +1018,23 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
             ],
         )
 
-    def node_count(label_type: str, key_a: str = "", key_b: str = "") -> int:
-        if label_type == "clean":
-            return len([item for item in all_items() if item.get("maintenance_type") == "清潔" and clean_text(item.get("machine_area")) == key_a])
+    def descendant_node_ids(node_id: str) -> set[str]:
+        result = {str(node_id)}
+        pending = [str(node_id)]
 
-        rows = [item for item in all_items() if item.get("maintenance_type") == "耗材更換" and clean_text(item.get("main_category")) == key_a]
-        if key_b:
-            if key_b == "未分區":
-                rows = [item for item in rows if not clean_text(item.get("sub_category"))]
-            else:
-                rows = [item for item in rows if clean_text(item.get("sub_category")) == key_b]
-        return len(rows)
+        while pending:
+            parent_id = pending.pop()
+            for node in child_nodes(parent_id):
+                child_id = str(node.get("id") or "")
+                if child_id and child_id not in result:
+                    result.add(child_id)
+                    pending.append(child_id)
+
+        return result
+
+    def node_count(node_id: str, include_descendants: bool = True) -> int:
+        ids = descendant_node_ids(node_id) if include_descendants else {str(node_id)}
+        return len([item for item in all_items() if str(item.get("node_id") or "") in ids])
 
     def tree_node(label: str, selected: bool, icon, color: str, subtitle: str, on_click) -> ft.Control:
         return ft.Container(
@@ -974,44 +1064,70 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
 
     def build_desktop_tree() -> ft.Control:
         clean_controls: list[ft.Control] = []
-        for machine in clean_machines():
-            selected = state["selected_type"] == "清潔" and state.get("selected_machine") == machine
+        root_clean = root_node("清潔")
+        for node in child_nodes(root_clean.get("id") if root_clean else None):
+            node_name = clean_text(node.get("node_name"))
+            selected = state["selected_type"] == "清潔" and state.get("selected_machine") == node_name
             clean_controls.append(
                 tree_node(
-                    machine,
+                    node_name,
                     selected,
                     ft.Icons.CLEANING_SERVICES_OUTLINED,
                     BLUE_BTN,
-                    f"{node_count('clean', machine)} 筆項目",
-                    lambda _, m=machine: select_clean_machine(m),
+                    f"{node_count(str(node.get('id') or ''), include_descendants=False)} 筆項目",
+                    lambda _, m=node_name: select_clean_machine(m),
                 )
             )
 
         material_controls: list[ft.Control] = []
-        for main in consumable_mains():
-            main_selected = state["selected_type"] == "耗材更換" and state.get("selected_main") == main and not state.get("selected_sub")
+        root_material = root_node("耗材更換")
+        for main_node in child_nodes(root_material.get("id") if root_material else None):
+            main_name = clean_text(main_node.get("node_name"))
+            main_selected = state["selected_type"] == "耗材更換" and state.get("selected_main") == main_name and not state.get("selected_sub")
             material_controls.append(
                 tree_node(
-                    main,
+                    main_name,
                     main_selected,
                     ft.Icons.INVENTORY_2_OUTLINED,
                     ORANGE_BTN,
-                    f"{node_count('material', main)} 筆項目",
-                    lambda _, m=main: select_consumable_node(m, ""),
+                    f"{node_count(str(main_node.get('id') or ''), include_descendants=True)} 筆項目",
+                    lambda _, m=main_name: select_consumable_node(m, ""),
                 )
             )
-            for sub in consumable_subs(main):
-                selected = state["selected_type"] == "耗材更換" and state.get("selected_main") == main and state.get("selected_sub") == sub
+
+            direct_items = [
+                item for item in all_items()
+                if str(item.get("node_id") or "") == str(main_node.get("id") or "")
+            ]
+            if direct_items:
+                selected = state["selected_type"] == "耗材更換" and state.get("selected_main") == main_name and state.get("selected_sub") == "未分區"
                 material_controls.append(
                     ft.Container(
                         margin=ft.margin.only(left=18),
                         content=tree_node(
-                            sub,
+                            "未分區",
                             selected,
                             ft.Icons.SUBDIRECTORY_ARROW_RIGHT,
                             ORANGE_BTN,
-                            f"{node_count('material', main, sub)} 筆項目",
-                            lambda _, m=main, s=sub: select_consumable_node(m, s),
+                            f"{len(direct_items)} 筆項目",
+                            lambda _, m=main_name: select_consumable_node(m, "未分區"),
+                        ),
+                    )
+                )
+
+            for sub_node in child_nodes(main_node.get("id")):
+                sub_name = clean_text(sub_node.get("node_name"))
+                selected = state["selected_type"] == "耗材更換" and state.get("selected_main") == main_name and state.get("selected_sub") == sub_name
+                material_controls.append(
+                    ft.Container(
+                        margin=ft.margin.only(left=18),
+                        content=tree_node(
+                            sub_name,
+                            selected,
+                            ft.Icons.SUBDIRECTORY_ARROW_RIGHT,
+                            ORANGE_BTN,
+                            f"{node_count(str(sub_node.get('id') or ''), include_descendants=False)} 筆項目",
+                            lambda _, m=main_name, s=sub_name: select_consumable_node(m, s),
                         ),
                     )
                 )
@@ -1021,7 +1137,7 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
             content=ft.Column(
                 spacing=14,
                 controls=[
-                    section_title("保養項目地圖", "從既有結構選擇新增位置；若沒有合適位置，可先建立新位置與第一個項目。"),
+                    section_title("保養項目地圖", "目前已改由 maintenance_nodes 真正節點樹管理；既有欄位僅保留相容用途。"),
                     type_switch(),
                     ft.Row(
                         spacing=8,
@@ -1050,10 +1166,10 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
                     ),
                     ft.Divider(height=4),
                     ft.Text("清潔", size=13, color=BLUE_BTN, weight=ft.FontWeight.BOLD),
-                    ft.Column(spacing=8, controls=clean_controls or [ft.Text("尚無清潔項目。", size=13, color=TEXT_MUTED)]),
+                    ft.Column(spacing=8, controls=clean_controls or [ft.Text("尚無清潔節點。", size=13, color=TEXT_MUTED)]),
                     ft.Container(height=4),
                     ft.Text("耗材更換", size=13, color=ORANGE_BTN, weight=ft.FontWeight.BOLD),
-                    ft.Column(spacing=8, controls=material_controls or [ft.Text("尚無耗材項目。", size=13, color=TEXT_MUTED)]),
+                    ft.Column(spacing=8, controls=material_controls or [ft.Text("尚無耗材節點。", size=13, color=TEXT_MUTED)]),
                 ],
             ),
         )
@@ -1286,12 +1402,14 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
 
             def worker():
                 try:
-                    result = create_cleaning_item(
-                        item_name=item_name,
+                    result = create_cleaning_position_with_first_item(
                         machine_area=machine_area,
+                        item_name=item_name,
                         cycle_days=cycle_days,
                         sort_order=999,
                         description=desc,
+                        created_by_user_id=session_get("user_id"),
+                        created_by_name=session_get("user_name"),
                     )
                     if not is_active_view():
                         return
@@ -1423,7 +1541,7 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
 
             def worker():
                 try:
-                    result = create_consumable_item(
+                    result = create_consumable_position_with_first_item(
                         main_category=main_category,
                         sub_category=sub_category,
                         item_name=item_name,
@@ -1431,6 +1549,8 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
                         cycle_days=cycle_days,
                         sort_order=999,
                         description=desc,
+                        created_by_user_id=session_get("user_id"),
+                        created_by_name=session_get("user_name"),
                     )
                     if not is_active_view():
                         return
@@ -1529,6 +1649,7 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
                         cycle_days=cycle_days,
                         sort_order=999,
                         description=desc,
+                        node_id=current_node_id(),
                     )
                     if not is_active_view():
                         return
@@ -1624,6 +1745,7 @@ def MaintenanceItemsContent(page: ft.Page) -> ft.Control:
                         cycle_days=cycle_days,
                         sort_order=999,
                         description=desc,
+                        node_id=current_node_id(),
                     )
                     if not is_active_view():
                         return

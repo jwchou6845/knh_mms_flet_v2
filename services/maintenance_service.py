@@ -7,11 +7,17 @@ from typing import Any
 
 from repositories.maintenance_repo import (
     create_maintenance_item,
+    create_maintenance_node,
     create_maintenance_record,
     get_active_maintenance_items,
+    get_child_maintenance_node,
+    get_maintenance_item_by_id,
     get_maintenance_items,
+    get_maintenance_node_by_id,
+    get_maintenance_nodes,
     get_recent_maintenance_records,
     get_records_by_item_id,
+    get_root_maintenance_node,
     soft_delete_maintenance_record,
     update_maintenance_item,
 )
@@ -511,6 +517,110 @@ def submit_maintenance_record(
 
 
 # =========================
+# 保養節點工具
+# =========================
+
+def _normalize_node_row(node: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": node.get("id"),
+        "parent_id": node.get("parent_id"),
+        "maintenance_type": node.get("maintenance_type") or "",
+        "node_name": node.get("node_name") or "",
+        "node_level": int(node.get("node_level") or 0),
+        "sort_order": int(node.get("sort_order") or 999),
+        "description": node.get("description") or "",
+        "is_active": bool(node.get("is_active", True)),
+        "is_deleted": bool(node.get("is_deleted", False)),
+        "raw": node,
+    }
+
+
+def _node_context(node_id: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """
+    取得節點與父節點。
+    """
+    node = get_maintenance_node_by_id(node_id)
+    if not node:
+        return None, None
+    parent = get_maintenance_node_by_id(node.get("parent_id")) if node.get("parent_id") else None
+    return node, parent
+
+
+def _build_legacy_fields_from_node(
+    node_id: str,
+    expected_type: str,
+) -> tuple[ServiceResult | None, dict[str, Any]]:
+    """
+    由 node_id 反推仍要同步保留的舊欄位。
+    目前 maintenance.py / reports.py 仍會使用 main_category / sub_category / machine_area，
+    所以節點樹正式接管後，新增 item 時仍會同步寫入舊欄位。
+    """
+    node, parent = _node_context(node_id)
+
+    if not node:
+        return ServiceResult(ok=False, message="找不到指定的保養節點。"), {}
+
+    if node.get("is_deleted"):
+        return ServiceResult(ok=False, message="指定的保養節點已刪除。"), {}
+
+    if not node.get("is_active", True):
+        return ServiceResult(ok=False, message="指定的保養節點已停用。"), {}
+
+    if node.get("maintenance_type") != expected_type:
+        return ServiceResult(ok=False, message="保養節點類型不正確。"), {}
+
+    level = int(node.get("node_level") or 0)
+
+    if expected_type == "清潔":
+        if level != 1:
+            return ServiceResult(ok=False, message="清潔項目只能掛在設備 / 區域節點底下。"), {}
+        return None, {
+            "maintenance_type": "清潔",
+            "main_category": "清潔項目",
+            "sub_category": None,
+            "machine_area": node.get("node_name") or "",
+        }
+
+    if expected_type == "耗材更換":
+        if level == 1:
+            return None, {
+                "maintenance_type": "耗材更換",
+                "main_category": node.get("node_name") or "",
+                "sub_category": None,
+            }
+
+        if level == 2 and parent:
+            return None, {
+                "maintenance_type": "耗材更換",
+                "main_category": parent.get("node_name") or "",
+                "sub_category": node.get("node_name") or "",
+            }
+
+        return ServiceResult(ok=False, message="耗材項目只能掛在設備 / 系統或區段節點底下。"), {}
+
+    return ServiceResult(ok=False, message="不支援的保養節點類型。"), {}
+
+
+def _find_duplicate_item_in_node(
+    node_id: str,
+    item_name: str,
+) -> dict[str, Any] | None:
+    target_name = str(item_name or "").strip().replace("　", " ")
+    target_name = " ".join(target_name.split()).casefold()
+    if not node_id or not target_name:
+        return None
+
+    items = get_maintenance_items(include_inactive=True, include_deleted=False)
+    for item in items:
+        same_node = str(item.get("node_id") or "") == str(node_id)
+        same_name_text = str(item.get("item_name") or "").strip().replace("　", " ")
+        same_name = " ".join(same_name_text.split()).casefold() == target_name
+        if same_node and same_name:
+            return item
+    return None
+
+
+# =========================
 # 新增清潔項目
 # =========================
 
@@ -520,6 +630,7 @@ def create_cleaning_item(
     cycle_days: int,
     sort_order: int,
     description: str = "",
+    node_id: str | None = None,
 ) -> ServiceResult:
     if not item_name:
         return ServiceResult(ok=False, message="請輸入清潔項目名稱。")
@@ -530,12 +641,31 @@ def create_cleaning_item(
     if cycle_days <= 0:
         return ServiceResult(ok=False, message="週期天數必須大於 0。")
 
-    payload = {
-        "item_name": item_name,
+    legacy_fields = {
         "maintenance_type": "清潔",
         "main_category": "清潔項目",
         "sub_category": None,
         "machine_area": machine_area,
+    }
+
+    if node_id:
+        error, node_legacy_fields = _build_legacy_fields_from_node(node_id=node_id, expected_type="清潔")
+        if error:
+            return error
+        legacy_fields.update(node_legacy_fields)
+
+        duplicate = _find_duplicate_item_in_node(node_id=node_id, item_name=item_name)
+        if duplicate:
+            return ServiceResult(
+                ok=False,
+                message=f"此位置已存在相同清潔項目：{duplicate.get('item_name') or item_name}。",
+                data=duplicate,
+            )
+
+    payload = {
+        "item_name": item_name,
+        **legacy_fields,
+        "node_id": node_id,
         "cycle_days": cycle_days,
         "sort_order": sort_order,
         "is_active": True,
@@ -554,6 +684,70 @@ def create_cleaning_item(
         return ServiceResult(ok=False, message=f"新增清潔項目失敗：{exc}")
 
 
+def create_cleaning_position_with_first_item(
+    machine_area: str,
+    item_name: str,
+    cycle_days: int,
+    sort_order: int,
+    description: str = "",
+    created_by_user_id: str | None = None,
+    created_by_name: str | None = None,
+) -> ServiceResult:
+    if not machine_area:
+        return ServiceResult(ok=False, message="請輸入新的清潔設備 / 區域。")
+
+    root = get_root_maintenance_node("清潔")
+    if not root:
+        return ServiceResult(ok=False, message="找不到清潔根節點，請先檢查 maintenance_nodes。")
+
+    existing = get_child_maintenance_node(parent_id=root.get("id"), node_name=machine_area, include_inactive=True)
+    if existing:
+        return ServiceResult(ok=False, message="此清潔設備 / 區域已存在，請改從既有節點新增項目。", data=existing)
+
+    try:
+        node = create_maintenance_node(
+            {
+                "parent_id": root.get("id"),
+                "maintenance_type": "清潔",
+                "node_name": machine_area,
+                "node_level": 1,
+                "sort_order": 999,
+                "is_active": True,
+                "description": "由保養項目管理頁建立",
+                "created_by_user_id": created_by_user_id,
+                "created_by_name": created_by_name,
+            }
+        )
+
+        if not node:
+            return ServiceResult(ok=False, message="新增清潔位置失敗，Supabase 未回傳資料。")
+
+        item_result = create_cleaning_item(
+            item_name=item_name,
+            machine_area=machine_area,
+            cycle_days=cycle_days,
+            sort_order=sort_order,
+            description=description,
+            node_id=node.get("id"),
+        )
+
+        if not item_result.ok:
+            return ServiceResult(
+                ok=False,
+                message=f"清潔位置已建立，但第一個項目新增失敗：{item_result.message}",
+                data={"node": node, "item": item_result.data},
+            )
+
+        return ServiceResult(
+            ok=True,
+            message="新清潔位置與第一個清潔項目已新增。",
+            data={"node": node, "item": item_result.data},
+        )
+
+    except Exception as exc:
+        return ServiceResult(ok=False, message=f"新增清潔位置失敗：{exc}")
+
+
 # =========================
 # 新增耗材項目
 # =========================
@@ -566,6 +760,7 @@ def create_consumable_item(
     cycle_days: int,
     sort_order: int,
     description: str = "",
+    node_id: str | None = None,
 ) -> ServiceResult:
     if not main_category:
         return ServiceResult(ok=False, message="請輸入主分類。")
@@ -579,12 +774,31 @@ def create_consumable_item(
     if cycle_days <= 0:
         return ServiceResult(ok=False, message="週期天數必須大於 0。")
 
-    payload = {
-        "item_name": item_name,
+    legacy_fields = {
         "maintenance_type": "耗材更換",
         "main_category": main_category,
         "sub_category": sub_category or None,
+    }
+
+    if node_id:
+        error, node_legacy_fields = _build_legacy_fields_from_node(node_id=node_id, expected_type="耗材更換")
+        if error:
+            return error
+        legacy_fields.update(node_legacy_fields)
+
+        duplicate = _find_duplicate_item_in_node(node_id=node_id, item_name=item_name)
+        if duplicate:
+            return ServiceResult(
+                ok=False,
+                message=f"此位置已存在相同耗材項目：{duplicate.get('item_name') or item_name}。",
+                data=duplicate,
+            )
+
+    payload = {
+        "item_name": item_name,
+        **legacy_fields,
         "machine_area": machine_area,
+        "node_id": node_id,
         "cycle_days": cycle_days,
         "sort_order": sort_order,
         "is_active": True,
@@ -601,6 +815,106 @@ def create_consumable_item(
 
     except Exception as exc:
         return ServiceResult(ok=False, message=f"新增耗材項目失敗：{exc}")
+
+
+def create_consumable_position_with_first_item(
+    main_category: str,
+    sub_category: str,
+    item_name: str,
+    machine_area: str,
+    cycle_days: int,
+    sort_order: int,
+    description: str = "",
+    created_by_user_id: str | None = None,
+    created_by_name: str | None = None,
+) -> ServiceResult:
+    if not main_category:
+        return ServiceResult(ok=False, message="請輸入新的耗材設備 / 系統。")
+
+    root = get_root_maintenance_node("耗材更換")
+    if not root:
+        return ServiceResult(ok=False, message="找不到耗材更換根節點，請先檢查 maintenance_nodes。")
+
+    try:
+        main_node = get_child_maintenance_node(parent_id=root.get("id"), node_name=main_category, include_inactive=True)
+        if not main_node:
+            main_node = create_maintenance_node(
+                {
+                    "parent_id": root.get("id"),
+                    "maintenance_type": "耗材更換",
+                    "node_name": main_category,
+                    "node_level": 1,
+                    "sort_order": 999,
+                    "is_active": True,
+                    "description": "由保養項目管理頁建立",
+                    "created_by_user_id": created_by_user_id,
+                    "created_by_name": created_by_name,
+                }
+            )
+
+        if not main_node:
+            return ServiceResult(ok=False, message="新增耗材設備 / 系統失敗，Supabase 未回傳資料。")
+
+        target_node = main_node
+
+        if sub_category:
+            existing_sub = get_child_maintenance_node(
+                parent_id=main_node.get("id"),
+                node_name=sub_category,
+                include_inactive=True,
+            )
+            if existing_sub:
+                return ServiceResult(ok=False, message="此耗材區段已存在，請改從既有節點新增項目。", data=existing_sub)
+
+            target_node = create_maintenance_node(
+                {
+                    "parent_id": main_node.get("id"),
+                    "maintenance_type": "耗材更換",
+                    "node_name": sub_category,
+                    "node_level": 2,
+                    "sort_order": 999,
+                    "is_active": True,
+                    "description": "由保養項目管理頁建立",
+                    "created_by_user_id": created_by_user_id,
+                    "created_by_name": created_by_name,
+                }
+            )
+
+            if not target_node:
+                return ServiceResult(ok=False, message="新增耗材區段失敗，Supabase 未回傳資料。")
+
+        elif get_child_maintenance_node(parent_id=root.get("id"), node_name=main_category, include_inactive=True):
+            # 若 main 已存在且未指定 sub，代表不是新位置。
+            existing_items = get_maintenance_items(include_inactive=True, include_deleted=False)
+            if any(str(item.get("node_id") or "") == str(main_node.get("id")) for item in existing_items):
+                return ServiceResult(ok=False, message="此耗材設備 / 系統已存在，請改從既有節點新增項目。", data=main_node)
+
+        item_result = create_consumable_item(
+            main_category=main_category,
+            sub_category=sub_category,
+            item_name=item_name,
+            machine_area=machine_area,
+            cycle_days=cycle_days,
+            sort_order=sort_order,
+            description=description,
+            node_id=target_node.get("id"),
+        )
+
+        if not item_result.ok:
+            return ServiceResult(
+                ok=False,
+                message=f"耗材位置已建立，但第一個項目新增失敗：{item_result.message}",
+                data={"node": target_node, "item": item_result.data},
+            )
+
+        return ServiceResult(
+            ok=True,
+            message="新耗材位置與第一個耗材項目已新增。",
+            data={"node": target_node, "item": item_result.data},
+        )
+
+    except Exception as exc:
+        return ServiceResult(ok=False, message=f"新增耗材位置失敗：{exc}")
 
 
 # =========================
@@ -647,6 +961,7 @@ def update_item_cycle(
 def _normalize_item_row(item: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": item.get("id"),
+        "node_id": item.get("node_id"),
         "item_name": item.get("item_name") or "",
         "maintenance_type": item.get("maintenance_type") or "",
         "main_category": item.get("main_category") or "",
@@ -656,6 +971,7 @@ def _normalize_item_row(item: dict[str, Any]) -> dict[str, Any]:
         "sort_order": item.get("sort_order") or 999,
         "description": item.get("description") or "",
         "is_active": bool(item.get("is_active", True)),
+        "is_deleted": bool(item.get("is_deleted", False)),
         "raw": item,
     }
 
@@ -663,11 +979,15 @@ def _normalize_item_row(item: dict[str, Any]) -> dict[str, Any]:
 def load_maintenance_items_page_data(include_inactive: bool = True) -> ServiceResult:
     """
     讀取保養項目管理頁資料。
-    管理頁需要看見已停用項目，避免重複新增同名項目。
+    - items：保養項目，依 maintenance_items.node_id 掛到真正節點。
+    - nodes：maintenance_nodes 真正的分枝樹。
     """
     try:
-        rows = get_maintenance_items(include_inactive=include_inactive)
-        items = [_normalize_item_row(row) for row in rows]
+        item_rows = get_maintenance_items(include_inactive=include_inactive, include_deleted=False)
+        node_rows = get_maintenance_nodes(include_inactive=True, include_deleted=False)
+
+        items = [_normalize_item_row(row) for row in item_rows]
+        nodes = [_normalize_node_row(row) for row in node_rows]
 
         items.sort(
             key=lambda item: (
@@ -680,10 +1000,20 @@ def load_maintenance_items_page_data(include_inactive: bool = True) -> ServiceRe
             )
         )
 
+        nodes.sort(
+            key=lambda node: (
+                node.get("maintenance_type") or "",
+                node.get("node_level") or 0,
+                node.get("sort_order") or 999,
+                node.get("node_name") or "",
+            )
+        )
+
         return ServiceResult(
             ok=True,
             data={
                 "items": items,
+                "nodes": nodes,
                 "count": len(items),
                 "active_count": len([item for item in items if item.get("is_active")]),
                 "inactive_count": len([item for item in items if not item.get("is_active")]),
@@ -694,7 +1024,13 @@ def load_maintenance_items_page_data(include_inactive: bool = True) -> ServiceRe
         return ServiceResult(
             ok=False,
             message=f"讀取保養項目管理資料失敗：{exc}",
-            data={"items": [], "count": 0, "active_count": 0, "inactive_count": 0},
+            data={
+                "items": [],
+                "nodes": [],
+                "count": 0,
+                "active_count": 0,
+                "inactive_count": 0,
+            },
         )
 
 
