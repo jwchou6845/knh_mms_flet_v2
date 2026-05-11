@@ -59,8 +59,10 @@ def LoginView(page: ft.Page):
     is_mobile = page_w <= 520
     is_short = page_h <= 740
 
-    canvas_width = min(430, page_w) if is_mobile else 430
-    canvas_height = page_h
+    # 手機版改用完整可視寬度，避免將表單鎖死在初次回報的固定畫布高度內。
+    # 桌機版仍保留 430px 的視覺畫布，維持原本背景與表單鎖定的設計。
+    canvas_width = page_w if is_mobile else 430
+    canvas_height = None if is_mobile else page_h
 
     horizontal_padding = 18 if is_mobile else 20
     card_width = canvas_width - (horizontal_padding * 2)
@@ -830,6 +832,9 @@ def LoginView(page: ft.Page):
         expand=True,
     )
 
+    # 手機版為 Dialog 內容保留明確可捲動高度，避免小螢幕時欄位標題被壓縮或裁掉。
+    reset_dialog_content_height = min(520, max(360, page_h - 150)) if is_mobile else None
+
     reset_dialog = ft.AlertDialog(
         modal=True,
         title=ft.Text(
@@ -839,6 +844,7 @@ def LoginView(page: ft.Page):
         ),
         content=ft.Container(
             width=min(380, card_width),
+            height=reset_dialog_content_height,
             content=ft.Column(
                 controls=[
                     ft.Text(
@@ -1005,28 +1011,45 @@ def LoginView(page: ft.Page):
     # =====================================================
     # 頁面內容組合
     # =====================================================
-    content_holder = ft.Container()
+    # 手機 Web 兼容性重點：
+    # 1. content_holder 明確撐滿 Stack，不讓瀏覽器 / 版面引擎自行猜測內容層尺寸。
+    # 2. 手機版不再用 expand spacer 把 footer 強推到底，改成自然流式排列，
+    #    讓小螢幕、系統字級放大、Chrome 可視高度變化時仍可捲動看到表單。
+    # 3. SafeArea 避開瀏海、狀態列與系統侵入區。
+    content_holder = ft.Container(expand=True)
 
     def build_page_content(main_card, footer_visible=True):
-        return ft.Container(
+        page_controls = [
+            build_header(),
+            ft.Container(height=header_gap),
+            main_card,
+        ]
+
+        if is_mobile:
+            page_controls.append(ft.Container(height=18 if footer_visible else 1))
+        else:
+            page_controls.append(ft.Container(expand=True))
+
+        page_controls.append(
+            build_footer() if footer_visible else ft.Container(height=1)
+        )
+
+        return ft.SafeArea(
             expand=True,
-            padding=ft.padding.only(
-                left=horizontal_padding,
-                right=horizontal_padding,
-                top=top_padding,
-                bottom=18,
-            ),
-            content=ft.Column(
-                controls=[
-                    build_header(),
-                    ft.Container(height=header_gap),
-                    main_card,
-                    ft.Container(expand=True),
-                    build_footer() if footer_visible else ft.Container(height=1),
-                ],
-                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                spacing=0,
-                scroll=ft.ScrollMode.AUTO,
+            content=ft.Container(
+                expand=True,
+                padding=ft.padding.only(
+                    left=horizontal_padding,
+                    right=horizontal_padding,
+                    top=top_padding,
+                    bottom=18,
+                ),
+                content=ft.Column(
+                    controls=page_controls,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                    spacing=0,
+                    scroll=ft.ScrollMode.AUTO,
+                ),
             ),
         )
 
@@ -1261,25 +1284,56 @@ def LoginView(page: ft.Page):
         pass
 
     # =====================================================
-    # 背景與表單鎖定畫布
+    # 背景與表單畫布
     # =====================================================
-    locked_canvas = ft.Container(
-        width=canvas_width,
-        height=canvas_height,
-        clip_behavior=ft.ClipBehavior.HARD_EDGE,
-        content=ft.Stack(
+    # 背景圖只保留為裝飾層；即使圖片載入失敗，也先用純色背景保底，
+    # 不讓登入表單的顯示依賴背景圖是否成功。
+    background_layer = ft.Container(
+        expand=True,
+        bgcolor=BG,
+        content=ft.Image(
+            src=ASSET_BG,
+            fit=ft.BoxFit.COVER,
             expand=True,
-            controls=[
-                ft.Image(
-                    src=ASSET_BG,
-                    width=canvas_width,
-                    height=canvas_height,
-                    fit=ft.BoxFit.COVER,
-                ),
-                content_holder,
-            ],
+            error_content=ft.Container(
+                expand=True,
+                bgcolor=BG,
+            ),
         ),
     )
+
+    if is_mobile:
+        # 手機版：不使用固定高度與 HARD_EDGE 裁切，
+        # 讓內容層跟著實際可視區撐滿，表單不足時由內層 Column 負責捲動。
+        locked_canvas = ft.Container(
+            expand=True,
+            width=canvas_width,
+            bgcolor=BG,
+            content=ft.Stack(
+                expand=True,
+                fit=ft.StackFit.EXPAND,
+                controls=[
+                    background_layer,
+                    content_holder,
+                ],
+            ),
+        )
+    else:
+        # 桌機版：保留原本 430px 的鎖定式視覺畫布，
+        # 但明確指定 StackFit.EXPAND，避免內容層尺寸判斷不穩。
+        locked_canvas = ft.Container(
+            width=canvas_width,
+            height=canvas_height,
+            clip_behavior=ft.ClipBehavior.HARD_EDGE,
+            content=ft.Stack(
+                expand=True,
+                fit=ft.StackFit.EXPAND,
+                controls=[
+                    background_layer,
+                    content_holder,
+                ],
+            ),
+        )
 
     return ft.View(
         route="/login",
