@@ -1,7 +1,7 @@
 # =====================================================
 # KNH MMS v2
 # File: views/maintenance.py
-# File Revision: 2026-05-12-maintenance-filter-r1
+# File Revision: 2026-05-12-maintenance-filter-r2
 # Status: current working version
 # Last Updated: 2026-05-12 Asia/Taipei
 #
@@ -2009,9 +2009,24 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
             options=get_machine_options(),
         )
 
-        def apply_inline_filter(_=None):
-            state["filter_status"] = status_dd.value or "全部"
-            state["filter_machine"] = machine_dd.value or "全部"
+        def apply_status_filter(e=None):
+            """
+            Flet Web 穩定版：
+            不從閉包內的 status_dd.value 讀值，因部分瀏覽器 / Flet Web 情境下，
+            on_change 觸發當下該屬性可能尚未同步到 Python 端。
+            直接使用 e.control.value，確保「目前條件」與實際篩選 state 同步。
+            """
+            value = getattr(getattr(e, "control", None), "value", None) if e else None
+            state["filter_status"] = value or "全部"
+            rebuild()
+
+        def apply_machine_filter(e=None):
+            """
+            Flet Web 穩定版：直接使用 e.control.value 寫回區位條件。
+            這可避免 dropdown 畫面已選到某值，但 state 仍停在「全部」的狀況。
+            """
+            value = getattr(getattr(e, "control", None), "value", None) if e else None
+            state["filter_machine"] = value or "全部"
             rebuild()
 
         def clear_inline_filter(_=None):
@@ -2019,8 +2034,8 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
             state["filter_machine"] = "全部"
             rebuild()
 
-        status_dd.on_change = apply_inline_filter
-        machine_dd.on_change = apply_inline_filter
+        status_dd.on_change = apply_status_filter
+        machine_dd.on_change = apply_machine_filter
 
         clear_btn = ft.OutlinedButton(
             "清除",
