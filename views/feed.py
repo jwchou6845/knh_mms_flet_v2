@@ -1,7 +1,7 @@
 # =====================================================
 # KNH MMS v2
 # File: views/feed.py
-# File Revision: 2026-05-12-feed-recent-records-r1
+# File Revision: 2026-05-12-feed-recent-width-r2
 # Status: current working version
 # Last Updated: 2026-05-12 Asia/Taipei
 #
@@ -12,7 +12,8 @@
 # - 最近打料紀錄保留「類型」欄位，並新增「批號」欄位。
 # - 修正最近打料紀錄的機台/塔別、人員、備註欄位 mapping。
 # - 保留「查看全部」面板模式：一般顯示 5 筆，查看全部顯示 20 筆。
-# - 擴大近期紀錄橫向捲動表格寬度，讓手機/桌機都可完整檢視欄位。
+# - 調整最近打料紀錄表格欄寬，縮短「原料」與「數量」之間過大的空白。
+# - 保留 5 筆 / 查看全部 20 筆與橫向滑動設計。
 #
 # Notes:
 # - 本檔案以 2026-05-12 使用者上傳最新版 feed.py 為基礎。
@@ -1371,7 +1372,7 @@ def FeedContent(page: ft.Page):
     )
     recent_toggle_icon = ft.Icon(ft.Icons.OPEN_IN_NEW, size=17, color=PURPLE)
 
-    RECENT_TABLE_WIDTH = 1120
+    RECENT_TABLE_WIDTH = 960
 
     def recent_machine_text(item: dict):
         return (
@@ -1462,15 +1463,15 @@ def FeedContent(page: ft.Page):
             border=border,
             content=ft.Row(
                 controls=[
-                    recent_table_cell(date_text, 88, color=text_color, weight=weight),
-                    recent_table_cell(time_text, 64, color=text_color, weight=weight),
+                    recent_table_cell(date_text, 78, color=text_color, weight=weight),
+                    recent_table_cell(time_text, 58, color=text_color, weight=weight),
                     recent_type_badge(item, is_header=is_header),
-                    recent_table_cell(batch_text, 160, color=text_color, weight=weight),
-                    recent_table_cell(machine_text, 96, color=text_color, weight=weight),
-                    recent_table_cell(material_text, 260, color=text_color, weight=weight, max_lines=1),
-                    recent_table_cell(qty_text, 80, color=text_color, weight=weight, align=ft.TextAlign.RIGHT),
-                    recent_table_cell(operator_text, 100, color=text_color, weight=weight),
-                    recent_table_cell(note_text, 172, color=text_color, weight=weight),
+                    recent_table_cell(batch_text, 156, color=text_color, weight=weight),
+                    recent_table_cell(machine_text, 88, color=text_color, weight=weight),
+                    recent_table_cell(material_text, 190, color=text_color, weight=weight, max_lines=1),
+                    recent_table_cell(qty_text, 74, color=text_color, weight=weight, align=ft.TextAlign.RIGHT),
+                    recent_table_cell(operator_text, 88, color=text_color, weight=weight),
+                    recent_table_cell(note_text, 132, color=text_color, weight=weight),
                 ],
                 spacing=0,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
