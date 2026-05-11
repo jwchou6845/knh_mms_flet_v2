@@ -1,5 +1,23 @@
-# main.py
-# KNH MMS v4.5 穩定版（Flet 0.84）
+# =====================================================
+# KNH MMS v2
+# File: main.py
+# File Revision: 2026-05-11-auth-restore-guard-r1
+# Status: current working version
+# Last Updated: 2026-05-11 Asia/Taipei
+#
+# Purpose:
+# - 系統主路由、12 小時免重登恢復流程、共用 shell 與導覽
+#
+# Major Changes in This Revision:
+# - 12 小時免重登 restore 改為背景 thread 執行，避免 Supabase 查詢阻塞主流程
+# - 加入 restore watchdog timeout 與 late result guard，避免畫面永久停在登入檢查狀態
+# - 保留 maintenance items / deleted 子頁路由與既有 page.go() route fallback 修正
+#
+# Notes:
+# - 本檔以 2026-05-11 maintenance deleted route 版為基礎
+# - Flet 0.84；本專案固定使用 page.go()，不可改回 page.push_route()
+# - 所有時間相關業務邏輯仍由各 service 使用 Asia/Taipei 處理
+# =====================================================
 
 import flet as ft
 import time
@@ -25,6 +43,7 @@ from views.reports import ReportsContent
 
 
 SESSION_TOKEN_KEY = "knh_session_token"
+AUTH_RESTORE_TIMEOUT_SECONDS = 10
 
 
 def main(page: ft.Page):
@@ -51,6 +70,8 @@ def main(page: ft.Page):
         "checking": False,
         "checked": False,
         "target_route": "/",
+        "check_seq": 0,
+        "timed_out_seq": 0,
     }
 
     def _normalize_storage_value(value):
@@ -373,7 +394,19 @@ def main(page: ft.Page):
         except Exception as ex:
             print("show_auth_check_view error:", repr(ex))
 
+    def _is_current_auth_check(check_seq: int) -> bool:
+        return int(persistent_auth_state.get("check_seq") or 0) == int(check_seq)
+
     def start_persistent_auth_check(target_route: str | None = None, force: bool = False):
+        """
+        12 小時免重登恢復流程。
+
+        重要修正：
+        1. localStorage / shared_preferences 取 token 後，不在 callback 內同步查 Supabase。
+        2. restore_persistent_session() 改由背景 thread 執行，避免網路慢時阻塞頁面。
+        3. 以 check_seq + timeout watchdog 防止 late callback / late restore 在逾時後反向覆蓋畫面。
+        4. 若整個檢查流程超過 AUTH_RESTORE_TIMEOUT_SECONDS，直接回登入頁，避免永久卡住。
+        """
         if is_login():
             return False
 
@@ -384,41 +417,100 @@ def main(page: ft.Page):
         if route_target in ["", "/login"]:
             route_target = "/"
 
+        check_seq = int(persistent_auth_state.get("check_seq") or 0) + 1
+        persistent_auth_state["check_seq"] = check_seq
+        persistent_auth_state["timed_out_seq"] = 0
         persistent_auth_state["target_route"] = route_target
         persistent_auth_state["checking"] = True
+        persistent_auth_state["checked"] = False
+
+        print(
+            f"PERSISTENT LOGIN CHECK START: seq={check_seq}, target={route_target}",
+            flush=True,
+        )
         show_auth_check_view("正在檢查登入狀態...")
 
-        def on_token_loaded(token):
-            token = _normalize_storage_value(token)
+        def watchdog():
+            time.sleep(AUTH_RESTORE_TIMEOUT_SECONDS)
+
+            if not _is_current_auth_check(check_seq):
+                return
+
+            if not persistent_auth_state.get("checking"):
+                return
+
+            persistent_auth_state["timed_out_seq"] = check_seq
             persistent_auth_state["checking"] = False
             persistent_auth_state["checked"] = True
 
+            print(
+                f"PERSISTENT LOGIN TIMEOUT: seq={check_seq}, "
+                f"timeout={AUTH_RESTORE_TIMEOUT_SECONDS}s",
+                flush=True,
+            )
+
+            # 逾時不清除瀏覽器 token。
+            # 若只是暫時網路慢，使用者之後重新整理仍可再次嘗試恢復；
+            # 但當下必須先讓畫面離開等待狀態，避免停在 Working / 檢查中。
+            try:
+                navigate("/login")
+            except Exception as ex:
+                print("PERSISTENT LOGIN TIMEOUT NAVIGATE ERROR:", repr(ex), flush=True)
+
+        threading.Thread(target=watchdog, daemon=True).start()
+
+        def on_token_loaded(token):
+            if not _is_current_auth_check(check_seq) or not persistent_auth_state.get("checking"):
+                print(f"PERSISTENT LOGIN LATE TOKEN IGNORED: seq={check_seq}", flush=True)
+                return
+
+            token = _normalize_storage_value(token)
+            print(
+                f"PERSISTENT LOGIN TOKEN LOADED: seq={check_seq}, has_token={bool(token)}",
+                flush=True,
+            )
+
             if not token:
-                print("PERSISTENT LOGIN: no token")
+                persistent_auth_state["checking"] = False
+                persistent_auth_state["checked"] = True
+                print("PERSISTENT LOGIN: no token", flush=True)
                 navigate("/login")
                 return
 
-            try:
-                result = restore_persistent_session(token)
+            def restore_worker():
+                print(f"PERSISTENT LOGIN RESTORE START: seq={check_seq}", flush=True)
 
-                if result.ok:
+                try:
+                    result = restore_persistent_session(token)
+                except Exception as ex:
+                    result = None
+                    print("PERSISTENT LOGIN exception:", repr(ex), flush=True)
+
+                if not _is_current_auth_check(check_seq) or not persistent_auth_state.get("checking"):
+                    print(f"PERSISTENT LOGIN LATE RESULT IGNORED: seq={check_seq}", flush=True)
+                    return
+
+                persistent_auth_state["checking"] = False
+                persistent_auth_state["checked"] = True
+
+                if result and result.ok:
                     data = result.data or {}
                     user = data.get("user") or {}
                     restored_token = str(data.get("session_token") or token).strip()
                     save_session_data(user, restored_token)
                     register_session_helpers()
                     save_browser_session_token(restored_token)
-                    print("PERSISTENT LOGIN: restored")
+                    print(f"PERSISTENT LOGIN: restored seq={check_seq}", flush=True)
                     navigate(persistent_auth_state.get("target_route") or "/")
-                else:
-                    print("PERSISTENT LOGIN failed:", result.message)
-                    clear_browser_session_token()
-                    navigate("/login")
+                    return
 
-            except Exception as ex:
-                print("PERSISTENT LOGIN exception:", repr(ex))
+                if result:
+                    print("PERSISTENT LOGIN failed:", result.message, flush=True)
+
                 clear_browser_session_token()
                 navigate("/login")
+
+            threading.Thread(target=restore_worker, daemon=True).start()
 
         browser_storage_get(SESSION_TOKEN_KEY, on_token_loaded)
         return True

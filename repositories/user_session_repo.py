@@ -1,3 +1,21 @@
+# =====================================================
+# KNH MMS v2
+# File: repositories/user_session_repo.py
+# File Revision: 2026-05-11-auth-restore-guard-r1
+# Status: current working version
+# Last Updated: 2026-05-11 Asia/Taipei
+#
+# Purpose:
+# - user_sessions 資料表 CRUD
+#
+# Major Changes in This Revision:
+# - 補上明確版本註記
+# - 確認恢復登入以 session_token + revoked=False 精準查詢，不以 user_id / employee_id 模糊查詢
+#
+# Notes:
+# - 本檔僅負責資料存取；恢復流程 timeout / guard 由 main.py 控制
+# =====================================================
+
 from __future__ import annotations
 
 from typing import Any
