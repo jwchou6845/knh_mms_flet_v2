@@ -1,7 +1,7 @@
 # =====================================================
 # KNH MMS v2
 # File: views/maintenance.py
-# File Revision: 2026-05-12-maintenance-filter-r2
+# File Revision: 2026-05-12-maintenance-filter-r3
 # Status: current working version
 # Last Updated: 2026-05-12 Asia/Taipei
 #
@@ -11,6 +11,7 @@
 # Major Changes in This Revision:
 # - 修正頁面內篩選只套用到「保養項目清單」，未套用到「今日待辦」的問題。
 # - 新增共用篩選函式，讓「今日待辦」與「保養項目清單」使用一致條件。
+# - r3：移除頁內篩選 Dropdown，改為 Container chips 直接寫入 state，避免 Flet Web Dropdown 畫面已變但 on_change 未回寫。
 # - 保留目前已穩定的 inline 新增紀錄、查看紀錄、保養紀錄軟刪除與超級管理員入口。
 #
 # Notes:
@@ -1981,51 +1982,35 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
 
     def build_filter_bar() -> ft.Control:
         """
-        v2.5：頁面內篩選列。
-        不再使用彈出式篩選視窗；保養類型由外層「清潔 / 耗材更換」切換控制。
-        此處只篩選狀態與機台 / 區位，避免彈窗與外層 label 狀態互相干擾。
+        頁面內篩選列。
+
+        r3 修正：不再使用 Dropdown。
+        原因：Flet Web 在部分桌機 / 手機瀏覽器中，Dropdown 畫面可能已選到新值，
+        但 Python 端 on_change 沒有穩定回寫 state，導致「目前條件」仍停在全部。
+        改用自製 chips，點擊時直接寫入 state 後 rebuild，可靠度較高。
         """
-        status_text = state.get("filter_status", "全部")
-        machine_text = state.get("filter_machine", "全部")
+        status_text = state.get("filter_status", "全部") or "全部"
+        machine_text = state.get("filter_machine", "全部") or "全部"
         active_filter = status_text != "全部" or machine_text != "全部"
 
-        status_dd = ft.Dropdown(
-            label="狀態",
-            value=status_text,
-            dense=True,
-            options=[
-                ft.dropdown.Option("全部"),
-                ft.dropdown.Option("正常"),
-                ft.dropdown.Option("提醒"),
-                ft.dropdown.Option("逾期"),
-                ft.dropdown.Option("未建立紀錄"),
-            ],
-        )
+        status_values = ["全部", "正常", "提醒", "逾期", "未建立紀錄"]
 
-        machine_dd = ft.Dropdown(
-            label="機台 / 區位",
-            value=machine_text,
-            dense=True,
-            options=get_machine_options(),
-        )
+        machine_values = ["全部"]
+        seen_machines = set()
+        for item in get_all_items():
+            machine = str(item.get("machine_area") or "").strip()
+            if machine and machine not in seen_machines:
+                seen_machines.add(machine)
+                machine_values.append(machine)
 
-        def apply_status_filter(e=None):
-            """
-            Flet Web 穩定版：
-            不從閉包內的 status_dd.value 讀值，因部分瀏覽器 / Flet Web 情境下，
-            on_change 觸發當下該屬性可能尚未同步到 Python 端。
-            直接使用 e.control.value，確保「目前條件」與實際篩選 state 同步。
-            """
-            value = getattr(getattr(e, "control", None), "value", None) if e else None
+        # 讓區位顯示順序穩定，全部固定在第一個。
+        machine_values = ["全部"] + sorted(machine_values[1:])
+
+        def set_status(value: str):
             state["filter_status"] = value or "全部"
             rebuild()
 
-        def apply_machine_filter(e=None):
-            """
-            Flet Web 穩定版：直接使用 e.control.value 寫回區位條件。
-            這可避免 dropdown 畫面已選到某值，但 state 仍停在「全部」的狀況。
-            """
-            value = getattr(getattr(e, "control", None), "value", None) if e else None
+        def set_machine(value: str):
             state["filter_machine"] = value or "全部"
             rebuild()
 
@@ -2034,15 +2019,77 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
             state["filter_machine"] = "全部"
             rebuild()
 
-        status_dd.on_change = apply_status_filter
-        machine_dd.on_change = apply_machine_filter
+        def filter_chip(
+            label: str,
+            active: bool,
+            on_click,
+            accent: str = BLUE_BTN,
+            soft: str = BLUE_SOFT,
+        ) -> ft.Container:
+            return ft.Container(
+                height=36,
+                border_radius=18,
+                bgcolor=soft if active else "#FFFFFF",
+                border=ft.border.all(1, accent if active else BORDER),
+                padding=ft.padding.symmetric(horizontal=13),
+                alignment=ft.Alignment(0, 0),
+                ink=True,
+                on_click=on_click,
+                content=ft.Row(
+                    spacing=6,
+                    tight=True,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    controls=[
+                        ft.Icon(
+                            ft.Icons.CHECK_CIRCLE if active else ft.Icons.CIRCLE_OUTLINED,
+                            size=16,
+                            color=accent if active else TEXT_MUTED,
+                        ),
+                        ft.Text(
+                            label,
+                            size=12,
+                            color=accent if active else TEXT_MUTED,
+                            weight=ft.FontWeight.BOLD if active else ft.FontWeight.W_500,
+                            max_lines=1,
+                            overflow=ft.TextOverflow.ELLIPSIS,
+                        ),
+                    ],
+                ),
+            )
 
-        clear_btn = ft.OutlinedButton(
-            "清除",
-            visible=active_filter,
-            style=outline_button_style(),
+        status_chips = [
+            filter_chip(
+                label=value,
+                active=status_text == value,
+                on_click=lambda _, v=value: set_status(v),
+                accent=BLUE_BTN,
+                soft=BLUE_SOFT,
+            )
+            for value in status_values
+        ]
+
+        machine_chips = [
+            filter_chip(
+                label=value,
+                active=machine_text == value,
+                on_click=lambda _, v=value: set_machine(v),
+                accent=PURPLE_BTN if value != "全部" else BLUE_BTN,
+                soft=PURPLE_SOFT if value != "全部" else BLUE_SOFT,
+            )
+            for value in machine_values
+        ]
+
+        clear_btn = stable_outline_button(
+            "清除條件",
+            ft.Icons.CLOSE,
+            color=RED,
+            border_color="#FCA5A5",
+            hover_bg=RED_SOFT,
             on_click=clear_inline_filter,
+            height=38,
+            expand=False,
         )
+        clear_btn.visible = active_filter
 
         return ft.Container(
             bgcolor="#FFFFFF",
@@ -2050,7 +2097,7 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
             border_radius=14,
             padding=12,
             content=ft.Column(
-                spacing=10,
+                spacing=12,
                 controls=[
                     ft.Row(
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -2075,11 +2122,26 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
                             clear_btn,
                         ],
                     ),
-                    ft.Row(
-                        spacing=10,
+                    ft.Column(
+                        spacing=7,
                         controls=[
-                            ft.Container(expand=True, content=status_dd),
-                            ft.Container(expand=True, content=machine_dd),
+                            ft.Text("狀態", size=12, color=TEXT_MUTED, weight=ft.FontWeight.W_600),
+                            ft.Row(
+                                scroll=ft.ScrollMode.AUTO,
+                                spacing=8,
+                                controls=status_chips,
+                            ),
+                        ],
+                    ),
+                    ft.Column(
+                        spacing=7,
+                        controls=[
+                            ft.Text("機台 / 區位", size=12, color=TEXT_MUTED, weight=ft.FontWeight.W_600),
+                            ft.Row(
+                                scroll=ft.ScrollMode.AUTO,
+                                spacing=8,
+                                controls=machine_chips,
+                            ),
                         ],
                     ),
                 ],
