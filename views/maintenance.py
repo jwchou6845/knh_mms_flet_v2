@@ -1,12 +1,23 @@
-# 第一階段完成，可進入其他頁面/已轉 Supabase
-# 第二階段優化方向
-# 1. 已刪除紀錄查詢 / 還原
-# 2. 刪除原因手動輸入
-# 3. 項目排序管理
-# 4. 異常追蹤頁
-# 5. 查看紀錄分頁
-# 6. 保養項目搜尋
-# 7. 依權限限制新增 / 編輯項目
+# =====================================================
+# KNH MMS v2
+# File: views/maintenance.py
+# File Revision: 2026-05-12-maintenance-filter-r1
+# Status: current working version
+# Last Updated: 2026-05-12 Asia/Taipei
+#
+# Purpose:
+# - 機台保養紀錄主頁：新增保養紀錄、查看項目紀錄、日常保養待辦與狀態篩選。
+#
+# Major Changes in This Revision:
+# - 修正頁面內篩選只套用到「保養項目清單」，未套用到「今日待辦」的問題。
+# - 新增共用篩選函式，讓「今日待辦」與「保養項目清單」使用一致條件。
+# - 保留目前已穩定的 inline 新增紀錄、查看紀錄、保養紀錄軟刪除與超級管理員入口。
+#
+# Notes:
+# - Flet 0.84；關鍵手機 Web 按鈕維持 stable_* Container 按鈕，不改回不穩定的 content=Row(...) 按鈕。
+# - 本檔案只修 views/maintenance.py，不變更 Supabase schema，不變更 maintenance_items.py。
+# - 時間顯示與後端計算仍由 service 層維持 Asia/Taipei 原則。
+# =====================================================
 
 import flet as ft
 import threading
@@ -25,8 +36,7 @@ from services.maintenance_service import (
 
 
 # ============================================================
-# KNH MMS - 機台保養紀錄 maintenance.py v2.6 record history and super admin soft delete
-# Flet 0.84 + Python + Supabase
+# 色彩設定與 UI 常數
 # ============================================================
 
 
@@ -687,6 +697,62 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
 
         return options
 
+
+    def normalize_duplicate_text(value) -> str:
+        """
+        第二階段防呆：新增保養項目前先用目前已載入的 active items 做前端重複檢查。
+        這層是操作提示；service 端仍會再檢查一次，避免多裝置同時新增。
+        """
+        text = str(value or "").strip().replace("　", " ")
+        return " ".join(text.split()).casefold()
+
+    def find_duplicate_cleaning_item(item_name: str, machine_area: str) -> dict | None:
+        target_name = normalize_duplicate_text(item_name)
+        target_machine = normalize_duplicate_text(machine_area)
+
+        if not target_name or not target_machine:
+            return None
+
+        for item in get_all_items():
+            if item.get("maintenance_type") != "清潔":
+                continue
+
+            same_name = normalize_duplicate_text(item.get("item_name")) == target_name
+            same_machine = normalize_duplicate_text(item.get("machine_area")) == target_machine
+
+            if same_name and same_machine:
+                return item
+
+        return None
+
+    def find_duplicate_consumable_item(
+        main_category: str,
+        sub_category: str,
+        item_name: str,
+        machine_area: str,
+    ) -> dict | None:
+        target_main = normalize_duplicate_text(main_category)
+        target_sub = normalize_duplicate_text(sub_category)
+        target_name = normalize_duplicate_text(item_name)
+        target_machine = normalize_duplicate_text(machine_area)
+
+        if not target_main or not target_name or not target_machine:
+            return None
+
+        for item in get_all_items():
+            if item.get("maintenance_type") != "耗材更換":
+                continue
+
+            same_main = normalize_duplicate_text(item.get("main_category")) == target_main
+            same_sub = normalize_duplicate_text(item.get("sub_category")) == target_sub
+            same_name = normalize_duplicate_text(item.get("item_name")) == target_name
+            same_machine = normalize_duplicate_text(item.get("machine_area")) == target_machine
+
+            if same_main and same_sub and same_name and same_machine:
+                return item
+
+        return None
+
     # =========================
     # Dialog：篩選
     # =========================
@@ -1159,69 +1225,6 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
             controls=controls,
         )
 
-
-    # =========================
-    # 超級管理員入口：保養項目管理
-    # =========================
-
-    def navigate(route_path: str) -> None:
-        nav = session_get("_navigate")
-        if callable(nav):
-            nav(route_path)
-            return
-        page.go(route_path)
-
-    def build_admin_items_entry() -> ft.Control:
-        """
-        管理功能回收給超級管理員。
-        maintenance.py 主頁只保留日常保養作業；新增清潔、耗材、編輯週期等管理功能改由 /maintenance/items 處理。
-        """
-        if not is_super_admin():
-            return ft.Container(height=0)
-
-        return card(
-            padding=16,
-            content=ft.Column(
-                spacing=12,
-                controls=[
-                    ft.Row(
-                        spacing=12,
-                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                        controls=[
-                            ft.Container(
-                                width=48,
-                                height=48,
-                                border_radius=16,
-                                bgcolor=PURPLE_SOFT,
-                                alignment=ft.Alignment(0, 0),
-                                content=ft.Icon(ft.Icons.ACCOUNT_TREE_OUTLINED, color=PURPLE_BTN, size=26),
-                            ),
-                            ft.Column(
-                                expand=True,
-                                spacing=3,
-                                controls=[
-                                    ft.Text("保養項目管理", size=17, weight=ft.FontWeight.BOLD, color=TEXT),
-                                    ft.Text(
-                                        "管理功能僅限超級管理員：新增清潔 / 耗材、編輯週期、啟用或停用項目。",
-                                        size=12,
-                                        color=TEXT_MUTED,
-                                        max_lines=3,
-                                    ),
-                                ],
-                            ),
-                        ],
-                    ),
-                    stable_filled_button(
-                        "進入保養項目管理",
-                        ft.Icons.ARROW_FORWARD_OUTLINED,
-                        bg=PURPLE_BTN,
-                        on_click=lambda _: navigate("/maintenance/items"),
-                        height=48,
-                    ),
-                ],
-            ),
-        )
-
     # =========================
     # Summary Cards
     # =========================
@@ -1357,17 +1360,51 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
         )
 
     # =========================
+    # 共用篩選邏輯
+    # =========================
+
+    def matches_current_filters(row: dict) -> bool:
+        """
+        頁面內篩選的唯一判斷來源。
+
+        v2.7 修正重點：
+        - 以前 get_filtered_items() 只影響「保養項目清單」。
+        - 「今日待辦」直接讀 state["data"]["today_tasks"]，因此不會套用篩選。
+        - 現在今日待辦與項目清單都必須走這個函式，避免條件列與畫面內容不一致。
+        """
+        selected_type = state.get("selected_type", "全部")
+        filter_status = state.get("filter_status", "全部")
+        filter_machine = state.get("filter_machine", "全部")
+
+        if selected_type != "全部" and row.get("maintenance_type") != selected_type:
+            return False
+
+        if filter_status != "全部" and row.get("status") != filter_status:
+            return False
+
+        if filter_machine != "全部" and row.get("machine_area") != filter_machine:
+            return False
+
+        return True
+
+    def get_filtered_today_tasks() -> list[dict]:
+        return [
+            task for task in state["data"].get("today_tasks", [])
+            if matches_current_filters(task)
+        ]
+
+    # =========================
     # Today Tasks
     # =========================
 
     def build_today_tasks() -> ft.Control:
-        tasks = state["data"].get("today_tasks", [])
+        tasks = get_filtered_today_tasks()
 
         if not tasks:
             body = ft.Container(
                 padding=18,
                 alignment=ft.Alignment(0, 0),
-                content=ft.Text("目前沒有待保養提醒。", size=14, color=TEXT_MUTED),
+                content=ft.Text("目前沒有符合條件的待保養提醒。", size=14, color=TEXT_MUTED),
             )
         else:
             rows = []
@@ -1416,7 +1453,7 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
         return ft.Column(
             spacing=10,
             controls=[
-                section_title("今日待辦", "顯示逾期、今日、明日與 3 天內需處理項目"),
+                section_title("今日待辦", "依目前類型、狀態與區位條件顯示逾期、今日、明日與 3 天內需處理項目"),
                 card(content=body, padding=12),
             ],
         )
@@ -1426,25 +1463,11 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
     # =========================
 
     def get_filtered_items() -> list[dict]:
-        selected_type = state["selected_type"]
-        items = state["data"].get("items_by_type", {}).get(selected_type, [])
-
-        filter_status = state["filter_status"]
-        filter_machine = state["filter_machine"]
-
-        if filter_status != "全部":
-            items = [
-                item for item in items
-                if item.get("status") == filter_status
-            ]
-
-        if filter_machine != "全部":
-            items = [
-                item for item in items
-                if item.get("machine_area") == filter_machine
-            ]
-
-        return items
+        # 與「今日待辦」共用同一套篩選條件，避免條件顯示與內容不一致。
+        return [
+            item for item in get_all_items()
+            if matches_current_filters(item)
+        ]
 
     def build_inline_record_form(item: dict) -> ft.Control:
         """
@@ -1692,37 +1715,25 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
                                     weight=ft.FontWeight.W_600,
                                 ),
                             ),
-                            stable_outline_button(
+                            ft.OutlinedButton(
                                 "取消",
-                                ft.Icons.CLOSE,
-                                color=BLUE_BTN,
-                                border_color=BLUE_BORDER,
-                                hover_bg=BLUE_SOFT,
+                                style=outline_button_style(),
                                 on_click=cancel_delete,
-                                height=38,
-                                expand=False,
                             ),
-                            stable_filled_button(
+                            ft.ElevatedButton(
                                 "確認刪除",
-                                ft.Icons.DELETE_OUTLINE,
-                                bg=RED,
-                                on_click=confirm_delete,
                                 height=38,
-                                expand=False,
+                                style=primary_button_style(bg=RED, hover="#B91C1C", pressed="#991B1B"),
+                                on_click=confirm_delete,
                             ),
                         ]
                     else:
                         action_controls = [
                             ft.Container(expand=True),
-                            stable_outline_button(
+                            ft.OutlinedButton(
                                 "刪除",
-                                ft.Icons.DELETE_OUTLINE,
-                                color=RED,
-                                border_color="#FCA5A5",
-                                hover_bg=RED_SOFT,
+                                style=outline_button_style(color=RED, hover_bg=RED_SOFT, border_color="#FCA5A5"),
                                 on_click=ask_delete,
-                                height=38,
-                                expand=False,
                             ),
                         ]
 
@@ -1808,16 +1819,7 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
                                     ft.Text(item_display_name(item), size=12, color=TEXT_MUTED),
                                 ],
                             ),
-                            stable_outline_button(
-                                "收起",
-                                ft.Icons.KEYBOARD_ARROW_UP,
-                                color=PURPLE_BTN,
-                                border_color=PURPLE_BORDER,
-                                hover_bg=PURPLE_SOFT,
-                                on_click=close_records,
-                                height=38,
-                                expand=False,
-                            ),
+                            ft.OutlinedButton("收起", style=outline_button_style(), on_click=close_records),
                         ],
                     ),
                     ft.Text(
@@ -2570,6 +2572,18 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
                 if not ok:
                     show_snack(message, success=False)
                     return
+
+                duplicate = find_duplicate_cleaning_item(
+                    payload.get("item_name") or "",
+                    payload.get("machine_area") or "",
+                )
+                if duplicate:
+                    show_snack(
+                        f"已存在相同清潔項目：{item_display_name(duplicate)}｜{duplicate.get('machine_area') or '-'}，請改用『編輯週期』或直接新增保養紀錄。",
+                        success=False,
+                    )
+                    return
+
                 open_confirm(payload)
 
             submit_btn.on_click = on_prepare_submit
@@ -2824,6 +2838,20 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
                 if not ok:
                     show_snack(message, success=False)
                     return
+
+                duplicate = find_duplicate_consumable_item(
+                    payload.get("main_category") or "",
+                    payload.get("sub_category") or "",
+                    payload.get("item_name") or "",
+                    payload.get("machine_area") or "",
+                )
+                if duplicate:
+                    show_snack(
+                        f"已存在相同耗材項目：{duplicate.get('main_category') or '-'}｜{duplicate.get('sub_category') or '-'}｜{duplicate.get('item_name') or '-'}｜{duplicate.get('machine_area') or '-'}，請改用『編輯週期』或直接新增保養紀錄。",
+                        success=False,
+                    )
+                    return
+
                 open_confirm(payload)
 
             submit_btn.on_click = on_prepare_submit
@@ -3465,7 +3493,7 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
                     build_today_tasks(),
                     build_item_list(),
                     build_recent_records(),
-                    build_admin_items_entry(),
+                    build_extension_settings(),
                     ft.Container(height=72),
                 ],
             ),
@@ -3516,7 +3544,10 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
                 spacing=18,
                 controls=[
                     build_desktop_record_form(),
-                    build_admin_items_entry(),
+                    card(
+                        padding=18,
+                        content=build_extension_settings(),
+                    ),
                 ],
             ),
         )
