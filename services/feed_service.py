@@ -1,3 +1,22 @@
+# =====================================================
+# KNH MMS v2
+# File: services/feed_service.py
+# File Revision: 2026-05-12-feed-recent-records-r1
+# Status: current working version
+# Last Updated: 2026-05-12 Asia/Taipei
+#
+# Purpose:
+# - 現場打料作業服務層：載入原料/回用料清單、近期打料紀錄整理、送出打料紀錄。
+#
+# Major Changes in This Revision:
+# - build_recent_records() 補齊 batch_no、machine_code、operator、note mapping。
+# - 最近打料紀錄保留「類型」並支援畫面顯示「批號 / 機台/塔別 / 人員 / 備註」。
+#
+# Notes:
+# - 本檔案以 2026-05-12 使用者上傳最新版 feed_service.py 為基礎。
+# - 本次不修改新增打料紀錄流程、不修改回用料狀態更新流程。
+# - 所有日期時間處理維持 Asia/Taipei。
+# =====================================================
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -234,14 +253,25 @@ def build_recent_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
             qty = _to_int(record.get("quantity_bags"), 0)
             qty_text = f"{qty} 包"
 
+        operator_text = (
+            record.get("operator_name")
+            or record.get("created_by_name")
+            or "-"
+        )
+        note_text = record.get("note") or "-"
+
         result.append(
             {
                 "id": record.get("id"),
                 "date": date_label,
                 "time": time_label,
                 "type": tag,
+                "batch_no": record.get("batch_no") or "-",
+                "machine_code": record.get("machine_code") or "-",
                 "material": record.get("material_name") or "-",
                 "qty": qty_text,
+                "operator": operator_text,
+                "note": note_text,
                 "tag_bg": tag_bg,
                 "tag_color": tag_color,
                 "raw": record,

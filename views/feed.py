@@ -1,4 +1,24 @@
-# views/feed.py
+# =====================================================
+# KNH MMS v2
+# File: views/feed.py
+# File Revision: 2026-05-12-feed-recent-records-r1
+# Status: current working version
+# Last Updated: 2026-05-12 Asia/Taipei
+#
+# Purpose:
+# - 現場打料作業頁面：新料、輔助母粒、回用料領用與近期打料紀錄檢視。
+#
+# Major Changes in This Revision:
+# - 最近打料紀錄保留「類型」欄位，並新增「批號」欄位。
+# - 修正最近打料紀錄的機台/塔別、人員、備註欄位 mapping。
+# - 保留「查看全部」面板模式：一般顯示 5 筆，查看全部顯示 20 筆。
+# - 擴大近期紀錄橫向捲動表格寬度，讓手機/桌機都可完整檢視欄位。
+#
+# Notes:
+# - 本檔案以 2026-05-12 使用者上傳最新版 feed.py 為基礎。
+# - 本次不修改打料送出流程、不修改庫存扣帳邏輯、不修改乾燥塔內存備忘。
+# - Flet 0.84；手機 Web 關鍵按鈕維持穩定 Container / 原生 text/icon 設計。
+# =====================================================
 import flet as ft
 import threading
 
@@ -1351,7 +1371,7 @@ def FeedContent(page: ft.Page):
     )
     recent_toggle_icon = ft.Icon(ft.Icons.OPEN_IN_NEW, size=17, color=PURPLE)
 
-    RECENT_TABLE_WIDTH = 980
+    RECENT_TABLE_WIDTH = 1120
 
     def recent_machine_text(item: dict):
         return (
@@ -1419,6 +1439,7 @@ def FeedContent(page: ft.Page):
         if is_header:
             date_text = "日期"
             time_text = "時間"
+            batch_text = "批號"
             machine_text = "機台/塔別"
             material_text = "原料"
             qty_text = "數量"
@@ -1427,6 +1448,7 @@ def FeedContent(page: ft.Page):
         else:
             date_text = item.get("date", "-")
             time_text = item.get("time", "-")
+            batch_text = item.get("batch_no", "-")
             machine_text = recent_machine_text(item)
             material_text = item.get("material", "-")
             qty_text = item.get("qty", "-")
@@ -1440,14 +1462,15 @@ def FeedContent(page: ft.Page):
             border=border,
             content=ft.Row(
                 controls=[
-                    recent_table_cell(date_text, 96, color=text_color, weight=weight),
-                    recent_table_cell(time_text, 66, color=text_color, weight=weight),
+                    recent_table_cell(date_text, 88, color=text_color, weight=weight),
+                    recent_table_cell(time_text, 64, color=text_color, weight=weight),
                     recent_type_badge(item, is_header=is_header),
-                    recent_table_cell(machine_text, 92, color=text_color, weight=weight),
-                    recent_table_cell(material_text, 350, color=text_color, weight=weight, max_lines=1),
-                    recent_table_cell(qty_text, 82, color=text_color, weight=weight, align=ft.TextAlign.RIGHT),
-                    recent_table_cell(operator_text, 106, color=text_color, weight=weight),
-                    recent_table_cell(note_text, 112, color=text_color, weight=weight),
+                    recent_table_cell(batch_text, 160, color=text_color, weight=weight),
+                    recent_table_cell(machine_text, 96, color=text_color, weight=weight),
+                    recent_table_cell(material_text, 260, color=text_color, weight=weight, max_lines=1),
+                    recent_table_cell(qty_text, 80, color=text_color, weight=weight, align=ft.TextAlign.RIGHT),
+                    recent_table_cell(operator_text, 100, color=text_color, weight=weight),
+                    recent_table_cell(note_text, 172, color=text_color, weight=weight),
                 ],
                 spacing=0,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -1471,7 +1494,7 @@ def FeedContent(page: ft.Page):
             )
 
         info_text = (
-            f"顯示最近 {actual_limit} 筆紀錄，左右滑動可查看右側欄位。"
+            f"顯示最近 {actual_limit} 筆紀錄，左右滑動可查看類型、批號、機台、人員與備註。"
             if recent_records
             else "資料同步後會顯示最近打料紀錄。"
         )
