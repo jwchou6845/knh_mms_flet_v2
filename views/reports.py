@@ -1,7 +1,7 @@
 # =====================================================
 # KNH MMS v2
 # File: views/reports.py
-# File Revision: 2026-05-12-reports-width-r1
+# File Revision: 2026-05-12-reports-width-r2
 # Status: current working version
 # Last Updated: 2026-05-12 Asia/Taipei
 #
@@ -14,7 +14,7 @@
 # - build_content() 外層容器補上 expand=True，讓頁面內容盡量吃滿 shell 可用寬度。
 #
 # Notes:
-# - 本次只調整 views/reports.py 版面寬度，不修改報表查詢、欄位 mapping、CSV、PDF、Nginx /exports/ 下載機制。
+# - 本次只調整 views/reports.py 手機版左右寬度，不修改報表查詢、欄位 mapping、CSV、PDF、Nginx /exports/ 下載機制。
 # - 需符合 Flet 0.84；不可使用 page.push_route()。
 # - 所有日期時間仍維持 Asia/Taipei。
 # =====================================================
@@ -1377,7 +1377,9 @@ def ReportsContent(page: ft.Page):
             width=float("inf"),
             expand=True,
             bgcolor=BG,
-            padding=ft.padding.only(left=18, right=18, top=18),
+            # r2：main.py / shell 已有頁面水平邊距，這裡不可再加 left/right，
+            # 否則報表中心會比 handover / maintenance 等頁面再內縮一圈。
+            padding=ft.padding.only(top=18),
             content=ft.Column(
                 spacing=18,
                 scroll=ft.ScrollMode.AUTO,
