@@ -1,3 +1,25 @@
+# =====================================================
+# KNH MMS v2
+# File: views/dashboard.py
+# File Revision: 2026-05-12-dashboard-summary-bar-r1
+# Status: current working version
+# Last Updated: 2026-05-12 Asia/Taipei
+#
+# Purpose:
+# - 首頁儀表板 UI。
+# - 顯示交接待辦、保養待辦、低水位、本月用量與即時庫存圖表。
+#
+# Major Changes in This Revision:
+# - 即時庫存 / 即時回用料庫存長條圖改為窄螢幕自適應。
+# - 長條圖採左側名稱欄 / 中間長條欄 / 右側數值欄三段式。
+# - 保留原本漸層長條視覺，不改成純色或重設計。
+#
+# Notes:
+# - Flet 0.84。
+# - 不使用 page.push_route()。
+# - 本次不修改 reports.py、CSV/PDF 下載機制或 Supabase schema。
+# =====================================================
+
 import flet as ft
 import base64
 import threading
@@ -742,36 +764,105 @@ def DashboardContent(page: ft.Page):
         )
 
     def custom_ui_bar_chart(title, data_list, max_val, legend_items, update_time, unit=""):
+        """
+        自製長條圖。
+
+        r1 修正重點：
+        - 左側名稱欄、中間長條欄、右側數值欄三段式。
+        - 中間長條欄依 page.width 自適應，但設最大寬度上限。
+        - 保留原本漸層 LinearGradient 視覺，不改成純色。
+        - 目的：避免 HTC 等窄螢幕手機上最大值列把右側數字擠出或遮蔽。
+        """
         bars = []
         sorted_data = sorted(data_list, key=lambda x: x[1], reverse=True)
 
+        screen_width = page.width or 390
+
+        # 寬度配置原則：
+        # 1. 手機窄螢幕時縮短名稱欄與 bar 欄，保留數值欄。
+        # 2. 桌機寬螢幕時 bar 欄最多不超過上限，避免長條圖無限制拉滿。
+        # 3. 「包」數值較短，「KG」可能出現 8,000 KG 以上，右側欄給較寬。
+        if screen_width < 390:
+            name_width = 82
+            bar_max_width = 76
+        elif screen_width < 520:
+            name_width = 94
+            bar_max_width = 96
+        elif screen_width < 760:
+            name_width = 110
+            bar_max_width = 130
+        elif screen_width < 1100:
+            name_width = 120
+            bar_max_width = 170
+        else:
+            name_width = 130
+            bar_max_width = 220
+
+        value_width = 104 if str(unit).upper() == "KG" else 76
+
+        # 整列寬度固定為三欄加 spacing，外層保留橫向捲動能力。
+        # 手機會優先縮 bar，不讓數字欄被擠掉。
+        row_width = name_width + bar_max_width + value_width + 20
+
         for name, val, color_top, color_bottom in sorted_data:
             safe_max = max_val if max_val > 0 else 1
-            bar_width = (val / safe_max) * 150
+            bar_width = (val / safe_max) * bar_max_width
+            if val > 0:
+                bar_width = max(4, min(bar_max_width, bar_width))
+            else:
+                bar_width = 0
 
             bars.append(
-                ft.Row(
-                    [
-                        ft.Container(
-                            width=120,
-                            alignment=ft.Alignment(1, 0),
-                            content=ft.Text(name, size=13, color="#4B5563", max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
-                        ),
-                        ft.Container(
-                            width=bar_width if bar_width > 4 else 4,
-                            height=14,
-                            border_radius=4,
-                            gradient=ft.LinearGradient(
-                                begin=ft.Alignment(-1, 0),
-                                end=ft.Alignment(1, 0),
-                                colors=[color_top, color_bottom],
+                ft.Container(
+                    width=row_width,
+                    content=ft.Row(
+                        [
+                            ft.Container(
+                                width=name_width,
+                                alignment=ft.Alignment(1, 0),
+                                content=ft.Text(
+                                    name,
+                                    size=13,
+                                    color="#4B5563",
+                                    max_lines=1,
+                                    overflow=ft.TextOverflow.ELLIPSIS,
+                                    text_align=ft.TextAlign.RIGHT,
+                                ),
                             ),
-                        ),
-                        ft.Text(f"{val:,} {unit}", size=13, color="#111827", weight=ft.FontWeight.BOLD),
-                    ],
-                    alignment=ft.MainAxisAlignment.START,
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                    spacing=10,
+                            ft.Container(
+                                width=bar_max_width,
+                                height=14,
+                                alignment=ft.Alignment(-1, 0),
+                                content=ft.Container(
+                                    width=bar_width,
+                                    height=14,
+                                    border_radius=4,
+                                    gradient=ft.LinearGradient(
+                                        begin=ft.Alignment(-1, 0),
+                                        end=ft.Alignment(1, 0),
+                                        colors=[color_top, color_bottom],
+                                    ) if bar_width > 0 else None,
+                                    bgcolor="#EEF2F7" if bar_width <= 0 else None,
+                                ),
+                            ),
+                            ft.Container(
+                                width=value_width,
+                                alignment=ft.Alignment(1, 0),
+                                content=ft.Text(
+                                    f"{val:,} {unit}",
+                                    size=13,
+                                    color="#111827",
+                                    weight=ft.FontWeight.BOLD,
+                                    max_lines=1,
+                                    overflow=ft.TextOverflow.ELLIPSIS,
+                                    text_align=ft.TextAlign.RIGHT,
+                                ),
+                            ),
+                        ],
+                        alignment=ft.MainAxisAlignment.START,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        spacing=10,
+                    ),
                 )
             )
 
@@ -817,7 +908,15 @@ def DashboardContent(page: ft.Page):
                     ft.Divider(height=10, color="#F3F4F6"),
                     ft.Container(
                         height=220,
-                        content=ft.Column(bars, spacing=12, scroll=ft.ScrollMode.AUTO),
+                        content=ft.Row(
+                            scroll=ft.ScrollMode.AUTO,
+                            controls=[
+                                ft.Container(
+                                    width=row_width,
+                                    content=ft.Column(bars, spacing=12, scroll=ft.ScrollMode.AUTO),
+                                )
+                            ],
+                        ),
                     ),
                     ft.Divider(height=10, color="#F3F4F6"),
                     ft.Container(

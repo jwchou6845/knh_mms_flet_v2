@@ -1,3 +1,23 @@
+# =====================================================
+# KNH MMS v2
+# File: services/dashboard_service.py
+# File Revision: 2026-05-12-dashboard-summary-bar-r1
+# Status: current working version
+# Last Updated: 2026-05-12 Asia/Taipei
+#
+# Purpose:
+# - 首頁儀表板資料整理層。
+# - 統整即時庫存、月用量、低水位、保養待辦摘要資料。
+#
+# Major Changes in This Revision:
+# - 保養摘要計算增加防禦式檢查，略過 is_deleted = true 的保養項目。
+# - 搭配 repository 層排除已軟刪除保養項目，避免首頁摘要殘留已刪資料。
+#
+# Notes:
+# - 所有時間處理維持 Asia/Taipei。
+# - 本次不修改月用量邏輯、不修改 CSV/PDF 匯出、不修改 reports.py。
+# =====================================================
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -432,6 +452,14 @@ def build_maintenance_summary(
     items: list[dict[str, Any]],
     records: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    # repository 層已排除 is_deleted = true；此處建立有效項目 id 集合，
+    # 讓「近期異常」也只計算仍有效的保養項目，避免已刪項目的舊紀錄殘留在首頁摘要。
+    active_item_ids = {
+        item.get("id")
+        for item in items
+        if item.get("id") and not bool(item.get("is_deleted", False))
+    }
+
     record_map = latest_record_map(records)
 
     due_items: list[dict[str, Any]] = []
@@ -449,6 +477,11 @@ def build_maintenance_summary(
     }
 
     for item in items:
+        # repository 層已排除 is_deleted = true；此處再做防禦式檢查，
+        # 避免舊查詢或資料異常時，已軟刪除保養項目仍進入首頁摘要。
+        if bool(item.get("is_deleted", False)):
+            continue
+
         item_id = item.get("id")
         latest = record_map.get(item_id)
 
@@ -478,8 +511,13 @@ def build_maintenance_summary(
                 }
             )
 
-    # 近期異常：以最近讀回來的保養紀錄中 result != 正常 計算
+    # 近期異常：只計算仍有效保養項目的未刪除紀錄。
+    # records 查詢已排除 maintenance_records.is_deleted = true；這裡再排除已刪除項目的歷史紀錄。
     for record in records:
+        record_item_id = record.get("maintenance_item_id")
+        if active_item_ids and record_item_id not in active_item_ids:
+            continue
+
         result = str(record.get("result") or "")
         if result and result != "正常":
             abnormal_count += 1
