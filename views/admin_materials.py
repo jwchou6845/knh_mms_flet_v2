@@ -1,8 +1,8 @@
 # =====================================================
 # KNH MMS v2
 # File: views/admin_materials.py
-# File Revision: 2026-05-13-admin-materials-r2
-# Status: /admin materials phase 1 implementation - loading guard / button compatibility fix
+# File Revision: 2026-05-13-admin-materials-r3
+# Status: /admin materials phase 1 implementation - Dropdown compatibility fix
 # Last Updated: 2026-05-13 Asia/Taipei
 #
 # Purpose:
@@ -935,7 +935,10 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
             state[value_key] = e.control.value or "全部"
             rebuild()
 
-        return ft.Dropdown(
+        # Flet 0.84 VM 相容性：
+        # 目前部署環境的 ft.Dropdown.__init__() 不接受 on_change 關鍵字參數，
+        # 必須先建立控制項，再指定 dd.on_change，否則頁面重建會失敗並停在讀取中。
+        dd = ft.Dropdown(
             label=label,
             value=current_value,
             options=options,
@@ -945,8 +948,9 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
             bgcolor="#FFFFFF",
             filled=True,
             text_size=13,
-            on_change=on_change,
         )
+        dd.on_change = on_change
+        return dd
 
     def build_filter_bar(is_mobile: bool) -> ft.Control:
         options = state["filter_options"]
