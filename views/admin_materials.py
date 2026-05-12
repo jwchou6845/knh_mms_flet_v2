@@ -1,8 +1,8 @@
 # =====================================================
 # KNH MMS v2
 # File: views/admin_materials.py
-# File Revision: 2026-05-13-admin-materials-r5
-# Status: /admin materials phase 1 implementation - modal/filter/sync polish
+# File Revision: 2026-05-13-admin-materials-r6
+# Status: /admin materials phase 1 implementation - modal/form/filter mobile fix
 # Last Updated: 2026-05-13 Asia/Taipei
 #
 # Purpose:
@@ -337,14 +337,41 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
     def open_dialog(title: str, content: ft.Control, actions: list[ft.Control], width: int = 560) -> None:
         """
         本頁自製 modal。
-        r5：限制最大高度，內容區獨立捲動，避免表單下方出現大灰框或 actions 被擠到畫面外。
+
+        r6 修正：
+        - 不讓內容捲動區吃掉整張 modal 高度，避免底部出現大灰框。
+        - actions 固定在 modal 底部且一定可見。
+        - 手機寬度下表單區可捲動，但底部取消 / 儲存按鈕不被擠出。
         """
         close_dialog()
+
         page_width = page.width or 420
         page_height = page.height or 760
+        is_mobile_modal = page_width < MOBILE_WIDTH
+
         card_width = min(width, max(310, page_width - 36))
-        max_card_height = min(max(420, page_height - 96), 720)
-        content_height = max(220, max_card_height - 132)
+
+        if is_mobile_modal:
+            # 手機 Web 的 page.height 可能偏大或偏小，取保守高度，確保底部按鈕露出。
+            max_card_height = min(max(500, page_height - 150), 680)
+            content_height = max(260, max_card_height - 205)
+            modal_padding = ft.padding.symmetric(horizontal=18, vertical=24)
+        else:
+            max_card_height = min(max(520, page_height - 120), 720)
+            content_height = max(300, max_card_height - 180)
+            modal_padding = ft.padding.all(18)
+
+        action_row = ft.Container(
+            bgcolor="#FFFFFF",
+            padding=ft.padding.only(top=10),
+            border=ft.border.only(top=ft.BorderSide(1, BORDER)),
+            content=ft.Row(
+                alignment=ft.MainAxisAlignment.END,
+                spacing=10,
+                wrap=True,
+                controls=actions,
+            ),
+        )
 
         modal_card = ft.Container(
             width=card_width,
@@ -352,28 +379,21 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
             bgcolor="#FFFFFF",
             border_radius=22,
             clip_behavior=ft.ClipBehavior.HARD_EDGE,
-            padding=ft.padding.all(18),
+            padding=18,
             content=ft.Column(
                 spacing=12,
                 controls=[
-                    ft.Text(title, size=18, color=TEXT, weight=ft.FontWeight.BOLD),
+                    ft.Text(title, size=20 if is_mobile_modal else 18, color=TEXT, weight=ft.FontWeight.BOLD),
                     ft.Container(
                         height=content_height,
+                        bgcolor="#FFFFFF",
                         content=ft.Column(
                             scroll=ft.ScrollMode.AUTO,
                             spacing=0,
                             controls=[content],
                         ),
                     ),
-                    ft.Container(
-                        padding=ft.padding.only(top=4),
-                        content=ft.Row(
-                            alignment=ft.MainAxisAlignment.END,
-                            spacing=10,
-                            wrap=True,
-                            controls=actions,
-                        ),
-                    ),
+                    action_row,
                 ],
             ),
         )
@@ -382,7 +402,7 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
             expand=True,
             bgcolor="#99000000",
             alignment=ft.Alignment(0, 0),
-            padding=ft.padding.all(18),
+            padding=modal_padding,
             content=modal_card,
         )
 
@@ -542,6 +562,35 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
             content_padding=ft.padding.symmetric(horizontal=12, vertical=11),
         )
 
+
+    def field_block(label: str, field: ft.Control) -> ft.Control:
+        """
+        手機 Web 穩定顯示欄位標題。
+        Flet TextField label 在部分 Web/手機環境不一定穩定浮出，
+        因此表單一律在 TextField 外層顯示明確標題。
+        """
+        return ft.Column(
+            tight=True,
+            spacing=6,
+            controls=[
+                ft.Text(label, size=13, color=TEXT, weight=ft.FontWeight.W_600),
+                field,
+            ],
+        )
+
+    def switch_block(label: str, switch: ft.Switch) -> ft.Control:
+        return ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, BORDER),
+            border_radius=12,
+            padding=ft.padding.symmetric(horizontal=10, vertical=8),
+            content=ft.Row(
+                spacing=8,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[switch, ft.Text(label, size=14, color=TEXT, weight=ft.FontWeight.W_500)],
+            ),
+        )
+
     def open_material_dialog(material: dict[str, Any] | None = None) -> None:
         editing = bool(material)
         material = material or {}
@@ -651,28 +700,29 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
                             color=BLUE_BTN,
                         ),
                     ),
-                    name_tf,
+                    field_block("原料名稱 *", name_tf),
                     ft.ResponsiveRow(
                         columns=12,
                         spacing=12,
                         run_spacing=12,
                         controls=[
-                            ft.Container(col={"xs": 12, "md": 6}, content=category_tf),
-                            ft.Container(col={"xs": 12, "md": 6}, content=type_tf),
-                            ft.Container(col={"xs": 12, "md": 6}, content=supplier_tf),
-                            ft.Container(col={"xs": 12, "md": 6}, content=bag_tf),
-                            ft.Container(col={"xs": 12, "md": 6}, content=threshold_tf),
+                            ft.Container(col={"xs": 12, "md": 6}, content=field_block("主分類 *", category_tf)),
+                            ft.Container(col={"xs": 12, "md": 6}, content=field_block("原料類型 *", type_tf)),
+                            ft.Container(col={"xs": 12, "md": 6}, content=field_block("供應商", supplier_tf)),
+                            ft.Container(col={"xs": 12, "md": 6}, content=field_block("包重 KG *", bag_tf)),
+                            ft.Container(col={"xs": 12, "md": 6}, content=field_block("低水位門檻（包）*", threshold_tf)),
                         ],
                     ),
-                    ft.Row(
-                        spacing=16,
-                        wrap=True,
+                    ft.ResponsiveRow(
+                        columns=12,
+                        spacing=12,
+                        run_spacing=10,
                         controls=[
-                            ft.Row(spacing=6, controls=[active_sw, ft.Text("啟用原料", size=13, color=TEXT)]),
-                            ft.Row(spacing=6, controls=[managed_sw, ft.Text("納管庫存", size=13, color=TEXT)]),
+                            ft.Container(col={"xs": 12, "sm": 6}, content=switch_block("啟用原料", active_sw)),
+                            ft.Container(col={"xs": 12, "sm": 6}, content=switch_block("納管庫存", managed_sw)),
                         ],
                     ),
-                    note_tf,
+                    field_block("備註", note_tf),
                 ],
             ),
         )
@@ -950,8 +1000,12 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
 
     def build_filter_bar(is_mobile: bool) -> ft.Control:
         """
-        r5：篩選區改成橫向排列。
-        欄位不再直行堆疊；空間不足時使用水平捲動，避免版面過高。
+        r6：手機篩選不使用水平橫滑。
+        - 主分類 / 原料類型：兩欄排列。
+        - 供應商：獨立一列。
+        - 搜尋：獨立下一列。
+        - 套用 / 清除：兩欄排列。
+        - chips 使用 wrap，自然換行。
         """
         options = state["filter_options"]
 
@@ -1009,34 +1063,40 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
         result_count = len(filtered_materials())
         total_count = len(state.get("materials") or [])
 
-        field_width = 190 if is_mobile else 210
-        search_width = 230 if is_mobile else 260
-
-        controls_row = ft.Row(
-            scroll=ft.ScrollMode.AUTO,
+        fields_grid = ft.ResponsiveRow(
+            columns=12,
             spacing=10,
-            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            run_spacing=10,
             controls=[
-                ft.Container(width=field_width, content=category_dd),
-                ft.Container(width=field_width, content=type_dd),
-                ft.Container(width=field_width, content=supplier_dd),
-                ft.Container(width=search_width, content=keyword_tf),
-                stable_button("套用篩選", icon=ft.Icons.SEARCH, filled=True, color=BLUE_BTN, on_click=apply_filters, height=42, min_width=122),
-                stable_button("清除條件", icon=ft.Icons.CLOSE, color=RED, border_color=RED_BORDER, on_click=clear_filters, height=42, min_width=112),
+                ft.Container(col={"xs": 6, "md": 3}, content=category_dd),
+                ft.Container(col={"xs": 6, "md": 3}, content=type_dd),
+                ft.Container(col={"xs": 12, "md": 3}, content=supplier_dd),
+                ft.Container(col={"xs": 12, "md": 3}, content=keyword_tf),
             ],
         )
 
-        chips_row = ft.Row(
-            scroll=ft.ScrollMode.AUTO,
+        buttons_grid = ft.ResponsiveRow(
+            columns=12,
+            spacing=10,
+            run_spacing=10,
+            controls=[
+                ft.Container(col={"xs": 6, "md": 3}, content=stable_button("套用篩選", icon=ft.Icons.SEARCH, filled=True, color=BLUE_BTN, on_click=apply_filters, height=42, expand=True)),
+                ft.Container(col={"xs": 6, "md": 3}, content=stable_button("清除條件", icon=ft.Icons.CLOSE, color=RED, border_color=RED_BORDER, on_click=clear_filters, height=42, expand=True)),
+            ],
+        )
+
+        chips_wrap = ft.Row(
+            wrap=True,
             spacing=8,
+            run_spacing=8,
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
             controls=[
                 ft.Text("啟用狀態", size=12, color=TEXT_MUTED, weight=ft.FontWeight.W_600),
                 filter_chip("全部", state["filter_active"] == "全部", lambda _: set_active_filter("全部")),
                 filter_chip("啟用", state["filter_active"] == "啟用", lambda _: set_active_filter("啟用"), GREEN, GREEN_SOFT),
                 filter_chip("停用", state["filter_active"] == "停用", lambda _: set_active_filter("停用"), ORANGE, ORANGE_SOFT),
-                ft.Container(width=10),
-                ft.Text("庫存納管", size=12, color=TEXT_MUTED, weight=ft.FontWeight.W_600),
+                ft.Container(width=8),
+                ft.Text("庫存", size=12, color=TEXT_MUTED, weight=ft.FontWeight.W_600),
                 filter_chip("全部", state["filter_managed"] == "全部", lambda _: set_managed_filter("全部")),
                 filter_chip("納管", state["filter_managed"] == "納管", lambda _: set_managed_filter("納管"), BLUE_BTN, BLUE_SOFT),
                 filter_chip("未納管", state["filter_managed"] == "未納管", lambda _: set_managed_filter("未納管"), PURPLE_BTN, PURPLE_SOFT),
@@ -1061,8 +1121,9 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
                             ),
                         ],
                     ),
-                    controls_row,
-                    chips_row,
+                    fields_grid,
+                    buttons_grid,
+                    chips_wrap,
                 ],
             ),
         )
