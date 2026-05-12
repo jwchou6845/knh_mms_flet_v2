@@ -1,8 +1,8 @@
 # =====================================================
 # KNH MMS v2
 # File: views/admin_materials.py
-# File Revision: 2026-05-13-admin-materials-r3
-# Status: /admin materials phase 1 implementation - Dropdown compatibility fix
+# File Revision: 2026-05-13-admin-materials-r4
+# Status: /admin materials phase 1 implementation - filter/action fix
 # Last Updated: 2026-05-13 Asia/Taipei
 #
 # Purpose:
@@ -10,17 +10,15 @@
 # - 供超級管理員讀取 materials 真實清單、搜尋篩選、新增原料、編輯原料、啟用 / 停用原料。
 #
 # Major Changes in This Revision:
-# - 移除 placeholder，正式讀取 Supabase materials 與 material_stock_view。
-# - 顯示啟用 / 停用、低水位、納管庫存與目前庫存狀態。
-# - 新增搜尋、分類、類型、供應商、啟用狀態、納管狀態篩選。
-# - 新增原料與編輯原料 Dialog，透過 services/admin_service.py 寫入。
-# - 啟用 / 停用採確認 Dialog，只更新 materials.is_active，不刪除歷史紀錄。
+# - 搜尋改為「輸入條件 → 點套用篩選」的明確操作，避免使用者輸入後找不到搜尋按鈕。
+# - 篩選條件改為按「套用篩選」一次寫回 state，不再依賴 Dropdown.on_change 即時觸發。
+# - 編輯 / 啟用停用 Dialog 改為本頁 Stack 自製 modal，避免 Flet Web AlertDialog / overlay 在 VM 上點擊後無反應。
+# - 操作按鈕維持手機 Web 穩定版 Container 按鈕，擴大操作欄寬度，避免桌機表格水平捲動時按鈕被壓縮。
 #
 # Notes:
 # - Flet 0.84；不使用 page.push_route()。
-# - 手機 Web 關鍵按鈕改用 Container 穩定按鈕，避免 Flet Web 按鈕參數相容性造成重建失敗。
-# - 背景載入加入 watchdog 與 try/except，避免資料查詢或 UI 重建失敗時永久停在讀取中。
-# - 新增原料只建立主檔，不直接建立初始庫存，不覆蓋正式庫存數字。
+# - Dropdown 不使用 on_change 建構子參數；若未來需要事件，必須先建立控制項後再指定。
+# - 新增原料只建立 materials 主檔，不直接建立初始庫存，不覆蓋正式庫存數字。
 # - 所有時間顯示由 service 層轉為 Asia/Taipei。
 # =====================================================
 
@@ -46,12 +44,10 @@ TEXT = "#1E293B"
 TEXT_MUTED = "#64748B"
 BORDER = "#E2E8F0"
 
-BLUE = "#2F80ED"
 BLUE_BTN = "#4F7FB8"
 BLUE_SOFT = "#E5F0FF"
 BLUE_BORDER = "#B0D0FF"
 
-PURPLE = "#8B5CF6"
 PURPLE_BTN = "#7358B8"
 PURPLE_SOFT = "#F3E8FF"
 PURPLE_BORDER = "#D8B4FE"
@@ -68,12 +64,8 @@ RED = "#DC2626"
 RED_SOFT = "#FEE2E2"
 RED_BORDER = "#FCA5A5"
 
-YELLOW = "#D97706"
-YELLOW_SOFT = "#FEF3C7"
-YELLOW_BORDER = "#FDE68A"
-
 MOBILE_WIDTH = 820
-TABLE_WIDTH = 1180
+TABLE_WIDTH = 1260
 
 
 def AdminMaterialsContent(page: ft.Page) -> ft.Control:
@@ -104,13 +96,17 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
         "filter_supplier": "全部",
         "filter_active": "全部",
         "filter_managed": "全部",
-        "action_busy": False,
         "load_seq": 0,
+        "modal_open": False,
     }
 
     ui_lock = threading.RLock()
+    action_lock = threading.Lock()
+
     main_host = ft.Container(expand=True)
-    root = ft.Container(expand=True, bgcolor=BG, content=main_host)
+    root_stack = ft.Stack(expand=True, controls=[main_host])
+    root = ft.Container(expand=True, bgcolor=BG, content=root_stack)
+    modal_ref: dict[str, ft.Control | None] = {"control": None}
 
     # =====================================================
     # Session / navigation / basics
@@ -143,7 +139,7 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
             with ui_lock:
                 page.update()
         except Exception as exc:
-            print("admin_materials page.update failed:", repr(exc))
+            print("admin_materials page.update failed:", repr(exc), flush=True)
 
     def show_snack(message: str, success: bool = True) -> None:
         snack = ft.SnackBar(
@@ -187,44 +183,6 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
                 max_lines=1,
                 overflow=ft.TextOverflow.ELLIPSIS,
             ),
-        )
-
-    def primary_style(bg: str = BLUE_BTN) -> ft.ButtonStyle:
-        return ft.ButtonStyle(
-            bgcolor={
-                ft.ControlState.DEFAULT: bg,
-                ft.ControlState.HOVERED: bg,
-                ft.ControlState.PRESSED: bg,
-            },
-            color={
-                ft.ControlState.DEFAULT: "#FFFFFF",
-                ft.ControlState.HOVERED: "#FFFFFF",
-                ft.ControlState.PRESSED: "#FFFFFF",
-            },
-            shape=ft.RoundedRectangleBorder(radius=12),
-            padding=ft.padding.symmetric(horizontal=16, vertical=12),
-            elevation=0,
-        )
-
-    def outline_style(color: str = BLUE_BTN, border_color: str = BLUE_BORDER) -> ft.ButtonStyle:
-        return ft.ButtonStyle(
-            bgcolor={
-                ft.ControlState.DEFAULT: "#FFFFFF",
-                ft.ControlState.HOVERED: "#F8FAFC",
-                ft.ControlState.PRESSED: "#F1F5F9",
-            },
-            color={
-                ft.ControlState.DEFAULT: color,
-                ft.ControlState.HOVERED: color,
-                ft.ControlState.PRESSED: color,
-            },
-            side={
-                ft.ControlState.DEFAULT: ft.BorderSide(1, border_color),
-                ft.ControlState.HOVERED: ft.BorderSide(1, color),
-                ft.ControlState.PRESSED: ft.BorderSide(1, color),
-            },
-            shape=ft.RoundedRectangleBorder(radius=12),
-            padding=ft.padding.symmetric(horizontal=14, vertical=11),
         )
 
     def stable_button_content(
@@ -272,6 +230,7 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
         height: int = 42,
         expand: bool = False,
         min_width: int | None = None,
+        disabled: bool = False,
     ) -> ft.Container:
         bg = color if filled else "#FFFFFF"
         fg = "#FFFFFF" if filled else color
@@ -282,14 +241,15 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
             height=height,
             width=min_width,
             border_radius=12,
-            bgcolor=bg,
-            border=ft.border.all(1, br),
+            bgcolor="#F1F5F9" if disabled else bg,
+            border=ft.border.all(1, BORDER if disabled else br),
             alignment=ft.Alignment(0, 0),
             padding=ft.padding.symmetric(horizontal=13),
-            ink=True,
-            content=stable_button_content(label, icon, fg),
+            ink=not disabled,
+            content=stable_button_content(label, icon, TEXT_MUTED if disabled else fg),
+            opacity=0.72 if disabled else 1,
         )
-        btn.disabled = False
+        btn.disabled = bool(disabled)
         btn.data = {
             "label": label,
             "icon": icon,
@@ -363,6 +323,51 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
         )
 
     # =====================================================
+    # Custom modal
+    # =====================================================
+    def close_dialog(_=None) -> None:
+        modal_layer = modal_ref.get("control")
+        if modal_layer and modal_layer in root_stack.controls:
+            root_stack.controls.remove(modal_layer)
+        modal_ref["control"] = None
+        state["modal_open"] = False
+        safe_update()
+
+    def open_dialog(title: str, content: ft.Control, actions: list[ft.Control], width: int = 560) -> None:
+        close_dialog()
+        page_width = page.width or 420
+        card_width = min(width, max(310, page_width - 36))
+
+        modal_card = ft.Container(
+            width=card_width,
+            bgcolor="#FFFFFF",
+            border_radius=22,
+            padding=ft.padding.all(22),
+            content=ft.Column(
+                tight=True,
+                spacing=16,
+                controls=[
+                    ft.Text(title, size=18, color=TEXT, weight=ft.FontWeight.BOLD),
+                    content,
+                    ft.Row(alignment=ft.MainAxisAlignment.END, spacing=10, wrap=True, controls=actions),
+                ],
+            ),
+        )
+
+        modal_layer = ft.Container(
+            expand=True,
+            bgcolor="#99000000",
+            alignment=ft.Alignment(0, 0),
+            padding=ft.padding.all(18),
+            content=modal_card,
+        )
+
+        modal_ref["control"] = modal_layer
+        state["modal_open"] = True
+        root_stack.controls.append(modal_layer)
+        safe_update()
+
+    # =====================================================
     # Data load / filtering
     # =====================================================
     def set_sync(status: str, message: str) -> None:
@@ -376,7 +381,6 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
         state["filter_options"] = data.get("filter_options") or state["filter_options"]
         state["generated_at"] = data.get("generated_at") or "-"
 
-        # 若資料異動後原本選項不存在，回到「全部」。
         options = state["filter_options"]
         if state["filter_category"] != "全部" and state["filter_category"] not in options.get("main_categories", []):
             state["filter_category"] = "全部"
@@ -479,95 +483,48 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
     # =====================================================
     # Dialogs / write actions
     # =====================================================
-    def close_dialog(dialog: ft.AlertDialog | None = None) -> None:
-        if dialog:
-            dialog.open = False
-        safe_update()
+    def make_field(
+        label: str,
+        value: Any = "",
+        hint: str = "",
+        multiline: bool = False,
+        keyboard_type=None,
+    ) -> ft.TextField:
+        return ft.TextField(
+            label=label,
+            value="" if value is None else str(value),
+            hint_text=hint,
+            multiline=multiline,
+            min_lines=2 if multiline else 1,
+            max_lines=4 if multiline else 1,
+            keyboard_type=keyboard_type,
+            border_radius=12,
+            border_color=BORDER,
+            focused_border_color=BLUE_BTN,
+            bgcolor="#FFFFFF",
+            filled=True,
+            text_size=14,
+            content_padding=ft.padding.symmetric(horizontal=12, vertical=11),
+        )
 
     def open_material_dialog(material: dict[str, Any] | None = None) -> None:
         editing = bool(material)
+        material = material or {}
         raw = material.get("raw") if isinstance(material, dict) else {}
         raw = raw or {}
 
-        name_tf = ft.TextField(
-            label="原料名稱 *",
-            value=str(material.get("material_name") or "") if editing else "",
-            hint_text="例如：PET-南紡",
-            border_radius=12,
-            border_color=BORDER,
-            focused_border_color=BLUE_BTN,
-            bgcolor="#FFFFFF",
-            filled=True,
-        )
-        category_tf = ft.TextField(
-            label="主分類 *",
-            value=str(material.get("main_category") or "") if editing else "",
-            hint_text="例如：PET、PA6、輔助母粒、PP",
-            border_radius=12,
-            border_color=BORDER,
-            focused_border_color=BLUE_BTN,
-            bgcolor="#FFFFFF",
-            filled=True,
-        )
-        type_tf = ft.TextField(
-            label="原料類型 *",
-            value=str(material.get("material_type") or "") if editing else "",
-            hint_text="例如：未結晶、已結晶、N/A",
-            border_radius=12,
-            border_color=BORDER,
-            focused_border_color=BLUE_BTN,
-            bgcolor="#FFFFFF",
-            filled=True,
-        )
-        supplier_tf = ft.TextField(
-            label="供應商",
-            value=str(material.get("supplier") or "") if editing and material.get("supplier") != "-" else "",
-            hint_text="例如：南紡、台塑、中國儀征",
-            border_radius=12,
-            border_color=BORDER,
-            focused_border_color=BLUE_BTN,
-            bgcolor="#FFFFFF",
-            filled=True,
-        )
-        bag_tf = ft.TextField(
-            label="包重 KG *",
-            value=str(raw.get("bag_weight_kg") if editing else ""),
-            hint_text="例如：25、950、1000",
-            keyboard_type=ft.KeyboardType.NUMBER,
-            border_radius=12,
-            border_color=BORDER,
-            focused_border_color=BLUE_BTN,
-            bgcolor="#FFFFFF",
-            filled=True,
-        )
-        threshold_tf = ft.TextField(
-            label="低水位門檻（包）*",
-            value=str(raw.get("low_stock_threshold_bags") if editing else "3"),
-            hint_text="例如：3",
-            keyboard_type=ft.KeyboardType.NUMBER,
-            border_radius=12,
-            border_color=BORDER,
-            focused_border_color=BLUE_BTN,
-            bgcolor="#FFFFFF",
-            filled=True,
-        )
-        note_tf = ft.TextField(
-            label="備註",
-            value=str(raw.get("note") or "") if editing else "",
-            hint_text="例如：庫存安全、暫停進貨原因等",
-            multiline=True,
-            min_lines=2,
-            max_lines=4,
-            border_radius=12,
-            border_color=BORDER,
-            focused_border_color=BLUE_BTN,
-            bgcolor="#FFFFFF",
-            filled=True,
-        )
+        name_tf = make_field("原料名稱 *", material.get("material_name") if editing else "", "例如：PET-南紡")
+        category_tf = make_field("主分類 *", material.get("main_category") if editing else "", "例如：PET、PA6、輔助母粒、PP")
+        type_tf = make_field("原料類型 *", material.get("material_type") if editing else "", "例如：未結晶、已結晶、N/A")
+        supplier_tf = make_field("供應商", material.get("supplier") if editing and material.get("supplier") != "-" else "", "例如：南紡、台塑、中國儀征")
+        bag_tf = make_field("包重 KG *", raw.get("bag_weight_kg") if editing else "", "例如：25、950、1000", keyboard_type=ft.KeyboardType.NUMBER)
+        threshold_tf = make_field("低水位門檻（包）*", raw.get("low_stock_threshold_bags") if editing else "3", "例如：3", keyboard_type=ft.KeyboardType.NUMBER)
+        note_tf = make_field("備註", raw.get("note") if editing else "", "例如：庫存安全、暫停進貨原因等", multiline=True)
         active_sw = ft.Switch(value=bool(material.get("is_active", True)) if editing else True)
         managed_sw = ft.Switch(value=bool(material.get("is_stock_managed", True)) if editing else True)
 
         saving = {"value": False}
+        submit_button_ref: dict[str, Any] = {"control": None}
 
         def collect_form() -> dict[str, Any]:
             return {
@@ -582,10 +539,10 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
                 "note": note_tf.value,
             }
 
-        def set_submit_loading(btn, value: bool) -> None:
+        def set_submit_loading(value: bool) -> None:
             saving["value"] = value
             set_stable_button_loading(
-                btn,
+                submit_button_ref["control"],
                 value,
                 "更新原料" if editing else "新增原料",
                 ft.Icons.SAVE_OUTLINED,
@@ -594,9 +551,11 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
         def submit(_=None):
             if saving["value"]:
                 return
+            if not action_lock.acquire(blocking=False):
+                show_snack("資料寫入中，請稍候。", success=False)
+                return
 
-            submit_btn = submit_button_ref["control"]
-            set_submit_loading(submit_btn, True)
+            set_submit_loading(True)
 
             def worker():
                 try:
@@ -613,17 +572,23 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
                         )
 
                     if result.ok:
-                        close_dialog(dialog)
+                        close_dialog()
                         show_snack(result.message, success=True)
                         load_data(show_loading=False)
                     else:
                         show_snack(result.message, success=False)
+                except Exception as exc:
+                    show_snack(f"寫入原料失敗：{exc}", success=False)
                 finally:
-                    set_submit_loading(submit_btn, False)
+                    try:
+                        action_lock.release()
+                    except Exception:
+                        pass
+                    if state.get("modal_open"):
+                        set_submit_loading(False)
 
             threading.Thread(target=worker, daemon=True).start()
 
-        submit_button_ref: dict[str, Any] = {"control": None}
         submit_button = stable_button(
             "更新原料" if editing else "新增原料",
             icon=ft.Icons.SAVE_OUTLINED,
@@ -635,8 +600,7 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
         )
         submit_button_ref["control"] = submit_button
 
-        form = ft.Container(
-            width=560,
+        content = ft.Container(
             content=ft.Column(
                 tight=True,
                 spacing=12,
@@ -667,6 +631,7 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
                     ),
                     ft.Row(
                         spacing=16,
+                        wrap=True,
                         controls=[
                             ft.Row(spacing=6, controls=[active_sw, ft.Text("啟用原料", size=13, color=TEXT)]),
                             ft.Row(spacing=6, controls=[managed_sw, ft.Text("納管庫存", size=13, color=TEXT)]),
@@ -677,48 +642,60 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
             ),
         )
 
-        dialog = ft.AlertDialog(
-            modal=True,
-            title=ft.Text("編輯原料" if editing else "新增原料", size=18, color=TEXT, weight=ft.FontWeight.BOLD),
-            content=form,
+        open_dialog(
+            "編輯原料" if editing else "新增原料",
+            content,
             actions=[
-                stable_button("取消", color=TEXT_MUTED, border_color=BORDER, on_click=lambda _: close_dialog(dialog), height=42, min_width=88),
+                stable_button("取消", color=TEXT_MUTED, border_color=BORDER, on_click=close_dialog, height=42, min_width=88),
                 submit_button,
             ],
-            actions_alignment=ft.MainAxisAlignment.END,
+            width=600,
         )
-        page.overlay.append(dialog)
-        dialog.open = True
-        safe_update()
 
     def open_toggle_active_dialog(material: dict[str, Any]) -> None:
         current_active = bool(material.get("is_active"))
         next_active = not current_active
         action_text = "啟用" if next_active else "停用"
         action_color = GREEN if next_active else RED
-
         busy = {"value": False}
+        confirm_ref: dict[str, Any] = {"control": None}
 
         def submit(_=None):
             if busy["value"]:
                 return
+            if not action_lock.acquire(blocking=False):
+                show_snack("資料寫入中，請稍候。", success=False)
+                return
+
             busy["value"] = True
-            set_stable_button_loading(confirm_btn, True, f"確認{action_text}", ft.Icons.CHECK_CIRCLE_OUTLINE)
+            set_stable_button_loading(confirm_ref["control"], True, f"確認{action_text}", ft.Icons.CHECK_CIRCLE_OUTLINE)
 
             def worker():
-                result = toggle_material_active(
-                    material_id=str(material.get("id") or ""),
-                    is_active=next_active,
-                    current_user=current_user(),
-                )
-                if result.ok:
-                    close_dialog(dialog)
-                    show_snack(result.message, success=True)
-                    load_data(show_loading=False)
-                else:
-                    show_snack(result.message, success=False)
+                try:
+                    result = toggle_material_active(
+                        material_id=str(material.get("id") or ""),
+                        is_active=next_active,
+                        current_user=current_user(),
+                    )
+                    if result.ok:
+                        close_dialog()
+                        show_snack(result.message, success=True)
+                        load_data(show_loading=False)
+                    else:
+                        show_snack(result.message, success=False)
+                        busy["value"] = False
+                        if state.get("modal_open"):
+                            set_stable_button_loading(confirm_ref["control"], False, f"確認{action_text}", ft.Icons.CHECK_CIRCLE_OUTLINE)
+                except Exception as exc:
+                    show_snack(f"更新原料啟用狀態失敗：{exc}", success=False)
                     busy["value"] = False
-                    set_stable_button_loading(confirm_btn, False, f"確認{action_text}", ft.Icons.CHECK_CIRCLE_OUTLINE)
+                    if state.get("modal_open"):
+                        set_stable_button_loading(confirm_ref["control"], False, f"確認{action_text}", ft.Icons.CHECK_CIRCLE_OUTLINE)
+                finally:
+                    try:
+                        action_lock.release()
+                    except Exception:
+                        pass
 
             threading.Thread(target=worker, daemon=True).start()
 
@@ -737,30 +714,28 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
             height=42,
             min_width=116,
         )
+        confirm_ref["control"] = confirm_btn
 
-        dialog = ft.AlertDialog(
-            modal=True,
-            title=ft.Text(f"確定要{action_text}此原料？", size=18, weight=ft.FontWeight.BOLD, color=TEXT),
-            content=ft.Container(
-                width=420,
-                content=ft.Column(
-                    tight=True,
-                    spacing=10,
-                    controls=[
-                        ft.Text(material.get("material_name") or "-", size=16, color=TEXT, weight=ft.FontWeight.BOLD),
-                        ft.Text(message, size=13, color=TEXT_MUTED),
-                    ],
-                ),
+        content = ft.Container(
+            content=ft.Column(
+                tight=True,
+                spacing=10,
+                controls=[
+                    ft.Text(material.get("material_name") or "-", size=16, color=TEXT, weight=ft.FontWeight.BOLD),
+                    ft.Text(message, size=13, color=TEXT_MUTED),
+                ],
             ),
+        )
+
+        open_dialog(
+            f"確定要{action_text}此原料？",
+            content,
             actions=[
-                stable_button("取消", color=TEXT_MUTED, border_color=BORDER, on_click=lambda _: close_dialog(dialog), height=42, min_width=88),
+                stable_button("取消", color=TEXT_MUTED, border_color=BORDER, on_click=close_dialog, height=42, min_width=88),
                 confirm_btn,
             ],
-            actions_alignment=ft.MainAxisAlignment.END,
+            width=460,
         )
-        page.overlay.append(dialog)
-        dialog.open = True
-        safe_update()
 
     # =====================================================
     # UI blocks
@@ -779,28 +754,23 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
                     controls=[
                         ft.Icon(ft.Icons.LOCK_OUTLINE, size=48, color=RED),
                         ft.Text("無權限存取", size=24, color=TEXT, weight=ft.FontWeight.BOLD),
-                        ft.Text("此頁面僅限超級管理員使用。", size=14, color=TEXT_MUTED),
-                        stable_button("返回首頁", icon=ft.Icons.HOME_OUTLINED, filled=True, color=BLUE_BTN, on_click=lambda _: navigate("/"), height=44, min_width=118),
+                        ft.Text("此頁面僅限超級管理員使用。", size=14, color=TEXT_MUTED, text_align=ft.TextAlign.CENTER),
+                        stable_button("返回首頁", icon=ft.Icons.HOME_OUTLINED, filled=True, color=BLUE_BTN, on_click=lambda _: navigate("/"), height=44, min_width=120),
                     ],
                 ),
             ),
         )
 
     def build_header(is_mobile: bool) -> ft.Control:
-        status_color = BLUE_BTN
-        status_bg = BLUE_SOFT
-        status_border = BLUE_BORDER
-        status_icon = ft.ProgressRing(width=15, height=15, stroke_width=2, color=status_color)
-
-        if state["sync_status"] == "success":
-            status_color = GREEN
-            status_bg = GREEN_SOFT
-            status_border = GREEN_BORDER
+        status = state.get("sync_status") or "success"
+        if status == "loading":
+            status_color, status_bg, status_border = BLUE_BTN, BLUE_SOFT, BLUE_BORDER
+            status_icon = ft.ProgressRing(width=15, height=15, stroke_width=2, color=status_color)
+        elif status == "success":
+            status_color, status_bg, status_border = GREEN, GREEN_SOFT, GREEN_BORDER
             status_icon = ft.Icon(ft.Icons.CHECK_CIRCLE_OUTLINE, size=17, color=status_color)
-        elif state["sync_status"] == "error":
-            status_color = RED
-            status_bg = RED_SOFT
-            status_border = RED_BORDER
+        else:
+            status_color, status_bg, status_border = RED, RED_SOFT, RED_BORDER
             status_icon = ft.Icon(ft.Icons.ERROR_OUTLINE, size=17, color=status_color)
 
         title_row = ft.Row(
@@ -852,7 +822,7 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
             ),
         )
 
-        controls = [breadcrumb(), title_row, status_badge]
+        controls: list[ft.Control] = [breadcrumb(), title_row, status_badge]
         if state.get("error_message"):
             controls.append(
                 card(
@@ -925,20 +895,10 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
 
         return ft.Row(spacing=12, controls=[ft.Container(expand=True, content=c) for c in cards])
 
-    def dropdown_filter(label: str, value_key: str, values: list[str], icon) -> ft.Control:
+    def make_filter_dropdown(label: str, value: str, values: list[str]) -> ft.Dropdown:
         options = [ft.dropdown.Option("全部")] + [ft.dropdown.Option(v) for v in values]
-        current_value = state.get(value_key, "全部")
-        if current_value not in ["全部"] + values:
-            current_value = "全部"
-
-        def on_change(e):
-            state[value_key] = e.control.value or "全部"
-            rebuild()
-
-        # Flet 0.84 VM 相容性：
-        # 目前部署環境的 ft.Dropdown.__init__() 不接受 on_change 關鍵字參數，
-        # 必須先建立控制項，再指定 dd.on_change，否則頁面重建會失敗並停在讀取中。
-        dd = ft.Dropdown(
+        current_value = value if value in ["全部"] + values else "全部"
+        return ft.Dropdown(
             label=label,
             value=current_value,
             options=options,
@@ -949,23 +909,25 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
             filled=True,
             text_size=13,
         )
-        dd.on_change = on_change
-        return dd
 
     def build_filter_bar(is_mobile: bool) -> ft.Control:
         options = state["filter_options"]
 
-        keyword_tf = ft.TextField(
-            label="搜尋",
-            value=state.get("keyword", ""),
-            hint_text="搜尋原料名稱、供應商、備註...",
-            border_radius=12,
-            border_color=BORDER,
-            focused_border_color=BLUE_BTN,
-            bgcolor="#FFFFFF",
-            filled=True,
-            on_change=lambda e: set_keyword(e.control.value),
+        keyword_tf = make_field(
+            "搜尋",
+            state.get("keyword", ""),
+            "輸入原料名稱、供應商、備註後按套用篩選",
         )
+        category_dd = make_filter_dropdown("主分類", state["filter_category"], options.get("main_categories", []))
+        type_dd = make_filter_dropdown("原料類型", state["filter_type"], options.get("material_types", []))
+        supplier_dd = make_filter_dropdown("供應商", state["filter_supplier"], options.get("suppliers", []))
+
+        def apply_filters(_=None):
+            state["keyword"] = str(keyword_tf.value or "").strip()
+            state["filter_category"] = category_dd.value or "全部"
+            state["filter_type"] = type_dd.value or "全部"
+            state["filter_supplier"] = supplier_dd.value or "全部"
+            rebuild()
 
         def set_active_filter(value: str):
             state["filter_active"] = value
@@ -985,24 +947,22 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
                 alignment=ft.Alignment(0, 0),
                 ink=True,
                 on_click=on_click,
-                content=ft.Text(
-                    label,
-                    size=12,
-                    color=color if active else TEXT_MUTED,
-                    weight=ft.FontWeight.BOLD if active else ft.FontWeight.W_500,
+                content=ft.Row(
+                    spacing=6,
+                    tight=True,
+                    alignment=ft.MainAxisAlignment.CENTER,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    controls=[
+                        ft.Icon(ft.Icons.CHECK_CIRCLE if active else ft.Icons.CIRCLE_OUTLINED, size=16, color=color if active else TEXT_MUTED),
+                        ft.Text(
+                            label,
+                            size=12,
+                            color=color if active else TEXT_MUTED,
+                            weight=ft.FontWeight.BOLD if active else ft.FontWeight.W_500,
+                        ),
+                    ],
                 ),
             )
-
-        def set_keyword(value: str):
-            state["keyword"] = value or ""
-            rebuild()
-
-        filter_controls = [
-            ft.Container(col={"xs": 12, "md": 3}, content=dropdown_filter("主分類", "filter_category", options.get("main_categories", []), ft.Icons.CATEGORY_OUTLINED)),
-            ft.Container(col={"xs": 12, "md": 3}, content=dropdown_filter("原料類型", "filter_type", options.get("material_types", []), ft.Icons.LABEL_OUTLINE)),
-            ft.Container(col={"xs": 12, "md": 3}, content=dropdown_filter("供應商", "filter_supplier", options.get("suppliers", []), ft.Icons.BUSINESS_OUTLINED)),
-            ft.Container(col={"xs": 12, "md": 3}, content=keyword_tf),
-        ]
 
         result_count = len(filtered_materials())
         total_count = len(state.get("materials") or [])
@@ -1026,30 +986,64 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
                             stable_button("清除條件", icon=ft.Icons.CLOSE, color=RED, border_color=RED_BORDER, on_click=clear_filters, height=40, min_width=108),
                         ],
                     ),
-                    ft.ResponsiveRow(columns=12, spacing=10, run_spacing=10, controls=filter_controls),
-                    ft.Column(
-                        spacing=8,
+                    ft.ResponsiveRow(
+                        columns=12,
+                        spacing=10,
+                        run_spacing=10,
                         controls=[
-                            ft.Text("啟用狀態", size=12, color=TEXT_MUTED, weight=ft.FontWeight.W_600),
-                            ft.Row(
-                                scroll=ft.ScrollMode.AUTO,
-                                spacing=8,
-                                controls=[
-                                    filter_chip("全部", state["filter_active"] == "全部", lambda _: set_active_filter("全部")),
-                                    filter_chip("啟用", state["filter_active"] == "啟用", lambda _: set_active_filter("啟用"), GREEN, GREEN_SOFT),
-                                    filter_chip("停用", state["filter_active"] == "停用", lambda _: set_active_filter("停用"), ORANGE, ORANGE_SOFT),
-                                ],
+                            ft.Container(col={"xs": 12, "md": 3}, content=category_dd),
+                            ft.Container(col={"xs": 12, "md": 3}, content=type_dd),
+                            ft.Container(col={"xs": 12, "md": 3}, content=supplier_dd),
+                            ft.Container(col={"xs": 12, "md": 3}, content=keyword_tf),
+                        ],
+                    ),
+                    ft.ResponsiveRow(
+                        columns=12,
+                        spacing=10,
+                        run_spacing=10,
+                        controls=[
+                            ft.Container(
+                                col={"xs": 12, "md": 6},
+                                content=ft.Column(
+                                    spacing=8,
+                                    controls=[
+                                        ft.Text("啟用狀態", size=12, color=TEXT_MUTED, weight=ft.FontWeight.W_600),
+                                        ft.Row(
+                                            scroll=ft.ScrollMode.AUTO,
+                                            spacing=8,
+                                            controls=[
+                                                filter_chip("全部", state["filter_active"] == "全部", lambda _: set_active_filter("全部")),
+                                                filter_chip("啟用", state["filter_active"] == "啟用", lambda _: set_active_filter("啟用"), GREEN, GREEN_SOFT),
+                                                filter_chip("停用", state["filter_active"] == "停用", lambda _: set_active_filter("停用"), ORANGE, ORANGE_SOFT),
+                                            ],
+                                        ),
+                                    ],
+                                ),
                             ),
-                            ft.Text("庫存納管", size=12, color=TEXT_MUTED, weight=ft.FontWeight.W_600),
-                            ft.Row(
-                                scroll=ft.ScrollMode.AUTO,
-                                spacing=8,
-                                controls=[
-                                    filter_chip("全部", state["filter_managed"] == "全部", lambda _: set_managed_filter("全部")),
-                                    filter_chip("納管", state["filter_managed"] == "納管", lambda _: set_managed_filter("納管"), BLUE_BTN, BLUE_SOFT),
-                                    filter_chip("未納管", state["filter_managed"] == "未納管", lambda _: set_managed_filter("未納管"), PURPLE_BTN, PURPLE_SOFT),
-                                ],
+                            ft.Container(
+                                col={"xs": 12, "md": 6},
+                                content=ft.Column(
+                                    spacing=8,
+                                    controls=[
+                                        ft.Text("庫存納管", size=12, color=TEXT_MUTED, weight=ft.FontWeight.W_600),
+                                        ft.Row(
+                                            scroll=ft.ScrollMode.AUTO,
+                                            spacing=8,
+                                            controls=[
+                                                filter_chip("全部", state["filter_managed"] == "全部", lambda _: set_managed_filter("全部")),
+                                                filter_chip("納管", state["filter_managed"] == "納管", lambda _: set_managed_filter("納管"), BLUE_BTN, BLUE_SOFT),
+                                                filter_chip("未納管", state["filter_managed"] == "未納管", lambda _: set_managed_filter("未納管"), PURPLE_BTN, PURPLE_SOFT),
+                                            ],
+                                        ),
+                                    ],
+                                ),
                             ),
+                        ],
+                    ),
+                    ft.Row(
+                        alignment=ft.MainAxisAlignment.END,
+                        controls=[
+                            stable_button("套用篩選", icon=ft.Icons.SEARCH, filled=True, color=BLUE_BTN, on_click=apply_filters, height=42, min_width=122),
                         ],
                     ),
                 ],
@@ -1098,12 +1092,12 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
 
     def table_action_cell(row: dict[str, Any]) -> ft.Container:
         return ft.Container(
-            width=170,
+            width=220,
             content=ft.Row(
                 spacing=8,
                 controls=[
-                    stable_button("編輯", icon=ft.Icons.EDIT_OUTLINED, color=BLUE_BTN, border_color=BLUE_BORDER, on_click=lambda _, current=row: open_material_dialog(current), height=40, min_width=74),
-                    stable_button("停用" if row.get("is_active") else "啟用", color=RED if row.get("is_active") else GREEN, border_color=RED_BORDER if row.get("is_active") else GREEN_BORDER, on_click=lambda _, current=row: open_toggle_active_dialog(current), height=40, min_width=70),
+                    stable_button("編輯", icon=ft.Icons.EDIT_OUTLINED, color=BLUE_BTN, border_color=BLUE_BORDER, on_click=lambda _, current=row: open_material_dialog(current), height=40, min_width=86),
+                    stable_button("停用" if row.get("is_active") else "啟用", icon=ft.Icons.PAUSE_CIRCLE_OUTLINE if row.get("is_active") else ft.Icons.CHECK_CIRCLE_OUTLINE, color=RED if row.get("is_active") else GREEN, border_color=RED_BORDER if row.get("is_active") else GREEN_BORDER, on_click=lambda _, current=row: open_toggle_active_dialog(current), height=40, min_width=92),
                 ],
             ),
         )
@@ -1115,7 +1109,6 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
         weight = ft.FontWeight.W_700 if header else None
         border = None if header else ft.border.only(bottom=ft.BorderSide(1, "#EEF2F7"))
 
-        controls: list[ft.Control]
         if header:
             controls = [
                 table_cell("原料名稱", 190, text_color, weight),
@@ -1127,7 +1120,7 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
                 table_cell("目前庫存", 110, text_color, weight, ft.TextAlign.RIGHT),
                 table_cell("狀態", 240, text_color, weight),
                 table_cell("最後更新", 130, text_color, weight),
-                table_cell("操作", 170, text_color, weight),
+                table_cell("操作", 220, text_color, weight),
             ]
         else:
             controls = [
@@ -1234,8 +1227,8 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
                     ft.Row(
                         spacing=10,
                         controls=[
-                            ft.Container(expand=True, content=stable_button("編輯", icon=ft.Icons.EDIT_OUTLINED, color=BLUE_BTN, border_color=BLUE_BORDER, on_click=lambda _, current=row: open_material_dialog(current), height=40, min_width=74)),
-                            ft.Container(expand=True, content=stable_button("停用" if row.get("is_active") else "啟用", color=RED if row.get("is_active") else GREEN, border_color=RED_BORDER if row.get("is_active") else GREEN_BORDER, on_click=lambda _, current=row: open_toggle_active_dialog(current), height=40, min_width=70)),
+                            ft.Container(expand=True, content=stable_button("編輯", icon=ft.Icons.EDIT_OUTLINED, color=BLUE_BTN, border_color=BLUE_BORDER, on_click=lambda _, current=row: open_material_dialog(current), height=40, expand=True)),
+                            ft.Container(expand=True, content=stable_button("停用" if row.get("is_active") else "啟用", icon=ft.Icons.PAUSE_CIRCLE_OUTLINE if row.get("is_active") else ft.Icons.CHECK_CIRCLE_OUTLINE, color=RED if row.get("is_active") else GREEN, border_color=RED_BORDER if row.get("is_active") else GREEN_BORDER, on_click=lambda _, current=row: open_toggle_active_dialog(current), height=40, expand=True)),
                         ],
                     ),
                 ],
@@ -1310,7 +1303,29 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
                 except Exception:
                     page.update()
         except Exception as exc:
-            print("admin_materials rebuild failed:", repr(exc))
+            state["error_message"] = f"原料設定畫面重建失敗：{exc}"
+            print("admin_materials rebuild failed:", repr(exc), flush=True)
+            try:
+                main_host.content = ft.Container(
+                    expand=True,
+                    bgcolor=BG,
+                    padding=22,
+                    content=card(
+                        border_color=RED_BORDER,
+                        content=ft.Column(
+                            spacing=12,
+                            controls=[
+                                ft.Icon(ft.Icons.ERROR_OUTLINE, color=RED, size=40),
+                                ft.Text("原料設定畫面重建失敗", size=20, color=TEXT, weight=ft.FontWeight.BOLD),
+                                ft.Text(str(exc), size=13, color=TEXT_MUTED),
+                                stable_button("重新整理", icon=ft.Icons.REFRESH, filled=True, color=BLUE_BTN, on_click=lambda _: load_data(show_loading=True), height=42, min_width=112),
+                            ],
+                        ),
+                    ),
+                )
+                page.update()
+            except Exception:
+                pass
 
     # 初始畫面與背景載入
     main_host.content = build_layout()
