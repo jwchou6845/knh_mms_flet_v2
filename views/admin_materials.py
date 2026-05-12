@@ -1,8 +1,8 @@
 # =====================================================
 # KNH MMS v2
 # File: views/admin_materials.py
-# File Revision: 2026-05-13-admin-materials-r4
-# Status: /admin materials phase 1 implementation - filter/action fix
+# File Revision: 2026-05-13-admin-materials-r5
+# Status: /admin materials phase 1 implementation - modal/filter/sync polish
 # Last Updated: 2026-05-13 Asia/Taipei
 #
 # Purpose:
@@ -10,10 +10,10 @@
 # - 供超級管理員讀取 materials 真實清單、搜尋篩選、新增原料、編輯原料、啟用 / 停用原料。
 #
 # Major Changes in This Revision:
-# - 搜尋改為「輸入條件 → 點套用篩選」的明確操作，避免使用者輸入後找不到搜尋按鈕。
-# - 篩選條件改為按「套用篩選」一次寫回 state，不再依賴 Dropdown.on_change 即時觸發。
-# - 編輯 / 啟用停用 Dialog 改為本頁 Stack 自製 modal，避免 Flet Web AlertDialog / overlay 在 VM 上點擊後無反應。
-# - 操作按鈕維持手機 Web 穩定版 Container 按鈕，擴大操作欄寬度，避免桌機表格水平捲動時按鈕被壓縮。
+# - 修正新增 / 編輯原料 modal 底部異常灰色空白，改為固定最大高度與內容區捲動。
+# - 綠色「資料已同步」膠囊成功後 3 秒自動隱藏，避免頁首空間被長期占用。
+# - 搜尋與篩選區改為橫向排列與橫向捲動，不再直行堆疊欄位。
+# - 保留 r4 的明確套用篩選、自製 modal 與穩定 Container 按鈕。
 #
 # Notes:
 # - Flet 0.84；不使用 page.push_route()。
@@ -76,6 +76,7 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
         "loading": True,
         "sync_status": "loading",
         "sync_message": "資料同步中",
+        "sync_badge_visible": True,
         "error_message": "",
         "materials": [],
         "summary": {
@@ -334,22 +335,45 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
         safe_update()
 
     def open_dialog(title: str, content: ft.Control, actions: list[ft.Control], width: int = 560) -> None:
+        """
+        本頁自製 modal。
+        r5：限制最大高度，內容區獨立捲動，避免表單下方出現大灰框或 actions 被擠到畫面外。
+        """
         close_dialog()
         page_width = page.width or 420
+        page_height = page.height or 760
         card_width = min(width, max(310, page_width - 36))
+        max_card_height = min(max(420, page_height - 96), 720)
+        content_height = max(220, max_card_height - 132)
 
         modal_card = ft.Container(
             width=card_width,
+            height=max_card_height,
             bgcolor="#FFFFFF",
             border_radius=22,
-            padding=ft.padding.all(22),
+            clip_behavior=ft.ClipBehavior.HARD_EDGE,
+            padding=ft.padding.all(18),
             content=ft.Column(
-                tight=True,
-                spacing=16,
+                spacing=12,
                 controls=[
                     ft.Text(title, size=18, color=TEXT, weight=ft.FontWeight.BOLD),
-                    content,
-                    ft.Row(alignment=ft.MainAxisAlignment.END, spacing=10, wrap=True, controls=actions),
+                    ft.Container(
+                        height=content_height,
+                        content=ft.Column(
+                            scroll=ft.ScrollMode.AUTO,
+                            spacing=0,
+                            controls=[content],
+                        ),
+                    ),
+                    ft.Container(
+                        padding=ft.padding.only(top=4),
+                        content=ft.Row(
+                            alignment=ft.MainAxisAlignment.END,
+                            spacing=10,
+                            wrap=True,
+                            controls=actions,
+                        ),
+                    ),
                 ],
             ),
         )
@@ -370,10 +394,19 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
     # =====================================================
     # Data load / filtering
     # =====================================================
-    def set_sync(status: str, message: str) -> None:
+    def set_sync(status: str, message: str, visible: bool = True) -> None:
         state["sync_status"] = status
         state["sync_message"] = message
+        state["sync_badge_visible"] = visible
         state["loading"] = status == "loading"
+
+    def hide_sync_badge_later(delay_seconds: float = 3.0) -> None:
+        def worker():
+            time.sleep(delay_seconds)
+            if state.get("sync_status") == "success":
+                state["sync_badge_visible"] = False
+                rebuild()
+        threading.Thread(target=worker, daemon=True).start()
 
     def apply_data(data: dict[str, Any]) -> None:
         state["materials"] = data.get("materials") or []
@@ -420,7 +453,7 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
             if result and result.ok:
                 apply_data(result.data or {})
                 state["error_message"] = ""
-                set_sync("success", "資料已同步")
+                set_sync("success", "資料已同步", visible=True)
             elif result:
                 apply_data(result.data or {})
                 state["error_message"] = result.message or "讀取資料失敗。"
@@ -430,6 +463,8 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
                 set_sync("error", "資料同步失敗")
 
             rebuild()
+            if result and result.ok:
+                hide_sync_badge_later(3.0)
 
         threading.Thread(target=watchdog, daemon=True).start()
         threading.Thread(target=worker, daemon=True).start()
@@ -519,7 +554,7 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
         supplier_tf = make_field("供應商", material.get("supplier") if editing and material.get("supplier") != "-" else "", "例如：南紡、台塑、中國儀征")
         bag_tf = make_field("包重 KG *", raw.get("bag_weight_kg") if editing else "", "例如：25、950、1000", keyboard_type=ft.KeyboardType.NUMBER)
         threshold_tf = make_field("低水位門檻（包）*", raw.get("low_stock_threshold_bags") if editing else "3", "例如：3", keyboard_type=ft.KeyboardType.NUMBER)
-        note_tf = make_field("備註", raw.get("note") if editing else "", "例如：庫存安全、暫停進貨原因等", multiline=True)
+        note_tf = make_field("備註", raw.get("note") if editing else "", "例如：庫存安全、暫停進貨原因等", multiline=False)
         active_sw = ft.Switch(value=bool(material.get("is_active", True)) if editing else True)
         managed_sw = ft.Switch(value=bool(material.get("is_stock_managed", True)) if editing else True)
 
@@ -806,6 +841,7 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
         )
 
         status_badge = ft.Container(
+            visible=(status != "success" or bool(state.get("sync_badge_visible", True))),
             height=34,
             border_radius=17,
             bgcolor=status_bg,
@@ -822,7 +858,9 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
             ),
         )
 
-        controls: list[ft.Control] = [breadcrumb(), title_row, status_badge]
+        controls: list[ft.Control] = [breadcrumb(), title_row]
+        if status_badge.visible:
+            controls.append(status_badge)
         if state.get("error_message"):
             controls.append(
                 card(
@@ -911,12 +949,16 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
         )
 
     def build_filter_bar(is_mobile: bool) -> ft.Control:
+        """
+        r5：篩選區改成橫向排列。
+        欄位不再直行堆疊；空間不足時使用水平捲動，避免版面過高。
+        """
         options = state["filter_options"]
 
         keyword_tf = make_field(
             "搜尋",
             state.get("keyword", ""),
-            "輸入原料名稱、供應商、備註後按套用篩選",
+            "原料名稱、供應商、備註",
         )
         category_dd = make_filter_dropdown("主分類", state["filter_category"], options.get("main_categories", []))
         type_dd = make_filter_dropdown("原料類型", state["filter_type"], options.get("material_types", []))
@@ -967,6 +1009,40 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
         result_count = len(filtered_materials())
         total_count = len(state.get("materials") or [])
 
+        field_width = 190 if is_mobile else 210
+        search_width = 230 if is_mobile else 260
+
+        controls_row = ft.Row(
+            scroll=ft.ScrollMode.AUTO,
+            spacing=10,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[
+                ft.Container(width=field_width, content=category_dd),
+                ft.Container(width=field_width, content=type_dd),
+                ft.Container(width=field_width, content=supplier_dd),
+                ft.Container(width=search_width, content=keyword_tf),
+                stable_button("套用篩選", icon=ft.Icons.SEARCH, filled=True, color=BLUE_BTN, on_click=apply_filters, height=42, min_width=122),
+                stable_button("清除條件", icon=ft.Icons.CLOSE, color=RED, border_color=RED_BORDER, on_click=clear_filters, height=42, min_width=112),
+            ],
+        )
+
+        chips_row = ft.Row(
+            scroll=ft.ScrollMode.AUTO,
+            spacing=8,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[
+                ft.Text("啟用狀態", size=12, color=TEXT_MUTED, weight=ft.FontWeight.W_600),
+                filter_chip("全部", state["filter_active"] == "全部", lambda _: set_active_filter("全部")),
+                filter_chip("啟用", state["filter_active"] == "啟用", lambda _: set_active_filter("啟用"), GREEN, GREEN_SOFT),
+                filter_chip("停用", state["filter_active"] == "停用", lambda _: set_active_filter("停用"), ORANGE, ORANGE_SOFT),
+                ft.Container(width=10),
+                ft.Text("庫存納管", size=12, color=TEXT_MUTED, weight=ft.FontWeight.W_600),
+                filter_chip("全部", state["filter_managed"] == "全部", lambda _: set_managed_filter("全部")),
+                filter_chip("納管", state["filter_managed"] == "納管", lambda _: set_managed_filter("納管"), BLUE_BTN, BLUE_SOFT),
+                filter_chip("未納管", state["filter_managed"] == "未納管", lambda _: set_managed_filter("未納管"), PURPLE_BTN, PURPLE_SOFT),
+            ],
+        )
+
         return card(
             padding=16,
             content=ft.Column(
@@ -983,69 +1059,10 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
                                     ft.Text(f"目前顯示 {result_count} / {total_count} 筆。", size=12, color=TEXT_MUTED),
                                 ],
                             ),
-                            stable_button("清除條件", icon=ft.Icons.CLOSE, color=RED, border_color=RED_BORDER, on_click=clear_filters, height=40, min_width=108),
                         ],
                     ),
-                    ft.ResponsiveRow(
-                        columns=12,
-                        spacing=10,
-                        run_spacing=10,
-                        controls=[
-                            ft.Container(col={"xs": 12, "md": 3}, content=category_dd),
-                            ft.Container(col={"xs": 12, "md": 3}, content=type_dd),
-                            ft.Container(col={"xs": 12, "md": 3}, content=supplier_dd),
-                            ft.Container(col={"xs": 12, "md": 3}, content=keyword_tf),
-                        ],
-                    ),
-                    ft.ResponsiveRow(
-                        columns=12,
-                        spacing=10,
-                        run_spacing=10,
-                        controls=[
-                            ft.Container(
-                                col={"xs": 12, "md": 6},
-                                content=ft.Column(
-                                    spacing=8,
-                                    controls=[
-                                        ft.Text("啟用狀態", size=12, color=TEXT_MUTED, weight=ft.FontWeight.W_600),
-                                        ft.Row(
-                                            scroll=ft.ScrollMode.AUTO,
-                                            spacing=8,
-                                            controls=[
-                                                filter_chip("全部", state["filter_active"] == "全部", lambda _: set_active_filter("全部")),
-                                                filter_chip("啟用", state["filter_active"] == "啟用", lambda _: set_active_filter("啟用"), GREEN, GREEN_SOFT),
-                                                filter_chip("停用", state["filter_active"] == "停用", lambda _: set_active_filter("停用"), ORANGE, ORANGE_SOFT),
-                                            ],
-                                        ),
-                                    ],
-                                ),
-                            ),
-                            ft.Container(
-                                col={"xs": 12, "md": 6},
-                                content=ft.Column(
-                                    spacing=8,
-                                    controls=[
-                                        ft.Text("庫存納管", size=12, color=TEXT_MUTED, weight=ft.FontWeight.W_600),
-                                        ft.Row(
-                                            scroll=ft.ScrollMode.AUTO,
-                                            spacing=8,
-                                            controls=[
-                                                filter_chip("全部", state["filter_managed"] == "全部", lambda _: set_managed_filter("全部")),
-                                                filter_chip("納管", state["filter_managed"] == "納管", lambda _: set_managed_filter("納管"), BLUE_BTN, BLUE_SOFT),
-                                                filter_chip("未納管", state["filter_managed"] == "未納管", lambda _: set_managed_filter("未納管"), PURPLE_BTN, PURPLE_SOFT),
-                                            ],
-                                        ),
-                                    ],
-                                ),
-                            ),
-                        ],
-                    ),
-                    ft.Row(
-                        alignment=ft.MainAxisAlignment.END,
-                        controls=[
-                            stable_button("套用篩選", icon=ft.Icons.SEARCH, filled=True, color=BLUE_BTN, on_click=apply_filters, height=42, min_width=122),
-                        ],
-                    ),
+                    controls_row,
+                    chips_row,
                 ],
             ),
         )
