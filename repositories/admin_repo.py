@@ -1,23 +1,24 @@
 # =====================================================
 # KNH MMS v2
 # File: repositories/admin_repo.py
-# File Revision: 2026-05-12-admin-phase1-r1
-# Status: phase 1 new file
-# Last Updated: 2026-05-12 Asia/Taipei
+# File Revision: 2026-05-13-admin-materials-r1
+# Status: /admin materials phase 1 implementation
+# Last Updated: 2026-05-13 Asia/Taipei
 #
 # Purpose:
 # - /admin 系統控制中心資料存取層。
-# - 第一階段提供控制中心首頁、原料摘要、低水位摘要、Session 摘要與保養管理入口摘要。
+# - 提供控制中心首頁、保養管理摘要、原料與庫存設定頁資料讀寫。
 #
 # Major Changes in This Revision:
-# - 新增 materials / material_stock_view / user_sessions / maintenance_items / maintenance_nodes 讀取函式。
-# - 採容錯查詢，避免 user_sessions 或部分欄位差異造成 /admin 首頁無法載入。
-# - 不修改 auth_session_service.py，不影響 12 小時免重登正式流程。
+# - 保留 Phase 1 控制中心首頁使用的 materials / material_stock_view / user_sessions / maintenance 摘要查詢。
+# - 新增 create_material()、update_material()、set_material_active()，支援 /admin/materials 正式功能頁。
+# - 原料管理只更新 materials 主檔，不直接覆蓋庫存數字，不修改 Supabase schema。
 #
 # Notes:
 # - Flet 0.84；此檔不含 UI。
 # - Supabase 查詢集中於 repository，view 不直接呼叫 Supabase。
-# - 時間顯示與判斷由 service 層轉換為 Asia/Taipei。
+# - 時間顯示與業務判斷由 service 層轉換為 Asia/Taipei。
+# - 不修改 auth_session_service.py，不影響 12 小時免重登正式流程。
 # =====================================================
 
 from __future__ import annotations
@@ -54,7 +55,7 @@ def _safe_execute(query, fallback: list[dict[str, Any]] | None = None) -> list[d
 def get_material_rows_for_admin() -> list[dict[str, Any]]:
     """
     讀取原料主檔。
-    第一階段先抓全部 rows，篩選與統計由 service 層整理。
+    /admin/materials 第一版先抓全部 rows，篩選與統計由 service / view 層整理。
     """
     query = (
         supabase.table(TABLE_MATERIALS)
@@ -65,13 +66,82 @@ def get_material_rows_for_admin() -> list[dict[str, Any]]:
     return _safe_execute(query)
 
 
+def get_material_by_id_for_admin(material_id: str) -> dict[str, Any] | None:
+    if not material_id:
+        return None
+
+    try:
+        res = (
+            supabase.table(TABLE_MATERIALS)
+            .select("*")
+            .eq("id", material_id)
+            .limit(1)
+            .execute()
+        )
+        if not res.data:
+            return None
+        return res.data[0]
+    except Exception as exc:
+        print("admin_repo get_material_by_id_for_admin failed:", repr(exc))
+        return None
+
+
 def get_material_stock_rows_for_admin() -> list[dict[str, Any]]:
     """
-    讀取即時庫存 view，用於低水位摘要。
-    若 view 欄位或 RLS 異常，回傳空陣列，避免首頁整頁失敗。
+    讀取即時庫存 view，用於低水位摘要與 /admin/materials 目前庫存顯示。
+    若 view 欄位或 RLS 異常，回傳空陣列，避免整頁失敗。
     """
     query = supabase.table(VIEW_MATERIAL_STOCK).select("*")
     return _safe_execute(query)
+
+
+def create_material(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """
+    新增 materials 主檔。
+    注意：此函式不新增庫存，不寫 stock_adjustments，不直接覆蓋庫存數字。
+    """
+    res = (
+        supabase.table(TABLE_MATERIALS)
+        .insert(payload)
+        .execute()
+    )
+
+    if not res.data:
+        return None
+
+    return res.data[0]
+
+
+def update_material(material_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    """
+    更新 materials 主檔。
+    """
+    if not material_id:
+        return None
+
+    res = (
+        supabase.table(TABLE_MATERIALS)
+        .update(payload)
+        .eq("id", material_id)
+        .execute()
+    )
+
+    if not res.data:
+        return None
+
+    return res.data[0]
+
+
+def set_material_active(material_id: str, is_active: bool, payload_extra: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """
+    啟用 / 停用原料。
+    只更新 materials.is_active，不刪除歷史紀錄。
+    """
+    payload: dict[str, Any] = {"is_active": bool(is_active)}
+    if payload_extra:
+        payload.update(payload_extra)
+
+    return update_material(material_id, payload)
 
 
 # ============================================================
