@@ -1,21 +1,21 @@
 # =====================================================
 # KNH MMS v2
 # File: services/dashboard_service.py
-# File Revision: 2026-05-12-dashboard-summary-bar-r1
+# File Revision: 2026-05-12-dashboard-summary-fixedbar-r2
 # Status: current working version
 # Last Updated: 2026-05-12 Asia/Taipei
 #
 # Purpose:
-# - 首頁儀表板資料整理層。
-# - 統整即時庫存、月用量、低水位、保養待辦摘要資料。
+# - 首頁儀表板資料整理層：庫存圖表、月用量摘要、保養待辦摘要。
 #
 # Major Changes in This Revision:
 # - 保養摘要計算增加防禦式檢查，略過 is_deleted = true 的保養項目。
-# - 搭配 repository 層排除已軟刪除保養項目，避免首頁摘要殘留已刪資料。
+# - 近期異常只計算仍有效保養項目的紀錄，避免已刪除項目殘留在首頁摘要。
+# - 保留 Asia/Taipei 時間處理與既有月用量統計邏輯。
 #
 # Notes:
-# - 所有時間處理維持 Asia/Taipei。
-# - 本次不修改月用量邏輯、不修改 CSV/PDF 匯出、不修改 reports.py。
+# - Flet 0.84 專案使用。
+# - 本次不修改 reports.py、CSV/PDF 下載機制或 Supabase schema。
 # =====================================================
 
 from __future__ import annotations

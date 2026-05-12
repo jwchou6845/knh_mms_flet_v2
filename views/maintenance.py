@@ -1,7 +1,7 @@
 # =====================================================
 # KNH MMS v2
 # File: views/maintenance.py
-# File Revision: 2026-05-12-maintenance-filter-r3
+# File Revision: 2026-05-12-maintenance-admin-entry-r4
 # Status: current working version
 # Last Updated: 2026-05-12 Asia/Taipei
 #
@@ -9,15 +9,15 @@
 # - 機台保養紀錄主頁：新增保養紀錄、查看項目紀錄、日常保養待辦與狀態篩選。
 #
 # Major Changes in This Revision:
-# - 修正頁面內篩選只套用到「保養項目清單」，未套用到「今日待辦」的問題。
-# - 新增共用篩選函式，讓「今日待辦」與「保養項目清單」使用一致條件。
-# - r3：移除頁內篩選 Dropdown，改為 Container chips 直接寫入 state，避免 Flet Web Dropdown 畫面已變但 on_change 未回寫。
-# - 保留目前已穩定的 inline 新增紀錄、查看紀錄、保養紀錄軟刪除與超級管理員入口。
+# - 保留 r3 chips 篩選修正，避免 Flet Web Dropdown on_change 未穩定寫回 state。
+# - 移除主頁「新增清潔 / 新增耗材 / 編輯週期」三張擴充設定小卡。
+# - 超級管理員只保留單一「保養項目管理」入口，導向 /maintenance/items。
+# - 管理子頁後續由麵包屑導覽到已刪除項目與其他管理功能，主頁不再放多入口。
 #
 # Notes:
-# - Flet 0.84；關鍵手機 Web 按鈕維持 stable_* Container 按鈕，不改回不穩定的 content=Row(...) 按鈕。
-# - 本檔案只修 views/maintenance.py，不變更 Supabase schema，不變更 maintenance_items.py。
-# - 時間顯示與後端計算仍由 service 層維持 Asia/Taipei 原則。
+# - Flet 0.84；關鍵手機 Web 按鈕維持目前穩定 Container 按鈕策略。
+# - 不使用 page.push_route()；導頁優先使用 main.py 注入的 _navigate，否則 fallback page.go()。
+# - 本次不變更 Supabase schema，不變更 maintenance_items.py / maintenance_service.py。
 # =====================================================
 
 import flet as ft
@@ -2321,921 +2321,82 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
     # =========================
 
     def build_extension_settings() -> ft.Control:
-        def close_inline_form(_=None):
-            state["active_extension_form"] = None
-            rebuild()
+        """
+        主頁管理入口。
 
-        def form_label(label: str, required: bool = False) -> ft.Row:
-            return ft.Row(
-                spacing=4,
-                controls=[
-                    ft.Text(
-                        label + (" *" if required else ""),
-                        size=13,
-                        color=TEXT,
-                        weight=ft.FontWeight.W_600,
-                    )
-                ],
-            )
+        管理功能已逐步回收給超級管理員，不再在 maintenance.py 主頁直接放
+        「新增清潔 / 新增耗材 / 編輯週期」三張小卡。第一版只保留單一入口，
+        進入 /maintenance/items 後再由該管理子頁的麵包屑與子功能進行新增、
+        已刪除項目、週期等管理。
+        """
+        if not is_super_admin():
+            return ft.Container(height=0, visible=False)
 
-        def form_text_field(
-            label: str,
-            hint: str = "",
-            value: str = "",
-            required: bool = False,
-            multiline: bool = False,
-            keyboard_type=None,
-        ) -> tuple[ft.Column, ft.TextField]:
-            field = ft.TextField(
-                value=value,
-                hint_text=hint,
-                hint_style=ft.TextStyle(size=14, color=TEXT_MUTED),
-                multiline=multiline,
-                min_lines=2 if multiline else 1,
-                max_lines=4 if multiline else 1,
-                keyboard_type=keyboard_type,
-                border_radius=12,
-                border_color=BORDER,
-                focused_border_color=BLUE_BTN,
-                bgcolor="#FFFFFF",
-                filled=True,
-                text_size=15,
-                content_padding=ft.padding.symmetric(horizontal=12, vertical=11),
-            )
-            return (
-                ft.Column(
-                    spacing=6,
-                    controls=[form_label(label, required), field],
-                ),
-                field,
-            )
-
-        def extension_action_button(label: str, icon, color: str, soft_bg: str, handler):
-            """手機 Web 穩定版：不用 OutlinedButton，改成 Container + Column。"""
-            return ft.Container(
-                height=78,
-                bgcolor="#FFFFFF",
-                border=ft.border.all(1, color),
-                border_radius=14,
-                padding=ft.padding.symmetric(horizontal=6, vertical=8),
-                alignment=ft.Alignment(0, 0),
-                ink=True,
-                on_click=handler,
-                content=ft.Column(
-                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                    alignment=ft.MainAxisAlignment.CENTER,
-                    spacing=5,
-                    controls=[
-                        ft.Container(
-                            width=38,
-                            height=38,
-                            border_radius=19,
-                            bgcolor=soft_bg,
-                            alignment=ft.Alignment(0, 0),
-                            content=ft.Icon(icon, color=color, size=22),
-                        ),
-                        ft.Text(
-                            label,
-                            size=11,
-                            color=TEXT,
-                            weight=ft.FontWeight.W_600,
-                            text_align=ft.TextAlign.CENTER,
-                            max_lines=2,
-                            overflow=ft.TextOverflow.ELLIPSIS,
-                        ),
-                    ],
-                ),
-            )
-
-        def guided_hint(text: str) -> ft.Container:
-            return ft.Container(
-                bgcolor="#F8FAFC",
-                border=ft.border.all(1, BORDER),
-                border_radius=12,
-                padding=ft.padding.symmetric(horizontal=12, vertical=9),
-                content=ft.Row(
-                    spacing=8,
-                    vertical_alignment=ft.CrossAxisAlignment.START,
-                    controls=[
-                        ft.Icon(ft.Icons.INFO_OUTLINE, size=18, color=TEXT_MUTED),
-                        ft.Text(text, size=12, color=TEXT_MUTED, expand=True),
-                    ],
-                ),
-            )
-
-        def option_chip(
-            label: str,
-            on_click,
-            color: str = BLUE_BTN,
-        ) -> ft.Container:
-            return ft.Container(
-                height=34,
-                border_radius=17,
-                bgcolor="#FFFFFF",
-                border=ft.border.all(1, BORDER),
-                padding=ft.padding.symmetric(horizontal=11),
-                alignment=ft.Alignment(0, 0),
-                ink=True,
-                on_click=on_click,
-                content=ft.Text(
-                    label,
-                    size=12,
-                    color=color,
-                    weight=ft.FontWeight.W_600,
-                    max_lines=1,
-                    overflow=ft.TextOverflow.ELLIPSIS,
-                ),
-            )
-
-        def unique_values(values: list[str]) -> list[str]:
-            result = []
-            for value in values:
-                text = str(value or "").strip()
-                if text and text not in result:
-                    result.append(text)
-            return result
-
-        def summary_line(label: str, value: str) -> ft.Control:
-            return ft.Row(
-                vertical_alignment=ft.CrossAxisAlignment.START,
-                controls=[
-                    ft.Container(
-                        width=105,
-                        content=ft.Text(label, size=13, color=TEXT_MUTED),
-                    ),
-                    ft.Text(
-                        value or "-",
-                        size=13,
-                        color=TEXT,
-                        weight=ft.FontWeight.W_600,
-                        expand=True,
-                    ),
-                ],
-            )
-
-        def build_clean_form():
-            clean_areas = unique_values([
-                item.get("machine_area")
-                for item in get_all_items()
-                if item.get("maintenance_type") == "清潔"
-            ])
-            clean_suggestions = unique_values([
-                item.get("item_name")
-                for item in get_all_items()
-                if item.get("maintenance_type") == "清潔"
-            ])[:10]
-
-            area_group, area_tf = form_text_field(
-                "設備 / 區域",
-                "可選既有區域，或輸入新設備 / 新區域，例如：S1線、燒解爐、超音波區",
-                required=True,
-            )
-            item_name_group, item_name_tf = form_text_field(
-                "清潔項目名稱",
-                "例如：S1-旋風分離器、燒解爐廢料槽",
-                required=True,
-            )
-            location_group, location_tf = form_text_field(
-                "適用位置",
-                "例如：S1線、S2線、燒解爐；若與設備 / 區域相同可填同一個名稱",
-                required=True,
-            )
-            cycle_group, cycle_tf = form_text_field(
-                "建議清潔週期",
-                "例如：7、14、30",
-                value="30",
-                required=True,
-                keyboard_type=ft.KeyboardType.NUMBER,
-            )
-            desc_group, desc_tf = form_text_field(
-                "備註 / 注意事項",
-                "可輸入清潔方式、注意事項或判定基準",
-                multiline=True,
-            )
-
-            def choose_area(value: str):
-                area_tf.value = value
-                location_tf.value = value
-                try:
-                    area_tf.update()
-                    location_tf.update()
-                except Exception:
-                    page.update()
-
-            def choose_clean_item(value: str):
-                item_name_tf.value = value
-                try:
-                    item_name_tf.update()
-                except Exception:
-                    page.update()
-
-            existing_area_controls = [
-                option_chip(value, lambda _, v=value: choose_area(v), color=BLUE_BTN)
-                for value in clean_areas
-            ]
-            existing_item_controls = [
-                option_chip(value, lambda _, v=value: choose_clean_item(v), color=BLUE_BTN)
-                for value in clean_suggestions
-            ]
-
-            submit_btn = stable_filled_button(
-                "新增清潔項目",
-                ft.Icons.ADD_OUTLINED,
-                bg=BLUE_BTN,
-                on_click=lambda e: on_prepare_submit(e),
-                height=46,
-            )
-
-            def validate_payload() -> tuple[bool, str, dict]:
-                area = str(area_tf.value or "").strip()
-                item_name = str(item_name_tf.value or "").strip()
-                location = str(location_tf.value or "").strip()
-                cycle_days = to_int(cycle_tf.value, 0)
-                note = str(desc_tf.value or "").strip()
-
-                if not area:
-                    return False, "請輸入或選擇設備 / 區域。", {}
-                if not item_name:
-                    return False, "請輸入清潔項目名稱。", {}
-                if not location:
-                    return False, "請輸入適用位置。", {}
-                if cycle_days <= 0:
-                    return False, "建議清潔週期需為大於 0 的整數。", {}
-
-                description_parts = []
-                if area and area != location:
-                    description_parts.append(f"設備 / 區域：{area}")
-                if note:
-                    description_parts.append(note)
-
-                return True, "", {
-                    "area": area,
-                    "item_name": item_name,
-                    "machine_area": location,
-                    "cycle_days": cycle_days,
-                    "description": "\n".join(description_parts),
-                    "note": note,
-                }
-
-            def run_create(payload: dict):
-                result = create_cleaning_item(
-                    item_name=payload["item_name"],
-                    machine_area=payload["machine_area"],
-                    cycle_days=payload["cycle_days"],
-                    sort_order=999,
-                    description=payload.get("description") or "",
-                )
-
-                if result.ok:
-                    if not is_active_view():
-                        return
-                    state["active_extension_form"] = None
-                    load_data(update_sync_state=True)
-                    rebuild()
-                    hide_sync_badge_later(3.0)
-                    show_snack(result.message, success=True)
+        def go_items_page(e=None):
+            try:
+                nav = session_get("_navigate")
+                if callable(nav):
+                    nav("/maintenance/items")
                 else:
-                    set_button_normal(page, submit_btn, "新增清潔項目", ft.Icons.ADD_OUTLINED)
-                    show_snack(result.message, success=False)
+                    page.go("/maintenance/items")
+            except Exception as ex:
+                show_snack(f"無法開啟保養項目管理：{ex}", success=False)
 
-            def open_confirm(payload: dict):
-                confirm_btn = stable_filled_button(
-                    "確認新增",
-                    ft.Icons.CHECK_CIRCLE_OUTLINE,
-                    bg=BLUE_BTN,
-                    height=44,
-                    expand=False,
-                    on_click=lambda e: confirm_create(e),
-                )
-
-                def confirm_create(_):
-                    if confirm_btn.disabled:
-                        return
-                    close_dialog(confirm_dialog)
-                    set_button_loading(page, submit_btn, "寫入中...")
-                    threading.Thread(target=lambda: run_create(payload), daemon=True).start()
-
-                confirm_dialog = ft.AlertDialog(
-                    modal=True,
-                    title=ft.Text("確認新增清潔項目", size=18, weight=ft.FontWeight.BOLD, color=TEXT),
-                    content=ft.Container(
-                        width=430,
-                        content=ft.Column(
-                            tight=True,
-                            spacing=10,
-                            controls=[
-                                ft.Text("請確認以下內容，確認後會新增到保養項目清單。", size=13, color=TEXT_MUTED),
-                                ft.Divider(height=8),
-                                summary_line("類型", "清潔"),
-                                summary_line("設備 / 區域", payload.get("area") or "-"),
-                                summary_line("清潔項目名稱", payload.get("item_name") or "-"),
-                                summary_line("適用位置", payload.get("machine_area") or "-"),
-                                summary_line("建議清潔週期", f"{payload.get('cycle_days')} 天"),
-                                summary_line("備註", payload.get("note") or "無"),
-                            ],
-                        ),
-                    ),
-                    actions=[
-                        ft.TextButton("返回修改", on_click=lambda _: close_dialog(confirm_dialog)),
-                        confirm_btn,
-                    ],
-                )
-                open_dialog(confirm_dialog)
-
-            def on_prepare_submit(_):
-                if submit_btn.disabled:
-                    return
-                ok, message, payload = validate_payload()
-                if not ok:
-                    show_snack(message, success=False)
-                    return
-
-                duplicate = find_duplicate_cleaning_item(
-                    payload.get("item_name") or "",
-                    payload.get("machine_area") or "",
-                )
-                if duplicate:
-                    show_snack(
-                        f"已存在相同清潔項目：{item_display_name(duplicate)}｜{duplicate.get('machine_area') or '-'}，請改用『編輯週期』或直接新增保養紀錄。",
-                        success=False,
-                    )
-                    return
-
-                open_confirm(payload)
-
-            submit_btn.on_click = on_prepare_submit
-
-            controls = [
-                section_title("新增清潔項目", "依現場設備 / 區域引導填寫，避免直接面對空白欄位。"),
-                guided_hint("可先點選既有設備 / 區域；如果這次是全新設備或新區域，直接在欄位中輸入即可。"),
-            ]
-
-            if existing_area_controls:
-                controls.append(
-                    ft.Column(
-                        spacing=7,
+        entry_card = card(
+            padding=18,
+            content=ft.Column(
+                spacing=14,
+                controls=[
+                    ft.Row(
+                        spacing=14,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
                         controls=[
-                            ft.Text("既有設備 / 區域", size=12, color=TEXT_MUTED, weight=ft.FontWeight.W_600),
-                            ft.Row(scroll=ft.ScrollMode.AUTO, spacing=8, controls=existing_area_controls),
-                        ],
-                    )
-                )
-
-            controls.extend([area_group])
-
-            if existing_item_controls:
-                controls.append(
-                    ft.Column(
-                        spacing=7,
-                        controls=[
-                            ft.Text("既有清潔項目可參考", size=12, color=TEXT_MUTED, weight=ft.FontWeight.W_600),
-                            ft.Row(scroll=ft.ScrollMode.AUTO, spacing=8, controls=existing_item_controls),
-                        ],
-                    )
-                )
-
-            controls.extend([
-                item_name_group,
-                location_group,
-                cycle_group,
-                desc_group,
-                ft.Row(
-                    spacing=10,
-                    controls=[
-                        stable_outline_button(
-                            "取消",
-                            ft.Icons.CLOSE,
-                            on_click=close_inline_form,
-                            height=46,
-                        ),
-                        ft.Container(expand=True, content=submit_btn),
-                    ],
-                ),
-            ])
-
-            return card(
-                padding=16,
-                content=ft.Column(spacing=12, controls=controls),
-            )
-
-        def build_material_form():
-            existing_systems = unique_values([
-                item.get("main_category")
-                for item in get_all_items()
-                if item.get("maintenance_type") == "耗材更換"
-            ])
-            existing_sub_categories = unique_values([
-                item.get("sub_category")
-                for item in get_all_items()
-                if item.get("maintenance_type") == "耗材更換"
-            ])
-            existing_material_names = unique_values([
-                item.get("item_name")
-                for item in get_all_items()
-                if item.get("maintenance_type") == "耗材更換"
-            ])[:10]
-
-            common_sub_categories = unique_values(existing_sub_categories + ["A管", "B管", "冷卻水濾芯", "清洗藥水", "濾芯", "藥水"])
-
-            system_group, system_tf = form_text_field(
-                "設備 / 系統",
-                "可選既有設備，或輸入新設備 / 系統，例如：除濕機、燒解爐、超音波",
-                required=True,
-            )
-            sub_group, sub_tf = form_text_field(
-                "耗材類型 / 區段",
-                "例如：A管、B管、冷卻水濾芯、清洗藥水；可空白",
-            )
-            item_name_group, item_name_tf = form_text_field(
-                "耗材名稱",
-                "例如：除油濾芯、冷卻水濾芯-5um-20吋、Deconex FID 2000 清洗藥水",
-                required=True,
-            )
-            machine_group, machine_tf = form_text_field(
-                "適用位置",
-                "例如：除濕機A管、燒解爐、超音波機",
-                required=True,
-            )
-            cycle_group, cycle_tf = form_text_field(
-                "建議更換週期",
-                "例如：30、90、180",
-                value="30",
-                required=True,
-                keyboard_type=ft.KeyboardType.NUMBER,
-            )
-            desc_group, desc_tf = form_text_field(
-                "備註 / 注意事項",
-                "可輸入規格、廠牌、使用濃度、更換基準或注意事項",
-                multiline=True,
-            )
-
-            def choose_system(value: str):
-                system_tf.value = value
-                machine_tf.value = value
-                try:
-                    system_tf.update()
-                    machine_tf.update()
-                except Exception:
-                    page.update()
-
-            def choose_sub(value: str):
-                sub_tf.value = value
-                try:
-                    sub_tf.update()
-                except Exception:
-                    page.update()
-
-            def choose_material_name(value: str):
-                item_name_tf.value = value
-                try:
-                    item_name_tf.update()
-                except Exception:
-                    page.update()
-
-            existing_system_controls = [
-                option_chip(value, lambda _, v=value: choose_system(v), color=ORANGE_BTN)
-                for value in existing_systems
-            ]
-            sub_controls = [
-                option_chip(value, lambda _, v=value: choose_sub(v), color=ORANGE_BTN)
-                for value in common_sub_categories
-            ]
-            material_name_controls = [
-                option_chip(value, lambda _, v=value: choose_material_name(v), color=ORANGE_BTN)
-                for value in existing_material_names
-            ]
-
-            submit_btn = stable_filled_button(
-                "新增耗材項目",
-                ft.Icons.ADD_OUTLINED,
-                bg=ORANGE_BTN,
-                on_click=lambda e: on_prepare_submit(e),
-                height=46,
-            )
-
-            def validate_payload() -> tuple[bool, str, dict]:
-                system = str(system_tf.value or "").strip()
-                sub_category = str(sub_tf.value or "").strip()
-                item_name = str(item_name_tf.value or "").strip()
-                machine_area = str(machine_tf.value or "").strip()
-                cycle_days = to_int(cycle_tf.value, 0)
-                note = str(desc_tf.value or "").strip()
-
-                if not system:
-                    return False, "請輸入或選擇設備 / 系統。", {}
-                if not item_name:
-                    return False, "請輸入耗材名稱。", {}
-                if not machine_area:
-                    return False, "請輸入適用位置。", {}
-                if cycle_days <= 0:
-                    return False, "建議更換週期需為大於 0 的整數。", {}
-
-                return True, "", {
-                    "main_category": system,
-                    "sub_category": sub_category,
-                    "item_name": item_name,
-                    "machine_area": machine_area,
-                    "cycle_days": cycle_days,
-                    "description": note,
-                    "note": note,
-                }
-
-            def run_create(payload: dict):
-                result = create_consumable_item(
-                    main_category=payload["main_category"],
-                    sub_category=payload.get("sub_category") or "",
-                    item_name=payload["item_name"],
-                    machine_area=payload["machine_area"],
-                    cycle_days=payload["cycle_days"],
-                    sort_order=999,
-                    description=payload.get("description") or "",
-                )
-
-                if result.ok:
-                    if not is_active_view():
-                        return
-                    state["active_extension_form"] = None
-                    load_data(update_sync_state=True)
-                    rebuild()
-                    hide_sync_badge_later(3.0)
-                    show_snack(result.message, success=True)
-                else:
-                    set_button_normal(page, submit_btn, "新增耗材項目", ft.Icons.ADD_OUTLINED)
-                    show_snack(result.message, success=False)
-
-            def open_confirm(payload: dict):
-                confirm_btn = stable_filled_button(
-                    "確認新增",
-                    ft.Icons.CHECK_CIRCLE_OUTLINE,
-                    bg=ORANGE_BTN,
-                    height=44,
-                    expand=False,
-                    on_click=lambda e: confirm_create(e),
-                )
-
-                def confirm_create(_):
-                    if confirm_btn.disabled:
-                        return
-                    close_dialog(confirm_dialog)
-                    set_button_loading(page, submit_btn, "寫入中...")
-                    threading.Thread(target=lambda: run_create(payload), daemon=True).start()
-
-                confirm_dialog = ft.AlertDialog(
-                    modal=True,
-                    title=ft.Text("確認新增耗材項目", size=18, weight=ft.FontWeight.BOLD, color=TEXT),
-                    content=ft.Container(
-                        width=430,
-                        content=ft.Column(
-                            tight=True,
-                            spacing=10,
-                            controls=[
-                                ft.Text("請確認以下內容，確認後會新增到保養項目清單。", size=13, color=TEXT_MUTED),
-                                ft.Divider(height=8),
-                                summary_line("類型", "耗材更換"),
-                                summary_line("設備 / 系統", payload.get("main_category") or "-"),
-                                summary_line("耗材類型 / 區段", payload.get("sub_category") or "-"),
-                                summary_line("耗材名稱", payload.get("item_name") or "-"),
-                                summary_line("適用位置", payload.get("machine_area") or "-"),
-                                summary_line("建議更換週期", f"{payload.get('cycle_days')} 天"),
-                                summary_line("備註", payload.get("note") or "無"),
-                            ],
-                        ),
-                    ),
-                    actions=[
-                        ft.TextButton("返回修改", on_click=lambda _: close_dialog(confirm_dialog)),
-                        confirm_btn,
-                    ],
-                )
-                open_dialog(confirm_dialog)
-
-            def on_prepare_submit(_):
-                if submit_btn.disabled:
-                    return
-                ok, message, payload = validate_payload()
-                if not ok:
-                    show_snack(message, success=False)
-                    return
-
-                duplicate = find_duplicate_consumable_item(
-                    payload.get("main_category") or "",
-                    payload.get("sub_category") or "",
-                    payload.get("item_name") or "",
-                    payload.get("machine_area") or "",
-                )
-                if duplicate:
-                    show_snack(
-                        f"已存在相同耗材項目：{duplicate.get('main_category') or '-'}｜{duplicate.get('sub_category') or '-'}｜{duplicate.get('item_name') or '-'}｜{duplicate.get('machine_area') or '-'}，請改用『編輯週期』或直接新增保養紀錄。",
-                        success=False,
-                    )
-                    return
-
-                open_confirm(payload)
-
-            submit_btn.on_click = on_prepare_submit
-
-            controls = [
-                section_title("新增耗材項目", "依設備 / 系統引導填寫；既有設備可直接點選，第一次建立的新設備也可直接輸入。"),
-                guided_hint("如果像超音波清洗藥水這種全新項目，請直接在設備 / 系統輸入「超音波」，再填耗材類型與耗材名稱。"),
-            ]
-
-            if existing_system_controls:
-                controls.append(
-                    ft.Column(
-                        spacing=7,
-                        controls=[
-                            ft.Text("既有設備 / 系統", size=12, color=TEXT_MUTED, weight=ft.FontWeight.W_600),
-                            ft.Row(scroll=ft.ScrollMode.AUTO, spacing=8, controls=existing_system_controls),
-                        ],
-                    )
-                )
-
-            controls.append(system_group)
-
-            if sub_controls:
-                controls.append(
-                    ft.Column(
-                        spacing=7,
-                        controls=[
-                            ft.Text("常用耗材類型 / 區段", size=12, color=TEXT_MUTED, weight=ft.FontWeight.W_600),
-                            ft.Row(scroll=ft.ScrollMode.AUTO, spacing=8, controls=sub_controls),
-                        ],
-                    )
-                )
-
-            controls.extend([sub_group])
-
-            if material_name_controls:
-                controls.append(
-                    ft.Column(
-                        spacing=7,
-                        controls=[
-                            ft.Text("既有耗材名稱可參考", size=12, color=TEXT_MUTED, weight=ft.FontWeight.W_600),
-                            ft.Row(scroll=ft.ScrollMode.AUTO, spacing=8, controls=material_name_controls),
-                        ],
-                    )
-                )
-
-            controls.extend([
-                item_name_group,
-                machine_group,
-                cycle_group,
-                desc_group,
-                ft.Row(
-                    spacing=10,
-                    controls=[
-                        stable_outline_button(
-                            "取消",
-                            ft.Icons.CLOSE,
-                            on_click=close_inline_form,
-                            height=46,
-                        ),
-                        ft.Container(expand=True, content=submit_btn),
-                    ],
-                ),
-            ])
-
-            return card(
-                padding=16,
-                content=ft.Column(spacing=12, controls=controls),
-            )
-
-        def build_period_form():
-            all_items = get_all_items()
-            initial_item = all_items[0] if all_items else None
-            period_state = {
-                "item_id": initial_item.get("id") if initial_item else "",
-            }
-            initial_cycle = str(initial_item.get("cycle_days") or 30) if initial_item else ""
-
-            cycle_group, cycle_tf = form_text_field(
-                "新的週期天數",
-                "請先選擇保養項目",
-                value=initial_cycle,
-                required=True,
-                keyboard_type=ft.KeyboardType.NUMBER,
-            )
-            active_dd = ft.Dropdown(
-                value="啟用",
-                options=[ft.dropdown.Option("啟用"), ft.dropdown.Option("停用")],
-                border_radius=12,
-                border_color=BORDER,
-                focused_border_color=PURPLE_BTN,
-                bgcolor="#FFFFFF",
-                filled=True,
-            )
-            item_list_col = ft.Column(spacing=8)
-            selected_hint = ft.Text(
-                "尚無可編輯的保養項目。" if not initial_item else f"目前選擇：{item_display_name(initial_item)}｜目前週期 {initial_cycle} 天",
-                size=12,
-                color=TEXT_MUTED,
-            )
-
-            def refresh_item_list():
-                rows = []
-                for item in all_items:
-                    item_id = item.get("id") or ""
-                    selected = period_state.get("item_id") == item_id
-                    color = PURPLE_BTN if selected else TEXT_MUTED
-                    bg = PURPLE_SOFT if selected else "#FFFFFF"
-                    border_color = PURPLE_BTN if selected else BORDER
-
-                    def choose_item(_, current=item):
-                        period_state["item_id"] = current.get("id") or ""
-                        current_cycle = str(current.get("cycle_days") or 30)
-                        cycle_tf.value = current_cycle
-                        selected_hint.value = f"目前選擇：{item_display_name(current)}｜目前週期 {current_cycle} 天"
-                        refresh_item_list()
-                        try:
-                            cycle_tf.update()
-                            selected_hint.update()
-                        except Exception:
-                            safe_page_update()
-
-                    rows.append(
-                        ft.Container(
-                            bgcolor=bg,
-                            border=ft.border.all(1, border_color),
-                            border_radius=12,
-                            padding=ft.padding.symmetric(horizontal=12, vertical=10),
-                            ink=True,
-                            on_click=choose_item,
-                            content=ft.Row(
-                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                            ft.Container(
+                                width=52,
+                                height=52,
+                                border_radius=16,
+                                bgcolor=PURPLE_SOFT,
+                                border=ft.border.all(1, PURPLE_BORDER),
+                                alignment=ft.Alignment(0, 0),
+                                content=ft.Icon(ft.Icons.ACCOUNT_TREE_OUTLINED, size=28, color=PURPLE_BTN),
+                            ),
+                            ft.Column(
+                                spacing=3,
+                                expand=True,
                                 controls=[
-                                    ft.Icon(
-                                        ft.Icons.CHECK_CIRCLE if selected else ft.Icons.CIRCLE_OUTLINED,
-                                        size=18,
-                                        color=color,
-                                    ),
-                                    ft.Column(
-                                        expand=True,
-                                        spacing=2,
-                                        controls=[
-                                            ft.Text(
-                                                item_display_name(item),
-                                                size=13,
-                                                color=TEXT,
-                                                weight=ft.FontWeight.W_600,
-                                                max_lines=1,
-                                                overflow=ft.TextOverflow.ELLIPSIS,
-                                            ),
-                                            ft.Text(
-                                                f"{item.get('machine_area') or '-'}｜目前週期 {item.get('cycle_days') or 0} 天",
-                                                size=12,
-                                                color=TEXT_MUTED,
-                                                max_lines=1,
-                                                overflow=ft.TextOverflow.ELLIPSIS,
-                                            ),
-                                        ],
+                                    ft.Text("保養項目管理", size=18, weight=ft.FontWeight.BOLD, color=TEXT),
+                                    ft.Text(
+                                        "整理保養節點、項目、週期與已刪除項目。",
+                                        size=13,
+                                        color=TEXT_MUTED,
+                                        max_lines=2,
+                                        overflow=ft.TextOverflow.ELLIPSIS,
                                     ),
                                 ],
                             ),
-                        )
-                    )
-
-                if not rows:
-                    rows = [
-                        ft.Container(
-                            padding=12,
-                            border=ft.border.all(1, BORDER),
-                            border_radius=12,
-                            content=ft.Text("目前沒有可編輯的保養項目。", size=13, color=TEXT_MUTED),
-                        )
-                    ]
-
-                item_list_col.controls = rows
-                try:
-                    item_list_col.update()
-                except Exception:
-                    pass
-
-            refresh_item_list()
-
-            submit_btn = stable_filled_button(
-                "更新週期",
-                ft.Icons.SAVE_OUTLINED,
-                bg=PURPLE_BTN,
-                on_click=lambda e: on_submit(e),
-                height=46,
-            )
-
-            def on_submit(_):
-                if submit_btn.disabled:
-                    return
-
-                if not period_state.get("item_id"):
-                    show_snack("請先選擇要編輯週期的保養項目。", success=False)
-                    return
-
-                cycle_days = to_int(cycle_tf.value, 0)
-                if cycle_days <= 0:
-                    show_snack("週期天數需為大於 0 的整數。", success=False)
-                    return
-
-                set_button_loading(page, submit_btn)
-
-                payload = {
-                    "item_id": period_state.get("item_id") or "",
-                    "cycle_days": cycle_days,
-                    "sort_order": None,
-                    "is_active": (active_dd.value == "啟用"),
-                }
-
-                def worker():
-                    result = update_item_cycle(**payload)
-                    if not is_active_view():
-                        return
-                    if result.ok:
-                        state["active_extension_form"] = None
-                        load_data(update_sync_state=True)
-                        rebuild()
-                        hide_sync_badge_later(3.0)
-                        show_snack(result.message, success=True)
-                    else:
-                        set_button_normal(page, submit_btn, "更新週期", ft.Icons.SAVE_OUTLINED)
-                        show_snack(result.message, success=False)
-
-                threading.Thread(target=worker, daemon=True).start()
-
-            submit_btn.on_click = on_submit
-
-            return card(
-                padding=16,
-                content=ft.Column(
-                    spacing=12,
-                    controls=[
-                        section_title("編輯週期", "選取項目後會立即帶入目前週期天數，可再手動修改後儲存。"),
-                        ft.Column(
-                            spacing=6,
-                            controls=[
-                                form_label("保養項目", required=True),
-                                selected_hint,
-                                ft.Container(
-                                    height=220,
-                                    border=ft.border.all(1, BORDER),
-                                    border_radius=14,
-                                    padding=10,
-                                    bgcolor="#F8FAFC",
-                                    content=ft.Column(
-                                        scroll=ft.ScrollMode.AUTO,
-                                        controls=[item_list_col],
-                                    ),
-                                ),
-                            ],
-                        ),
-                        cycle_group,
-                        ft.Column(spacing=6, controls=[form_label("是否啟用"), active_dd]),
-                        ft.Row(
-                            spacing=10,
-                            controls=[
-                                stable_outline_button(
-                                    "取消",
-                                    ft.Icons.CLOSE,
-                                    on_click=close_inline_form,
-                                    height=46,
-                                ),
-                                ft.Container(expand=True, content=submit_btn),
-                            ],
-                        ),
-                    ],
-                ),
-            )
-
-        controls = [
-            ft.ResponsiveRow(
-                columns=12,
-                spacing=10,
-                run_spacing=10,
-                controls=[
-                    ft.Container(
-                        col={"xs": 4, "sm": 4},
-                        content=extension_action_button("新增清潔", ft.Icons.CLEANING_SERVICES_OUTLINED, BLUE_BTN, BLUE_SOFT, open_create_cleaning_dialog),
+                        ],
                     ),
-                    ft.Container(
-                        col={"xs": 4, "sm": 4},
-                        content=extension_action_button("新增耗材", ft.Icons.INVENTORY_2_OUTLINED, ORANGE, ORANGE_SOFT, open_create_consumable_dialog),
+                    stable_filled_button(
+                        "進入保養項目管理",
+                        ft.Icons.OPEN_IN_NEW,
+                        bg=BLUE_BTN,
+                        on_click=go_items_page,
+                        height=48,
                     ),
-                    ft.Container(
-                        col={"xs": 4, "sm": 4},
-                        content=extension_action_button("編輯週期", ft.Icons.EVENT_REPEAT_OUTLINED, PURPLE_BTN, PURPLE_SOFT, open_update_cycle_dialog),
+                    ft.Text(
+                        "進入後可透過麵包屑導覽到已刪除項目與後續管理功能。",
+                        size=12,
+                        color=TEXT_MUTED,
                     ),
                 ],
             ),
-        ]
-
-        active_form = state.get("active_extension_form")
-        if active_form == "clean":
-            controls.append(build_clean_form())
-        elif active_form == "material":
-            controls.append(build_material_form())
-        elif active_form == "period":
-            controls.append(build_period_form())
+        )
 
         return ft.Column(
             spacing=10,
             controls=[
-                section_title("擴充設定", "管理保養項目與週期設定"),
-                ft.Column(spacing=12, controls=controls),
+                section_title("擴充設定", "超級管理員專用；主頁只保留單一管理入口。"),
+                entry_card,
             ],
         )
 
@@ -3612,6 +2773,15 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
             ),
         )
 
+        right_controls = [build_desktop_record_form()]
+        if is_super_admin():
+            right_controls.append(
+                card(
+                    padding=18,
+                    content=build_extension_settings(),
+                )
+            )
+
         right_panel = ft.Container(
             width=380,
             padding=ft.padding.only(top=24, right=24, bottom=24),
@@ -3619,13 +2789,7 @@ def MaintenanceContent(page: ft.Page) -> ft.Control:
                 expand=True,
                 scroll=ft.ScrollMode.AUTO,
                 spacing=18,
-                controls=[
-                    build_desktop_record_form(),
-                    card(
-                        padding=18,
-                        content=build_extension_settings(),
-                    ),
-                ],
+                controls=right_controls,
             ),
         )
 

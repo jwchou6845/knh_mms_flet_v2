@@ -1,13 +1,12 @@
 # =====================================================
 # KNH MMS v2
 # File: repositories/dashboard_repo.py
-# File Revision: 2026-05-12-dashboard-summary-bar-r1
+# File Revision: 2026-05-12-dashboard-summary-fixedbar-r2
 # Status: current working version
 # Last Updated: 2026-05-12 Asia/Taipei
 #
 # Purpose:
 # - 首頁儀表板 Supabase 查詢層。
-# - 提供即時庫存、月用量、保養摘要與回用料庫存資料來源。
 #
 # Major Changes in This Revision:
 # - get_active_maintenance_items() 追加 is_deleted = false 條件。
