@@ -1,3 +1,22 @@
+# =====================================================
+# KNH MMS v2
+# File: repositories/reports_repo.py
+# File Revision: 2026-05-12-reports-advanced-mapping-r1
+# Status: current working version
+# Last Updated: 2026-05-12 Asia/Taipei
+#
+# Purpose:
+# - 報表中心資料存取層：Supabase 查詢快速報表與全條件篩選資料來源。
+#
+# Major Changes in This Revision:
+# - 入庫紀錄查詢排除 is_deleted = true，避免已刪除入庫資料進入報表。
+# - 本月入庫、全條件入庫與篩選選項來源一致排除已刪除資料。
+# - 保養逾期清單來源排除已軟刪除保養項目。
+#
+# Notes:
+# - 本次不變更資料表結構、不變更 Nginx /exports/ 下載機制。
+# - reports_service.py 負責欄位 mapping；本檔只維持資料來源查詢。
+# =====================================================
 from __future__ import annotations
 
 from typing import Any
@@ -88,6 +107,7 @@ def get_purchase_records_between(
     res = (
         supabase.table(TABLE_PURCHASE_RECORDS)
         .select("*")
+        .eq("is_deleted", False)
         .gte("purchase_date", start_date)
         .lt("purchase_date", end_date)
         .order("purchase_date", desc=True)
@@ -118,6 +138,7 @@ def get_active_maintenance_items() -> list[dict[str, Any]]:
         supabase.table(TABLE_MAINTENANCE_ITEMS)
         .select("*")
         .eq("is_active", True)
+        .eq("is_deleted", False)
         .order("sort_order", desc=False)
         .execute()
     )
@@ -267,6 +288,7 @@ def get_purchase_records_for_options(limit: int = 1000) -> list[dict[str, Any]]:
     res = (
         supabase.table(TABLE_PURCHASE_RECORDS)
         .select("*")
+        .eq("is_deleted", False)
         .order("purchase_date", desc=True)
         .order("created_at", desc=True)
         .limit(limit)

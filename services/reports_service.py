@@ -1,3 +1,26 @@
+# =====================================================
+# KNH MMS v2
+# File: services/reports_service.py
+# File Revision: 2026-05-12-reports-advanced-mapping-r1
+# Status: current working version
+# Last Updated: 2026-05-12 Asia/Taipei
+#
+# Purpose:
+# - 報表中心服務層：快速報表、全條件篩選、CSV / PDF 匯出資料整理。
+#
+# Major Changes in This Revision:
+# - 修正全條件篩選「打料紀錄」欄位 mapping，對齊 feed.py 最近打料紀錄。
+# - 打料紀錄輸出：日期、時間、類型、批號、機台/塔別、原料、數量、人員、備註。
+# - 修正 feed_type 原始值 new / aux / recycled 顯示為新料 / 母粒 / 回用料。
+# - 修正全條件篩選「入庫紀錄」欄位 mapping，保留類型與批號，不顯示機台/塔別。
+# - 入庫紀錄輸出：日期、類型、批號、原料名稱、供應商、數量、單位、人員、備註。
+# - 預覽、查看全部、CSV、PDF 共用同一份 columns / rows，確保欄位一致。
+#
+# Notes:
+# - 本次主要修改 service 層；不動 Nginx /exports/ 下載機制與 PDF 中文字型邏輯。
+# - 所有日期時間處理維持 Asia/Taipei。
+# - Flet 0.84；reports.py 會直接使用本檔回傳的 columns / rows。
+# =====================================================
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -285,6 +308,247 @@ def normalize_material_family(value: Any) -> str:
 
 
 
+
+# ============================================================
+# Display mapping helpers for advanced reports
+# ============================================================
+
+def normalize_record_type_label(row: dict[str, Any]) -> str:
+    """
+    將資料庫中的 raw type 轉成現場使用者看得懂的中文類型。
+
+    feed_records.feed_type 常見值：
+    - new       -> 新料
+    - aux       -> 母粒
+    - recycled  -> 回用料
+
+    purchase_records 可能依不同階段使用 category / material_category /
+    material_source / purchase_type 等欄位，本函式集中容錯。
+    """
+    raw_values = [
+        row.get("feed_type"),
+        row.get("purchase_type"),
+        row.get("category"),
+        row.get("material_category"),
+        row.get("material_source"),
+        row.get("main_category"),
+        row.get("item_type"),
+        row.get("maintenance_type"),
+    ]
+
+    raw_text = " ".join(clean_text(v) for v in raw_values if clean_text(v))
+    raw_lower = raw_text.lower()
+
+    if any(token in raw_lower for token in ["recycled", "recycle", "rec"]):
+        return "回用料"
+
+    if "回用" in raw_text:
+        return "回用料"
+
+    if any(token in raw_lower for token in ["aux", "masterbatch", "master_batch"]):
+        return "母粒"
+
+    if "母粒" in raw_text or "輔助" in raw_text:
+        return "母粒"
+
+    if raw_lower in ["new", "material", "raw", "fresh"] or "新料" in raw_text:
+        return "新料"
+
+    # 保養 / 交接類別維持原本中文。
+    for value in raw_values:
+        text = clean_text(value)
+        if text:
+            return text
+
+    # 若類別欄位缺漏，從原料名稱輔助判斷。
+    name_text = " ".join(
+        clean_text(row.get(key))
+        for key in ["material_name", "display_name", "name"]
+        if clean_text(row.get(key))
+    )
+    if "回用" in name_text:
+        return "回用料"
+    if "母粒" in name_text or "輔助" in name_text:
+        return "母粒"
+
+    return "新料"
+
+
+def feed_type_label(row: dict[str, Any]) -> str:
+    """打料紀錄專用類型顯示。"""
+    return normalize_record_type_label(row)
+
+
+def purchase_type_label(row: dict[str, Any]) -> str:
+    """入庫紀錄專用類型顯示。"""
+    return normalize_record_type_label(row)
+
+
+def feed_date_time_labels(value: Any) -> tuple[str, str]:
+    """
+    對齊 feed.py 最近打料紀錄，拆成日期與時間兩欄。
+    Supabase timestamptz 一律轉為 Asia/Taipei 顯示。
+    """
+    text = str(value or "").strip()
+    if not text:
+        return "-", "-"
+
+    try:
+        normalized = text.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(normalized)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=TAIPEI_TZ)
+        dt = dt.astimezone(TAIPEI_TZ)
+        return dt.strftime("%Y/%m/%d"), dt.strftime("%H:%M")
+    except Exception:
+        date_part = text[:10].replace("-", "/") if len(text) >= 10 else "-"
+        time_part = text[11:16] if len(text) >= 16 else "-"
+        return date_part, time_part
+
+
+def feed_machine_text(row: dict[str, Any]) -> str:
+    return first_value(
+        row,
+        ["machine_code", "tower_code", "tower", "machine", "dryer"],
+        "-",
+    )
+
+
+def record_operator_text(row: dict[str, Any]) -> str:
+    return first_value(
+        row,
+        ["operator_name", "created_by_name", "created_by", "updated_by_name"],
+        "-",
+    )
+
+
+def feed_quantity_text(row: dict[str, Any]) -> str:
+    """對齊 feed.py 最近打料紀錄的數量顯示：新料/母粒為包，回用料為 KG。"""
+    record_type = feed_type_label(row)
+
+    if record_type == "回用料":
+        weight = to_float(row.get("weight_kg"), 0)
+        if weight:
+            return f"{weight:g} KG"
+        fallback_weight = to_float(first_value(row, ["qty", "quantity", "weight"], 0), 0)
+        return f"{fallback_weight:g} KG" if fallback_weight else "1 筆"
+
+    bags = to_int(row.get("quantity_bags"), 0)
+    if bags:
+        return f"{bags} 包"
+
+    qty = to_float(first_value(row, ["qty", "quantity"], 0), 0)
+    if qty:
+        return f"{qty:g} 包"
+
+    weight = to_float(row.get("weight_kg"), 0)
+    if weight:
+        return f"{weight:g} KG"
+
+    return "0 包"
+
+
+def purchase_batch_no(row: dict[str, Any]) -> str:
+    """
+    入庫批號 / 流水號欄位容錯。
+    目前現場可能使用 batch_no；若後續欄位命名調整，也先保留常見候選。
+    """
+    return first_value(
+        row,
+        [
+            "batch_no",
+            "purchase_batch_no",
+            "lot_no",
+            "serial_no",
+            "batch_number",
+            "material_batch_no",
+            "purchase_no",
+            "record_no",
+        ],
+        "-",
+    )
+
+
+def feed_batch_no(row: dict[str, Any]) -> str:
+    return first_value(row, ["batch_no", "recycled_no", "lot_no", "serial_no"], "-")
+
+
+def purchase_note_text(row: dict[str, Any]) -> str:
+    return first_value(row, ["note", "remark", "remarks", "memo", "description"], "-")
+
+
+def row_material_match(row: dict[str, Any], material_name: str) -> bool:
+    material_filter = clean_text(material_name)
+    if not material_filter or material_filter == "全部":
+        return True
+
+    material_values = [
+        first_value(row, ["material_name", "display_name", "name", "material_type", "content"], ""),
+        first_value(row, ["supplier"], ""),
+    ]
+    material_text = " ".join(clean_text(v) for v in material_values if clean_text(v))
+
+    query_family = normalize_material_family(material_filter)
+    row_family = normalize_material_family(material_text)
+
+    if query_family and row_family and query_family == row_family:
+        return True
+
+    return contains_filter(material_text, material_filter)
+
+
+def row_machine_match(row: dict[str, Any], machine: str) -> bool:
+    expected = clean_text(machine)
+    if not expected or expected == "全部":
+        return True
+
+    machine_value = first_value(
+        row,
+        ["machine_code", "tower_code", "tower", "machine", "machine_area", "shift"],
+        "",
+    )
+    machine_text = clean_text(machine_value)
+    if not machine_text:
+        return False
+
+    if machine_text == expected:
+        return True
+
+    # 讓 S1 可篩到 S1-PET / S1-PA6；S2 同理。
+    if expected in ["S1", "S2"] and machine_text.startswith(expected):
+        return True
+
+    return expected in machine_text
+
+
+def row_supplier_match(row: dict[str, Any], supplier: str) -> bool:
+    expected = clean_text(supplier)
+    if not expected or expected == "全部":
+        return True
+
+    supplier_text = clean_text(first_value(row, ["supplier"], ""))
+    return supplier_text == expected or expected in supplier_text
+
+
+def row_user_match(row: dict[str, Any], user_name: str) -> bool:
+    expected = clean_text(user_name)
+    if not expected or expected == "全部":
+        return True
+
+    user_value = first_value(
+        row,
+        [
+            "operator_name",
+            "created_by_name",
+            "executed_by",
+            "completed_by_name",
+            "sender_name",
+            "receiver_name",
+        ],
+        "",
+    )
+    return contains_filter(user_value, expected)
+
 def contains_filter(value: Any, keyword: str) -> bool:
     keyword = clean_text(keyword)
     if not keyword or keyword == "全部":
@@ -548,25 +812,10 @@ def quick_current_month_purchase_report() -> ServiceResult:
         end.isoformat(),
     )
 
-    output_rows = []
-    for row in rows:
-        output_rows.append(
-            {
-                "日期": format_date(first_value(row, ["purchase_date", "created_at"])),
-                "原料名稱": first_value(row, ["material_name", "name"], "-"),
-                "供應商": first_value(row, ["supplier"], "-"),
-                "數量": purchase_quantity_value(row),
-                "單位": purchase_quantity_unit(row),
-            }
-        )
-
-    return build_result(
-        title="本月入庫紀錄",
-        columns=["日期", "原料名稱", "供應商", "數量", "單位"],
-        rows=output_rows,
-        summary_text=f"本月入庫紀錄共 {len(output_rows)} 筆。",
-    )
-
+    result = build_purchase_result(rows, title="本月入庫紀錄")
+    if result.ok and result.data:
+        result.data["summary_text"] = f"本月入庫紀錄共 {len(result.data.get('rows') or [])} 筆。"
+    return result
 
 def display_maintenance_item_name(item: dict[str, Any]) -> str:
     item_name = clean_text(item.get("item_name"), "-")
@@ -716,35 +965,27 @@ def filter_common_rows(
     supplier: str = "全部",
     machine: str = "全部",
     user_name: str = "全部",
+    include_machine: bool = True,
 ) -> list[dict[str, Any]]:
     result = []
+    expected_category = clean_text(category)
 
     for row in rows:
-        category_value = first_value(row, ["category", "material_category", "feed_type", "item_type", "maintenance_type"], "")
-        material_value = first_value(row, ["material_name", "display_name", "name", "content"], "")
-        supplier_value = first_value(row, ["supplier"], "")
-        machine_value = first_value(row, ["machine", "tower", "tower_code", "machine_area", "shift"], "")
-        user_value = first_value(row, ["created_by_name", "operator_name", "executed_by", "completed_by_name", "sender_name", "receiver_name"], "")
+        category_value = normalize_record_type_label(row)
 
-        if not equal_filter(category_value, category):
+        if expected_category and expected_category != "全部" and category_value != expected_category:
             continue
 
-        if clean_text(material_name) and clean_text(material_name) != "全部":
-            query_family = normalize_material_family(material_name)
-            row_family = normalize_material_family(material_value)
-            if query_family and row_family:
-                if query_family != row_family and not contains_filter(material_value, material_name):
-                    continue
-            elif not contains_filter(material_value, material_name):
-                continue
-
-        if not equal_filter(supplier_value, supplier):
+        if not row_material_match(row, material_name):
             continue
 
-        if not equal_filter(machine_value, machine):
+        if not row_supplier_match(row, supplier):
             continue
 
-        if not contains_filter(user_value, user_name if user_name != "全部" else ""):
+        if include_machine and not row_machine_match(row, machine):
+            continue
+
+        if not row_user_match(row, user_name):
             continue
 
         result.append(row)
@@ -753,52 +994,68 @@ def filter_common_rows(
 
 
 def build_feed_result(rows: list[dict[str, Any]]) -> ServiceResult:
+    """
+    全條件篩選：打料紀錄。
+
+    欄位對齊 views/feed.py 最近打料紀錄：
+    日期、時間、類型、批號、機台/塔別、原料、數量、人員、備註。
+    """
     output = []
 
     for row in rows:
+        date_label, time_label = feed_date_time_labels(row.get("feed_at"))
         output.append(
             {
-                "日期": format_datetime(row.get("feed_at")),
-                "類別": first_value(row, ["category", "feed_type", "material_category"], "-"),
-                "原料名稱": first_value(row, ["display_name", "material_name", "recycled_no"], "-"),
-                "供應商": first_value(row, ["supplier"], "-"),
-                "機台/塔別": first_value(row, ["tower_code", "tower", "machine"], "-"),
-                "數量": first_value(row, ["weight_kg", "qty", "quantity"], 0),
-                "人員": first_value(row, ["created_by_name", "operator_name"], "-"),
+                "日期": date_label,
+                "時間": time_label,
+                "類型": feed_type_label(row),
+                "批號": feed_batch_no(row),
+                "機台/塔別": feed_machine_text(row),
+                "原料": first_value(row, ["material_name", "display_name", "recycled_no", "name"], "-"),
+                "數量": feed_quantity_text(row),
+                "人員": record_operator_text(row),
+                "備註": first_value(row, ["note", "remark", "remarks", "memo"], "-"),
             }
         )
 
     return build_result(
         title="打料紀錄查詢",
-        columns=["日期", "類別", "原料名稱", "供應商", "機台/塔別", "數量", "人員"],
+        columns=["日期", "時間", "類型", "批號", "機台/塔別", "原料", "數量", "人員", "備註"],
         rows=output,
         summary_text=f"查詢到 {len(output)} 筆打料紀錄。",
     )
 
 
-def build_purchase_result(rows: list[dict[str, Any]]) -> ServiceResult:
+def build_purchase_result(rows: list[dict[str, Any]], title: str = "入庫紀錄查詢") -> ServiceResult:
+    """
+    全條件篩選 / 快速報表：入庫紀錄。
+
+    入庫時尚未指定乾燥塔，因此不輸出機台/塔別；
+    但保留類型與批號，讓 2026050801 這類入庫流水號能在預覽、CSV、PDF 中一致顯示。
+    """
     output = []
 
     for row in rows:
         output.append(
             {
                 "日期": format_date(first_value(row, ["purchase_date", "created_at"])),
-                "類別": first_value(row, ["category", "material_category"], "-"),
-                "原料名稱": first_value(row, ["material_name", "name"], "-"),
+                "類型": purchase_type_label(row),
+                "批號": purchase_batch_no(row),
+                "原料名稱": first_value(row, ["material_name", "display_name", "name", "material_type"], "-"),
                 "供應商": first_value(row, ["supplier"], "-"),
                 "數量": purchase_quantity_value(row),
                 "單位": purchase_quantity_unit(row),
-                "人員": first_value(row, ["created_by_name", "operator_name"], "-"),
+                "人員": record_operator_text(row),
+                "備註": purchase_note_text(row),
             }
         )
 
     return build_result(
-        title="入庫紀錄查詢",
-        columns=["日期", "類別", "原料名稱", "供應商", "數量", "單位", "人員"],
+        title=title,
+        columns=["日期", "類型", "批號", "原料名稱", "供應商", "數量", "單位", "人員", "備註"],
         rows=output,
         summary_text=f"查詢到 {len(output)} 筆入庫紀錄。",
     )
-
 
 def build_maintenance_result(rows: list[dict[str, Any]]) -> ServiceResult:
     output = []
@@ -875,7 +1132,7 @@ def run_advanced_query(
 
         if data_type == "入庫紀錄":
             rows = get_purchase_records_between(start.isoformat(), end_exclusive.isoformat())
-            rows = filter_common_rows(rows, category, material_name, supplier, machine, user_name)
+            rows = filter_common_rows(rows, category, material_name, supplier, "全部", user_name, include_machine=False)
             return build_purchase_result(rows)
 
         if data_type == "保養紀錄":
@@ -962,7 +1219,7 @@ def build_report_filter_options() -> ServiceResult:
                 if supplier and supplier not in material_supplier_map[family]:
                     material_supplier_map[family].append(supplier)
 
-            for key in ["machine", "tower", "tower_code", "machine_area"]:
+            for key in ["machine_code", "machine", "tower", "tower_code", "machine_area"]:
                 add_unique(machines, row.get(key))
 
         for row in user_rows:
