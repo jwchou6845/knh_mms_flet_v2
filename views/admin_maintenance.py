@@ -1,8 +1,8 @@
 # =====================================================
 # KNH MMS v2
 # File: views/admin_maintenance.py
-# File Revision: 2026-05-12-admin-maintenance-phase1-r1
-# Status: phase 1 new file
+# File Revision: 2026-05-13-admin-maintenance-button-compat-r2
+# Status: phase 1 compatibility fix
 # Last Updated: 2026-05-12 Asia/Taipei
 #
 # Purpose:
@@ -13,6 +13,7 @@
 # - 新增保養項目管理與已刪除項目 / 節點入口。
 # - 顯示保養項目、節點、已刪除資料摘要。
 # - 重新命名與移至位置先標示為第二階段，不連到不存在流程。
+# - r2 修正 Flet 0.84 Button 不支援 text= 關鍵字參數造成頁面載入失敗。
 #
 # Notes:
 # - Flet 0.84；不使用 page.push_route()。
@@ -279,7 +280,7 @@ def AdminMaintenanceContent(page: ft.Page) -> ft.Control:
                             ]),
                         ]),
                         ft.ElevatedButton(
-                            text=button_text if not planned else "第二階段開放",
+                            button_text if not planned else "第二階段開放",
                             icon=ft.Icons.OPEN_IN_NEW if not planned else ft.Icons.LOCK_CLOCK_OUTLINED,
                             bgcolor=color if not planned else "#94A3B8",
                             color="#FFFFFF",
@@ -318,7 +319,7 @@ def AdminMaintenanceContent(page: ft.Page) -> ft.Control:
                         ft.Icon(ft.Icons.LOCK_OUTLINE, size=48, color=RED),
                         ft.Text("無權限存取", size=24, color=TEXT, weight=ft.FontWeight.BOLD),
                         ft.Text("此頁面僅限超級管理員使用。", size=14, color=TEXT_MUTED),
-                        ft.ElevatedButton(text="返回首頁", icon=ft.Icons.HOME_OUTLINED, bgcolor=BLUE_BTN, color="#FFFFFF", on_click=lambda _: navigate("/")),
+                        ft.ElevatedButton("返回首頁", icon=ft.Icons.HOME_OUTLINED, bgcolor=BLUE_BTN, color="#FFFFFF", on_click=lambda _: navigate("/")),
                     ],
                 ),
             ),

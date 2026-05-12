@@ -1,8 +1,8 @@
 # =====================================================
 # KNH MMS v2
 # File: views/admin_materials.py
-# File Revision: 2026-05-12-admin-materials-placeholder-r1
-# Status: phase 1 placeholder
+# File Revision: 2026-05-13-admin-materials-button-compat-r2
+# Status: phase 1 placeholder compatibility fix
 # Last Updated: 2026-05-12 Asia/Taipei
 #
 # Purpose:
@@ -12,6 +12,7 @@
 # Major Changes in This Revision:
 # - 建立可導向的 /admin/materials 頁，避免控制中心點擊後落入通用開發中頁。
 # - 顯示已確認的 materials schema 欄位與下一階段功能範圍。
+# - r2 修正 Flet 0.84 Button 不支援 text= 關鍵字參數造成頁面載入失敗。
 #
 # Notes:
 # - Flet 0.84；不使用 page.push_route()。
@@ -95,7 +96,7 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
                         ft.Icon(ft.Icons.LOCK_OUTLINE, size=48, color=RED),
                         ft.Text("無權限存取", size=24, color=TEXT, weight=ft.FontWeight.BOLD),
                         ft.Text("此頁面僅限超級管理員使用。", size=14, color=TEXT_MUTED),
-                        ft.ElevatedButton(text="返回首頁", icon=ft.Icons.HOME_OUTLINED, bgcolor=BLUE_BTN, color="#FFFFFF", on_click=lambda _: navigate("/")),
+                        ft.ElevatedButton("返回首頁", icon=ft.Icons.HOME_OUTLINED, bgcolor=BLUE_BTN, color="#FFFFFF", on_click=lambda _: navigate("/")),
                     ],
                 ),
             ),
@@ -168,7 +169,7 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
                         controls=[
                             ft.Text("下一輪功能", size=18, weight=ft.FontWeight.BOLD, color=TEXT),
                             ft.Text("1. 原料清單與搜尋 / 篩選\n2. 新增原料 Dialog\n3. 編輯原料 Dialog\n4. 啟用 / 停用原料\n5. 是否納管庫存與低水位門檻設定", size=14, color=TEXT_MUTED),
-                            ft.ElevatedButton(text="返回控制中心", icon=ft.Icons.ARROW_BACK, bgcolor=BLUE_BTN, color="#FFFFFF", on_click=lambda _: navigate("/admin")),
+                            ft.ElevatedButton("返回控制中心", icon=ft.Icons.ARROW_BACK, bgcolor=BLUE_BTN, color="#FFFFFF", on_click=lambda _: navigate("/admin")),
                         ],
                     ),
                 ),

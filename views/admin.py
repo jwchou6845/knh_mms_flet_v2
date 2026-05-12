@@ -2,7 +2,7 @@
 # KNH MMS v2
 # File: views/admin.py
 # File Revision: 2026-05-12-admin-home-phase1-r1
-# Status: phase 1 new file
+# Status: phase 1 compatibility fix
 # Last Updated: 2026-05-12 Asia/Taipei
 #
 # Purpose:
@@ -431,7 +431,7 @@ def AdminContent(page: ft.Page) -> ft.Control:
                                 ft.Icon(ft.Icons.LOCK_OUTLINE, size=48, color=RED),
                                 ft.Text("無權限存取", size=24, color=TEXT, weight=ft.FontWeight.BOLD),
                                 ft.Text("此頁面僅限超級管理員使用。如需調整權限，請聯繫系統管理員。", size=14, color=TEXT_MUTED, text_align=ft.TextAlign.CENTER),
-                                ft.ElevatedButton(text="返回首頁", icon=ft.Icons.HOME_OUTLINED, bgcolor=BLUE_BTN, color="#FFFFFF", on_click=lambda _: navigate("/")),
+                                ft.ElevatedButton("返回首頁", icon=ft.Icons.HOME_OUTLINED, bgcolor=BLUE_BTN, color="#FFFFFF", on_click=lambda _: navigate("/")),
                             ],
                         ),
                     )
