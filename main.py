@@ -1,9 +1,9 @@
 # =====================================================
 # KNH MMS v2
 # File: main.py
-# File Revision: 2026-05-11-auth-restore-guard-r1
+# File Revision: 2026-05-12-admin-phase1-r1
 # Status: current working version
-# Last Updated: 2026-05-11 Asia/Taipei
+# Last Updated: 2026-05-12 Asia/Taipei
 #
 # Purpose:
 # - 系統主路由、12 小時免重登恢復流程、共用 shell 與導覽
@@ -12,9 +12,10 @@
 # - 12 小時免重登 restore 改為背景 thread 執行，避免 Supabase 查詢阻塞主流程
 # - 加入 restore watchdog timeout 與 late result guard，避免畫面永久停在登入檢查狀態
 # - 保留 maintenance items / deleted 子頁路由與既有 page.go() route fallback 修正
+# - 新增 /admin 系統控制中心第一階段路由與超級管理員 Drawer 入口
 #
 # Notes:
-# - 本檔以 2026-05-11 maintenance deleted route 版為基礎
+# - 本檔以 2026-05-11 auth restore guard 穩定版為基礎
 # - Flet 0.84；本專案固定使用 page.go()，不可改回 page.push_route()
 # - 所有時間相關業務邏輯仍由各 service 使用 Asia/Taipei 處理
 # =====================================================
@@ -40,6 +41,9 @@ from services.auth_session_service import (
     revoke_persistent_session,
 )
 from views.reports import ReportsContent
+from views.admin import AdminContent
+from views.admin_materials import AdminMaterialsContent
+from views.admin_maintenance import AdminMaintenanceContent
 
 
 SESSION_TOKEN_KEY = "knh_session_token"
@@ -578,75 +582,99 @@ def main(page: ft.Page):
     # Drawer（左側抽屜選單）
     # =====================================================
     def drawer():
+        def is_super_admin_for_drawer():
+            return page.session_data.get("role") == "超級管理員"
+
+        drawer_routes = [
+            "/",
+            "/inventory",
+            "/feed",
+            "/handover",
+            "/handover_tasks",
+            "/spinneret",
+            "/reports",
+            "/maintenance",
+            "/education",
+        ]
+
+        drawer_controls = [
+            ft.Container(
+                padding=20,
+                content=ft.Text(
+                    "KNH 紡黏原料管理系統",
+                    size=18,
+                    weight=ft.FontWeight.BOLD,
+                ),
+            ),
+            ft.Divider(),
+            ft.NavigationDrawerDestination(
+                icon=ft.Icons.HOME_OUTLINED,
+                label="首頁",
+            ),
+            ft.NavigationDrawerDestination(
+                icon=ft.Icons.INVENTORY_2_OUTLINED,
+                label="原料入庫",
+            ),
+            ft.NavigationDrawerDestination(
+                icon=ft.Icons.BUILD_OUTLINED,
+                label="現場打料",
+            ),
+            ft.NavigationDrawerDestination(
+                icon=ft.Icons.DESCRIPTION_OUTLINED,
+                label="交接班作業",
+            ),
+            ft.NavigationDrawerDestination(
+                icon=ft.Icons.TASK_ALT_OUTLINED,
+                label="交接待辦",
+            ),
+            ft.NavigationDrawerDestination(
+                icon=ft.Icons.MEMORY_OUTLINED,
+                label="噴頭組件狀態",
+            ),
+            ft.NavigationDrawerDestination(
+                icon=ft.Icons.BAR_CHART_OUTLINED,
+                label="報表中心",
+            ),
+            ft.NavigationDrawerDestination(
+                icon=ft.Icons.HANDYMAN_OUTLINED,
+                label="保養紀錄",
+            ),
+            ft.NavigationDrawerDestination(
+                icon=ft.Icons.SCHOOL_OUTLINED,
+                label="教育資源",
+            ),
+        ]
+
+        if is_super_admin_for_drawer():
+            drawer_routes.append("/admin")
+            drawer_controls.extend(
+                [
+                    ft.Divider(),
+                    ft.NavigationDrawerDestination(
+                        icon=ft.Icons.ADMIN_PANEL_SETTINGS_OUTLINED,
+                        label="系統控制中心",
+                    ),
+                ]
+            )
+
+        drawer_routes.append("/logout")
+        drawer_controls.append(
+            ft.NavigationDrawerDestination(
+                icon=ft.Icons.LOGOUT,
+                label="登出",
+            )
+        )
+
         def nav(e):
-            routes = [
-                "/",
-                "/inventory",
-                "/feed",
-                "/handover",
-                "/handover_tasks",
-                "/spinneret",
-                "/reports",
-                "/maintenance",
-                "/education",
-                "/logout",
-            ]
-            route = routes[e.control.selected_index]
+            selected_index = int(e.control.selected_index or 0)
+            if selected_index < 0 or selected_index >= len(drawer_routes):
+                return
+            route = drawer_routes[selected_index]
             logout() if route == "/logout" else navigate(route)
 
         return ft.NavigationDrawer(
             on_change=nav,
-            controls=[
-                ft.Container(
-                    padding=20,
-                    content=ft.Text(
-                        "KNH 紡黏原料管理系統",
-                        size=18,
-                        weight=ft.FontWeight.BOLD,
-                    ),
-                ),
-                ft.Divider(),
-                ft.NavigationDrawerDestination(
-                    icon=ft.Icons.HOME_OUTLINED,
-                    label="首頁",
-                ),
-                ft.NavigationDrawerDestination(
-                    icon=ft.Icons.INVENTORY_2_OUTLINED,
-                    label="原料入庫",
-                ),
-                ft.NavigationDrawerDestination(
-                    icon=ft.Icons.BUILD_OUTLINED,
-                    label="現場打料",
-                ),
-                ft.NavigationDrawerDestination(
-                    icon=ft.Icons.DESCRIPTION_OUTLINED,
-                    label="交接班作業",
-                ),
-                ft.NavigationDrawerDestination(
-                    icon=ft.Icons.TASK_ALT_OUTLINED,
-                    label="交接待辦",
-                ),
-                ft.NavigationDrawerDestination(
-                    icon=ft.Icons.MEMORY_OUTLINED,
-                    label="噴頭組件狀態",
-                ),
-                ft.NavigationDrawerDestination(
-                    icon=ft.Icons.BAR_CHART_OUTLINED,
-                    label="報表中心",
-                ),
-                ft.NavigationDrawerDestination(
-                    icon=ft.Icons.HANDYMAN_OUTLINED,
-                    label="保養紀錄",
-                ),
-                ft.NavigationDrawerDestination(
-                    icon=ft.Icons.SCHOOL_OUTLINED,
-                    label="教育資源",
-                ),
-                ft.NavigationDrawerDestination(
-                    icon=ft.Icons.LOGOUT,
-                    label="登出",
-                ),
-            ]
+            controls=drawer_controls,
         )
 
     # =====================================================
@@ -689,7 +717,7 @@ def main(page: ft.Page):
     # View Template（整合捲動雷達與個人化 FAB）
     # =====================================================
     def shell(route, title, body, nav_idx=0):
-        content_padding = 0 if str(route or "").startswith("/maintenance") else 20
+        content_padding = 0 if str(route or "").startswith(("/maintenance", "/admin")) else 20
 
         content_col = ft.Column(
             controls=[
@@ -1248,6 +1276,30 @@ def main(page: ft.Page):
                     "/maintenance/items/deleted",
                     "已刪除保養項目",
                     MaintenanceItemsDeletedContent(page),
+                    3,
+                )
+
+            elif route == "/admin":
+                target_view = shell(
+                    "/admin",
+                    "系統控制中心",
+                    AdminContent(page),
+                    0,
+                )
+
+            elif route == "/admin/materials":
+                target_view = shell(
+                    "/admin/materials",
+                    "原料與庫存設定",
+                    AdminMaterialsContent(page),
+                    0,
+                )
+
+            elif route == "/admin/maintenance":
+                target_view = shell(
+                    "/admin/maintenance",
+                    "保養管理",
+                    AdminMaintenanceContent(page),
                     3,
                 )
 
