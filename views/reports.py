@@ -1,7 +1,23 @@
-# views/reports.py
-# KNH MMS 報表中心 - Flet 0.84 + Supabase
-# 重點：快速報表一鍵產生、全條件篩選、查看全部、CSV 匯出與 Nginx /exports/ 正式下載
-# 注意：CSV 下載走 Nginx 80 port /exports/ 靜態路徑，文字框僅作為備援。
+# =====================================================
+# KNH MMS v2
+# File: views/reports.py
+# File Revision: 2026-05-12-reports-width-r1
+# Status: current working version
+# Last Updated: 2026-05-12 Asia/Taipei
+#
+# Purpose:
+# - 報表中心頁面：快速報表、全條件篩選、結果預覽、查看全部、CSV / PDF 匯出。
+#
+# Major Changes in This Revision:
+# - 修正報表中心各區塊寬度比其他頁面略窄的問題。
+# - main_host、共用 card_box() 與 build_content() 外層容器明確設定 width=float("inf")。
+# - build_content() 外層容器補上 expand=True，讓頁面內容盡量吃滿 shell 可用寬度。
+#
+# Notes:
+# - 本次只調整 views/reports.py 版面寬度，不修改報表查詢、欄位 mapping、CSV、PDF、Nginx /exports/ 下載機制。
+# - 需符合 Flet 0.84；不可使用 page.push_route()。
+# - 所有日期時間仍維持 Asia/Taipei。
+# =====================================================
 
 from __future__ import annotations
 
@@ -182,6 +198,7 @@ def ReportsContent(page: ft.Page):
 
     def card_box(content, padding: int = 18, border_color: str = BORDER, bgcolor: str = CARD):
         return ft.Container(
+            width=float("inf"),
             bgcolor=bgcolor,
             border=ft.border.all(1, border_color),
             border_radius=18,
@@ -521,7 +538,7 @@ def ReportsContent(page: ft.Page):
     # =====================================================
     # 4. 狀態與選項更新
     # =====================================================
-    main_host = ft.Container(expand=True)
+    main_host = ft.Container(expand=True, width=float("inf"))
 
     def update_dropdown_options(control: ft.Dropdown, options, keep_value: bool = True):
         current = control.value
@@ -1357,6 +1374,8 @@ def ReportsContent(page: ft.Page):
         controls.extend([build_preview_card(), ft.Container(height=90)])
 
         return ft.Container(
+            width=float("inf"),
+            expand=True,
             bgcolor=BG,
             padding=ft.padding.only(left=18, right=18, top=18),
             content=ft.Column(
