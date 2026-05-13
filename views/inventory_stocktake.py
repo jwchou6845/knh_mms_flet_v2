@@ -1,17 +1,18 @@
 # =====================================================
 # KNH MMS v2
 # File: views/inventory_stocktake.py
-# File Revision: 2026-05-13-stocktake-width-r2
-# Status: width layout fix
-# Last Updated: 2026-05-13 Asia/Taipei
+# File Revision: 2026-05-14-stocktake-breadcrumb-r3
+# Status: breadcrumb navigation fix
+# Last Updated: 2026-05-14 Asia/Taipei
 #
 # Purpose:
 # - 人工盤點功能頁面：建立盤點單、輸入實盤數、送出待審核、超級管理員確認盤點。
 #
 # Major Changes in This Revision:
-# - 延續 r1 人工盤點頁面功能。
-# - 修正 /inventory/stocktake 內容區寬度：移除頁面內層左右 padding，改由 main.py shell 統一控制左右邊距。
-# - 補上外層容器 width=float("inf") / expand=True，讓頁面寬度接近 reports.py r2 後的滿版效果。
+# - 延續 r2 寬度修正版。
+# - 在頁首加入輕量麵包屑導覽：原料入庫作業 > 人工盤點。
+# - 進入盤點明細後，麵包屑加上目前盤點單號。
+# - 麵包屑使用 page.go("/inventory") / page.go("/inventory/stocktake") 導航，不使用 page.push_route()。
 # - 不修改盤點建立、明細儲存、送出待審核、確認盤點與 stock_adjustments 寫入邏輯。
 #
 # Notes:
@@ -19,7 +20,7 @@
 # - 不使用 page.push_route()。
 # - 時間與庫存調整邏輯由 services/stocktake_service.py 統一使用 Asia/Taipei。
 # - 第一版只處理新料 / 母粒正式庫存盤點，不處理回用料逐筆盤點。
-# - r2 只調整版面寬度，不更動資料流程。
+# - r3 只調整導覽顯示，不更動資料流程。
 # =====================================================
 
 from __future__ import annotations
@@ -709,30 +710,92 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
     # =====================================================
     # 畫面區塊
     # =====================================================
+    def breadcrumb_item(label: str, route: str | None = None, active: bool = False) -> ft.Control:
+        color = TEXT if active else BLUE
+        bg = "#FFFFFF" if not active else "#F8FAFC"
+        border_color = "#E5EAF2" if active else BLUE_BORDER
+
+        def go_target(e=None):
+            if route:
+                navigate(route)
+
+        return ft.Container(
+            height=32,
+            padding=ft.padding.symmetric(horizontal=10),
+            border_radius=16,
+            bgcolor=bg,
+            border=ft.border.all(1, border_color),
+            alignment=ft.Alignment(0, 0),
+            ink=bool(route),
+            on_click=go_target if route else None,
+            content=ft.Text(
+                label,
+                size=12,
+                color=color,
+                weight=ft.FontWeight.W_600,
+                max_lines=1,
+                overflow=ft.TextOverflow.ELLIPSIS,
+            ),
+        )
+
+    def breadcrumb_separator() -> ft.Control:
+        return ft.Text(">", size=13, color=TEXT_MUTED, weight=ft.FontWeight.W_600)
+
+    def build_breadcrumb() -> ft.Control:
+        detail = state.get("detail") or {}
+        count = detail.get("count") or {}
+        count_no = str(count.get("count_no") or "").strip()
+
+        controls: list[ft.Control] = [
+            breadcrumb_item("原料入庫作業", route="/inventory"),
+            breadcrumb_separator(),
+            breadcrumb_item("人工盤點", route=None if not count_no else "/inventory/stocktake", active=not bool(count_no)),
+        ]
+
+        if count_no:
+            controls.extend([
+                breadcrumb_separator(),
+                breadcrumb_item(count_no, active=True),
+            ])
+
+        return ft.Row(
+            spacing=8,
+            run_spacing=8,
+            wrap=True,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=controls,
+        )
+
     def build_header() -> ft.Control:
         return ft.Container(
-            content=ft.Row(
-                spacing=16,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            content=ft.Column(
+                spacing=14,
                 controls=[
-                    ft.Container(
-                        width=58,
-                        height=58,
-                        border_radius=18,
-                        bgcolor=BLUE_SOFT,
-                        alignment=ft.Alignment(0, 0),
-                        content=ft.Icon(ft.Icons.FACT_CHECK_OUTLINED, size=31, color=BLUE),
-                    ),
-                    ft.Column(
-                        expand=True,
-                        spacing=4,
+                    build_breadcrumb(),
+                    ft.Row(
+                        spacing=16,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
                         controls=[
-                            ft.Text("人工盤點", size=28, weight=ft.FontWeight.BOLD, color=TEXT),
-                            ft.Text(
-                                "建立盤點單，比對帳面庫存與現場實盤數；確認後才會寫入正式庫存調整。",
-                                size=14,
-                                color=TEXT_MUTED,
-                                max_lines=3,
+                            ft.Container(
+                                width=58,
+                                height=58,
+                                border_radius=18,
+                                bgcolor=BLUE_SOFT,
+                                alignment=ft.Alignment(0, 0),
+                                content=ft.Icon(ft.Icons.FACT_CHECK_OUTLINED, size=31, color=BLUE),
+                            ),
+                            ft.Column(
+                                expand=True,
+                                spacing=4,
+                                controls=[
+                                    ft.Text("人工盤點", size=28, weight=ft.FontWeight.BOLD, color=TEXT),
+                                    ft.Text(
+                                        "建立盤點單，比對帳面庫存與現場實盤數；確認後才會寫入正式庫存調整。",
+                                        size=14,
+                                        color=TEXT_MUTED,
+                                        max_lines=3,
+                                    ),
+                                ],
                             ),
                         ],
                     ),
