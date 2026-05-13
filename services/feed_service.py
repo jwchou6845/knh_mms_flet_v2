@@ -1,22 +1,23 @@
 # =====================================================
 # KNH MMS v2
 # File: services/feed_service.py
-# File Revision: 2026-05-12-feed-recent-records-r1
+# File Revision: 2026-05-13-feed-active-material-guard-r1
 # Status: current working version
-# Last Updated: 2026-05-12 Asia/Taipei
+# Last Updated: 2026-05-13 Asia/Taipei
 #
 # Purpose:
 # - 現場打料作業服務層：載入原料/回用料清單、近期打料紀錄整理、送出打料紀錄。
 #
 # Major Changes in This Revision:
-# - build_recent_records() 補齊 batch_no、machine_code、operator、note mapping。
-# - 最近打料紀錄保留「類型」並支援畫面顯示「批號 / 機台/塔別 / 人員 / 備註」。
+# - 新料 / 母粒打料送出前，增加 materials.is_active 與 is_stock_managed 防呆檢查。
+# - 避免控制中心停用或取消納管後，舊頁面下拉殘留仍可送出打料紀錄。
+# - 保留既有近期打料紀錄欄位、回用料流程與 Asia/Taipei 時間處理。
 #
 # Notes:
-# - 本檔案以 2026-05-12 使用者上傳最新版 feed_service.py 為基礎。
-# - 本次不修改新增打料紀錄流程、不修改回用料狀態更新流程。
-# - 所有日期時間處理維持 Asia/Taipei。
+# - Flet 0.84 專案使用。
+# - 本次不修改 views/feed.py UI、不修改回用料領用流程、不修改 Supabase schema。
 # =====================================================
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -362,6 +363,12 @@ def submit_material_feed_record(
 
         if not material:
             return ServiceResult(ok=False, message="找不到此原料資料。")
+
+        if not bool(material.get("is_active", True)):
+            return ServiceResult(ok=False, message="此原料已停用，請重新整理後選擇其他原料。")
+
+        if not bool(material.get("is_stock_managed", True)):
+            return ServiceResult(ok=False, message="此原料未納管庫存，不能建立正式打料紀錄。")
 
         material_name = material.get("material_name") or ""
         bag_weight_kg = _to_float(material.get("bag_weight_kg"), 0)

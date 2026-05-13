@@ -1,3 +1,23 @@
+# =====================================================
+# KNH MMS v2
+# File: repositories/inventory_repo.py
+# File Revision: 2026-05-13-inventory-active-material-filter-r1
+# Status: current working version
+# Last Updated: 2026-05-13 Asia/Taipei
+#
+# Purpose:
+# - 原料入庫作業 Supabase 查詢層。
+#
+# Major Changes in This Revision:
+# - inventory.py 的「關聯原料」下拉只讀取 is_active=true 且 is_stock_managed=true 的 materials。
+# - material_stock_view 查詢同步排除未納管原料，與 dashboard / feed 的目前作業邏輯一致。
+# - 保留歷史入庫紀錄與回用料入庫紀錄查詢不變。
+#
+# Notes:
+# - Flet 0.84 專案使用。
+# - 本次不修改 views/inventory.py UI、不修改 Supabase schema。
+# =====================================================
+
 from __future__ import annotations
 
 from typing import Any
@@ -24,6 +44,7 @@ def get_active_materials() -> list[dict[str, Any]]:
         supabase.table(TABLE_MATERIALS)
         .select("*")
         .eq("is_active", True)
+        .eq("is_stock_managed", True)
         .order("material_name", desc=False)
         .execute()
     )
@@ -55,6 +76,7 @@ def get_material_stock_view() -> list[dict[str, Any]]:
         supabase.table(VIEW_MATERIAL_STOCK)
         .select("*")
         .eq("is_active", True)
+        .eq("is_stock_managed", True)
         .order("material_name", desc=False)
         .execute()
     )

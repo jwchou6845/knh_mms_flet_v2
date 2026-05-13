@@ -1,3 +1,23 @@
+# =====================================================
+# KNH MMS v2
+# File: services/inventory_service.py
+# File Revision: 2026-05-13-inventory-active-material-guard-r1
+# Status: current working version
+# Last Updated: 2026-05-13 Asia/Taipei
+#
+# Purpose:
+# - 原料入庫作業服務層：載入原料清單、近期入庫紀錄、寫入供應商新料/母粒與回用料入庫。
+#
+# Major Changes in This Revision:
+# - 供應商新料 / 母粒入庫送出前，增加 materials.is_active 與 is_stock_managed 防呆檢查。
+# - 避免控制中心停用或取消納管後，舊頁面下拉殘留仍可建立正式入庫紀錄。
+# - 保留回用料入庫流程、近期紀錄整理與 Asia/Taipei 日期處理。
+#
+# Notes:
+# - Flet 0.84 專案使用。
+# - 本次不修改 views/inventory.py UI、不修改 Supabase schema。
+# =====================================================
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -249,6 +269,12 @@ def submit_purchase_record(
 
         if not material:
             return ServiceResult(ok=False, message="找不到此原料資料。")
+
+        if not bool(material.get("is_active", True)):
+            return ServiceResult(ok=False, message="此原料已停用，請重新整理後選擇其他原料。")
+
+        if not bool(material.get("is_stock_managed", True)):
+            return ServiceResult(ok=False, message="此原料未納管庫存，不能建立正式入庫紀錄。")
 
         material_name = material.get("material_name") or ""
         supplier = material.get("supplier") or ""
