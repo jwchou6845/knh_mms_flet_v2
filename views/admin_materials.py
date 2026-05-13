@@ -1,8 +1,8 @@
 # =====================================================
 # KNH MMS v2
 # File: views/admin_materials.py
-# File Revision: 2026-05-13-admin-materials-r8
-# Status: /admin materials phase 1 implementation - inline form UX fix
+# File Revision: 2026-05-13-admin-materials-r9
+# Status: /admin materials phase 1 implementation - inline row action fix
 # Last Updated: 2026-05-13 Asia/Taipei
 #
 # Purpose:
@@ -11,10 +11,10 @@
 #
 # Major Changes in This Revision:
 # - 編輯表單移除「啟用原料」開關，啟用 / 停用統一由原料清單按鈕處理，避免同一欄位有兩種入口造成混淆。
-# - 點擊新增 / 編輯 / 停用 / 啟用後，頁面會自動捲到上方的頁內表單或確認卡，避免使用者找不到展開區。
+# - 編輯 / 停用 / 啟用改成在原料列下方就地展開，避免自動 scroll_to 造成 Flet Web 連線卡住。
 # - 篩選區的啟用狀態 / 庫存納管選項改為較小 segmented chips，降低手機版高度占用。
 # - 原料列表區補上「篩選後原料清單」標題，明確標示下方資料是目前條件篩選結果。
-# - 延續 r7：不再使用浮層 modal，所有新增 / 編輯 / 啟用停用都採頁內展開式表單卡片。
+# - 延續 r7：不再使用浮層 modal；新增維持頁面上方表單，編輯 / 啟用停用採清單列下方展開。
 #
 # Notes:
 # - Flet 0.84；不使用 page.push_route()。
@@ -150,30 +150,16 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
 
     def request_scroll_to_top() -> None:
         """
-        新增 / 編輯 / 啟用停用皆在頁面上方展開卡片。
-        若使用者從原料清單很下方點擊操作，下一次 rebuild 後自動捲回頂部，
-        避免第一次使用者找不到展開的表單或確認卡。
+        r9：停用 / 編輯不再使用 page.run_task(scroll_to)。
+        先前自動捲動在 Flet Web / VM 上可能造成 socket.send exception 或頁面卡住。
+        目前新增表單仍在頁面上方；編輯與啟用停用改為在被點擊的原料列下方就地展開。
         """
-        state["scroll_to_top_pending"] = True
+        state["scroll_to_top_pending"] = False
 
     def run_pending_scroll_to_top() -> None:
-        if not state.get("scroll_to_top_pending"):
-            return
+        # r9：保留函式名稱避免呼叫點大改，但不再執行 scroll_to。
         state["scroll_to_top_pending"] = False
-        target = layout_scroll_ref.get("control")
-        if not target:
-            return
-
-        async def do_scroll():
-            try:
-                await target.scroll_to(offset=0, duration=320)
-            except Exception as exc:
-                print("admin_materials scroll_to_top failed:", repr(exc), flush=True)
-
-        try:
-            page.run_task(do_scroll)
-        except Exception as exc:
-            print("admin_materials run_task scroll failed:", repr(exc), flush=True)
+        return
 
     def show_snack(message: str, success: bool = True) -> None:
         snack = ft.SnackBar(
@@ -639,7 +625,6 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
         state["active_form"] = "edit" if material else "create"
         state["editing_material"] = material or None
         state["confirm_material"] = None
-        request_scroll_to_top()
         rebuild()
 
     def build_material_form_panel() -> ft.Control:
@@ -816,7 +801,6 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
         state["active_form"] = "toggle"
         state["confirm_material"] = material
         state["editing_material"] = None
-        request_scroll_to_top()
         rebuild()
 
     def build_toggle_active_panel() -> ft.Control:
@@ -930,10 +914,10 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
 
     def build_active_inline_panel() -> ft.Control:
         mode = state.get("active_form")
-        if mode in ["create", "edit"]:
+        # r9：只有「新增原料」維持在頁面上方。
+        # 編輯 / 停用 / 啟用在被點擊的原料列下方展開，避免使用者找不到，也避免自動捲動造成卡住。
+        if mode == "create":
             return build_material_form_panel()
-        if mode == "toggle":
-            return build_toggle_active_panel()
         return ft.Container(height=0)
 
     # =====================================================
@@ -1377,7 +1361,21 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
     def build_desktop_table(rows: list[dict[str, Any]]) -> ft.Control:
         table_rows: list[ft.Control] = [table_row(header=True)]
         if rows:
-            table_rows.extend([table_row(row) for row in rows])
+            for row in rows:
+                table_rows.append(table_row(row))
+                if state.get("active_form") in ["edit", "toggle"]:
+                    selected = state.get("editing_material") if state.get("active_form") == "edit" else state.get("confirm_material")
+                    if selected and str(selected.get("id") or "") == str(row.get("id") or ""):
+                        panel = build_material_form_panel() if state.get("active_form") == "edit" else build_toggle_active_panel()
+                        table_rows.append(
+                            ft.Container(
+                                width=TABLE_WIDTH,
+                                bgcolor="#F8FAFC",
+                                border=ft.border.only(bottom=ft.BorderSide(1, "#EEF2F7")),
+                                padding=ft.padding.all(12),
+                                content=panel,
+                            )
+                        )
         else:
             table_rows.append(
                 ft.Container(
@@ -1461,6 +1459,16 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
                             ft.Container(expand=True, content=stable_button("停用" if row.get("is_active") else "啟用", icon=ft.Icons.PAUSE_CIRCLE_OUTLINE if row.get("is_active") else ft.Icons.CHECK_CIRCLE_OUTLINE, color=RED if row.get("is_active") else GREEN, border_color=RED_BORDER if row.get("is_active") else GREEN_BORDER, on_click=lambda _, current=row: open_toggle_active_dialog(current), height=40, expand=True)),
                         ],
                     ),
+                    build_material_form_panel()
+                    if state.get("active_form") == "edit"
+                    and state.get("editing_material")
+                    and str((state.get("editing_material") or {}).get("id") or "") == str(row.get("id") or "")
+                    else ft.Container(height=0),
+                    build_toggle_active_panel()
+                    if state.get("active_form") == "toggle"
+                    and state.get("confirm_material")
+                    and str((state.get("confirm_material") or {}).get("id") or "") == str(row.get("id") or "")
+                    else ft.Container(height=0),
                 ],
             ),
         )
