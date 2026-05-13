@@ -1,20 +1,22 @@
 # =====================================================
 # KNH MMS v2
 # File: services/dashboard_service.py
-# File Revision: 2026-05-12-dashboard-summary-fixedbar-r2
+# File Revision: 2026-05-13-dashboard-active-material-filter-r1
 # Status: current working version
-# Last Updated: 2026-05-12 Asia/Taipei
+# Last Updated: 2026-05-13 Asia/Taipei
 #
 # Purpose:
 # - 首頁儀表板資料整理層：庫存圖表、月用量摘要、保養待辦摘要。
 #
 # Major Changes in This Revision:
-# - 保養摘要計算增加防禦式檢查，略過 is_deleted = true 的保養項目。
-# - 近期異常只計算仍有效保養項目的紀錄，避免已刪除項目殘留在首頁摘要。
+# - 保養摘要計算保留 r2 防禦式檢查，略過 is_deleted = true 的保養項目。
+# - 首頁「本月新料用量 / 本月母粒用量」依 materials.is_active=true 且 is_stock_managed=true 過濾。
+# - 停用或未納管原料不再出現在 dashboard 目前作業用量小卡。
 # - 保留 Asia/Taipei 時間處理與既有月用量統計邏輯。
 #
 # Notes:
 # - Flet 0.84 專案使用。
+# - 不修改 views/dashboard.py 與 sparkline UI，只調整 service/repo 資料過濾。
 # - 本次不修改 reports.py、CSV/PDF 下載機制或 Supabase schema。
 # =====================================================
 
@@ -27,6 +29,7 @@ from zoneinfo import ZoneInfo
 
 from repositories.dashboard_repo import (
     get_active_maintenance_items,
+    get_dashboard_active_material_rows,
     get_available_recycled_materials,
     get_feed_records_between,
     get_maintenance_records_for_summary,
@@ -320,10 +323,62 @@ def normalize_usage_display_name(category: str, display_name: str, material_name
 
 
 
+def _dashboard_usage_category_from_material(material: dict[str, Any]) -> str:
+    """
+    依 materials 主檔判斷首頁月用量類別。
+    目前只用於「新料 / 母粒」白名單；回用料仍依 recycled_materials 流程處理。
+    """
+    main_category = str(material.get("main_category") or "").strip()
+    material_type = str(material.get("material_type") or "").strip()
+    material_name = str(material.get("material_name") or "").strip()
+
+    combined = f"{main_category} {material_type} {material_name}"
+
+    if "母粒" in combined:
+        return "母粒"
+
+    return "新料"
+
+
+def build_allowed_usage_names_by_category(
+    active_material_rows: list[dict[str, Any]],
+) -> dict[str, set[str]]:
+    """
+    建立首頁用量小卡允許顯示的原料名稱白名單。
+
+    規則：
+    - 只依 materials.is_active=true 且 is_stock_managed=true 的原料建立白名單。
+    - 停用 / 未納管原料不再出現在 dashboard 的目前作業用量小卡。
+    - reports.py 歷史報表不使用此白名單，因此歷史仍可查。
+    """
+    allowed: dict[str, set[str]] = {
+        "新料": set(),
+        "母粒": set(),
+    }
+
+    for material in active_material_rows or []:
+        category = _dashboard_usage_category_from_material(material)
+        if category not in allowed:
+            continue
+
+        display_name = normalize_usage_display_name(
+            category=category,
+            display_name=str(material.get("material_name") or ""),
+            material_name=str(material.get("material_name") or ""),
+            supplier=str(material.get("supplier") or ""),
+        )
+
+        if display_name:
+            allowed[category].add(display_name)
+
+    return allowed
+
+
 def build_usage_summary_from_monthly_rows(
     monthly_rows: list[dict[str, Any]],
     selected_month: date,
     history_month_count: int = 7,
+    allowed_usage_names_by_category: dict[str, set[str]] | None = None,
 ) -> dict[str, dict[str, dict[str, Any]]]:
     """
     由 monthly_usage_view 建立首頁小卡資料。
@@ -367,6 +422,14 @@ def build_usage_summary_from_monthly_rows(
             material_name=material_name,
             supplier=supplier,
         )
+
+        # 首頁代表目前作業狀態；停用 / 未納管的新料、母粒不再顯示在小卡。
+        # 回用料不是由 materials 主檔納管，保留原本顯示規則。
+        if allowed_usage_names_by_category and category in ["新料", "母粒"]:
+            allowed_names = allowed_usage_names_by_category.get(category) or set()
+            if display_name not in allowed_names:
+                continue
+
         usage_key = month_key(row.get("usage_month"))
         weight = to_float(row.get("weight_kg"), 0)
 
@@ -549,6 +612,7 @@ def load_dashboard_page_data() -> ServiceResult:
 
         stock_rows = get_material_stock_rows()
         recycled_rows = get_available_recycled_materials()
+        active_material_rows = get_dashboard_active_material_rows()
 
         # 首頁用量趨勢使用 monthly_usage_view：
         # 2025-10~2026-04 紙本歷史補登 + 2026-05 後 feed_records 即時計算
@@ -572,6 +636,7 @@ def load_dashboard_page_data() -> ServiceResult:
                 monthly_usage_rows,
                 selected_month=this_month_start,
                 history_month_count=history_month_count,
+                allowed_usage_names_by_category=build_allowed_usage_names_by_category(active_material_rows),
             ),
             "maintenance_summary": build_maintenance_summary(maintenance_items, maintenance_records),
         }

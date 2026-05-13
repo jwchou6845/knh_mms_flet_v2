@@ -1,20 +1,22 @@
 # =====================================================
 # KNH MMS v2
 # File: repositories/dashboard_repo.py
-# File Revision: 2026-05-12-dashboard-summary-fixedbar-r2
+# File Revision: 2026-05-13-dashboard-active-material-filter-r1
 # Status: current working version
-# Last Updated: 2026-05-12 Asia/Taipei
+# Last Updated: 2026-05-13 Asia/Taipei
 #
 # Purpose:
 # - 首頁儀表板 Supabase 查詢層。
 #
 # Major Changes in This Revision:
-# - get_active_maintenance_items() 追加 is_deleted = false 條件。
-# - 避免首頁保養待辦摘要顯示已軟刪除的保養項目。
+# - get_active_maintenance_items() 保留 is_deleted = false 條件。
+# - 首頁即時新料庫存查詢追加 is_stock_managed = true，排除未納管原料。
+# - 新增 get_dashboard_active_material_rows()，供首頁月用量小卡依 active / stock-managed 原料名單過濾。
 #
 # Notes:
 # - Flet 0.84 專案使用。
 # - 時間顯示與業務邏輯由 service 層統一使用 Asia/Taipei。
+# - 不修改 views/dashboard.py 與 sparkline UI，只調整資料查詢。
 # - 本次不修改 Supabase schema / RLS / SQL view。
 # =====================================================
 
@@ -28,6 +30,7 @@ from db.supabase_client import supabase
 VIEW_MATERIAL_STOCK = "material_stock_view"
 TABLE_RECYCLED_MATERIALS = "recycled_materials"
 TABLE_FEED_RECORDS = "feed_records"
+TABLE_MATERIALS = "materials"
 TABLE_MAINTENANCE_ITEMS = "maintenance_items"
 TABLE_MAINTENANCE_RECORDS = "maintenance_records"
 VIEW_MONTHLY_USAGE = "monthly_usage_view"
@@ -47,6 +50,36 @@ def get_material_stock_rows() -> list[dict[str, Any]]:
         supabase.table(VIEW_MATERIAL_STOCK)
         .select("*")
         .eq("is_active", True)
+        .eq("is_stock_managed", True)
+        .order("material_name", desc=False)
+        .execute()
+    )
+    return res.data or []
+
+
+def get_dashboard_active_material_rows() -> list[dict[str, Any]]:
+    """
+    讀取首頁目前作業用的原料主檔。
+
+    用途：
+    - 首頁「本月新料用量 / 本月母粒用量」小卡只顯示仍啟用且納管庫存的原料。
+    - 停用或取消納管後，不影響歷史報表，但不再出現在首頁目前作業摘要。
+    """
+    res = (
+        supabase.table(TABLE_MATERIALS)
+        .select(
+            """
+            id,
+            material_name,
+            main_category,
+            material_type,
+            supplier,
+            is_active,
+            is_stock_managed
+            """
+        )
+        .eq("is_active", True)
+        .eq("is_stock_managed", True)
         .order("material_name", desc=False)
         .execute()
     )
