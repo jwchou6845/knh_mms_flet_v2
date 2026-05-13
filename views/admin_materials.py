@@ -1,8 +1,8 @@
 # =====================================================
 # KNH MMS v2
 # File: views/admin_materials.py
-# File Revision: 2026-05-13-admin-materials-r7
-# Status: /admin materials phase 1 implementation - inline form stable mobile fix
+# File Revision: 2026-05-13-admin-materials-r8
+# Status: /admin materials phase 1 implementation - inline form UX fix
 # Last Updated: 2026-05-13 Asia/Taipei
 #
 # Purpose:
@@ -10,10 +10,11 @@
 # - 供超級管理員讀取 materials 真實清單、搜尋篩選、新增原料、編輯原料、啟用 / 停用原料。
 #
 # Major Changes in This Revision:
-# - 取消新增 / 編輯 / 啟用停用的浮層 modal，改為頁內展開式表單卡片，避開手機 Web 遮罩灰框與底部按鈕消失問題。
-# - 表單欄位全面改為「外部標題 + TextField / Dropdown」的穩定寫法，參照 reports.py / feed.py 的手機欄位模式。
-# - 搜尋與篩選區改為手機友善雙欄 / 單欄混排，不需要水平橫滑。
-# - 綠色「資料已同步」膠囊成功後 3 秒自動隱藏，避免頁首空間被長期占用。
+# - 編輯表單移除「啟用原料」開關，啟用 / 停用統一由原料清單按鈕處理，避免同一欄位有兩種入口造成混淆。
+# - 點擊新增 / 編輯 / 停用 / 啟用後，頁面會自動捲到上方的頁內表單或確認卡，避免使用者找不到展開區。
+# - 篩選區的啟用狀態 / 庫存納管選項改為較小 segmented chips，降低手機版高度占用。
+# - 原料列表區補上「篩選後原料清單」標題，明確標示下方資料是目前條件篩選結果。
+# - 延續 r7：不再使用浮層 modal，所有新增 / 編輯 / 啟用停用都採頁內展開式表單卡片。
 #
 # Notes:
 # - Flet 0.84；不使用 page.push_route()。
@@ -102,6 +103,7 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
         "active_form": None,
         "editing_material": None,
         "confirm_material": None,
+        "scroll_to_top_pending": False,
     }
 
     ui_lock = threading.RLock()
@@ -111,6 +113,7 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
     root_stack = ft.Stack(expand=True, controls=[main_host])
     root = ft.Container(expand=True, bgcolor=BG, content=root_stack)
     modal_ref: dict[str, ft.Control | None] = {"control": None}
+    layout_scroll_ref: dict[str, ft.Control | None] = {"control": None}
 
     # =====================================================
     # Session / navigation / basics
@@ -144,6 +147,33 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
                 page.update()
         except Exception as exc:
             print("admin_materials page.update failed:", repr(exc), flush=True)
+
+    def request_scroll_to_top() -> None:
+        """
+        新增 / 編輯 / 啟用停用皆在頁面上方展開卡片。
+        若使用者從原料清單很下方點擊操作，下一次 rebuild 後自動捲回頂部，
+        避免第一次使用者找不到展開的表單或確認卡。
+        """
+        state["scroll_to_top_pending"] = True
+
+    def run_pending_scroll_to_top() -> None:
+        if not state.get("scroll_to_top_pending"):
+            return
+        state["scroll_to_top_pending"] = False
+        target = layout_scroll_ref.get("control")
+        if not target:
+            return
+
+        async def do_scroll():
+            try:
+                await target.scroll_to(offset=0, duration=320)
+            except Exception as exc:
+                print("admin_materials scroll_to_top failed:", repr(exc), flush=True)
+
+        try:
+            page.run_task(do_scroll)
+        except Exception as exc:
+            print("admin_materials run_task scroll failed:", repr(exc), flush=True)
 
     def show_snack(message: str, success: bool = True) -> None:
         snack = ft.SnackBar(
@@ -609,6 +639,7 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
         state["active_form"] = "edit" if material else "create"
         state["editing_material"] = material or None
         state["confirm_material"] = None
+        request_scroll_to_top()
         rebuild()
 
     def build_material_form_panel() -> ft.Control:
@@ -624,7 +655,6 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
         bag_tf = make_field("包重 KG *", raw.get("bag_weight_kg") if editing else "", "例如：25、950、1000", keyboard_type=ft.KeyboardType.NUMBER)
         threshold_tf = make_field("低水位門檻（包）*", raw.get("low_stock_threshold_bags") if editing else "3", "例如：3", keyboard_type=ft.KeyboardType.NUMBER)
         note_tf = make_field("備註", raw.get("note") if editing else "", "例如：庫存安全、暫停進貨原因等", multiline=True)
-        active_sw = ft.Switch(value=bool(material.get("is_active", True)) if editing else True)
         managed_sw = ft.Switch(value=bool(material.get("is_stock_managed", True)) if editing else True)
 
         saving = {"value": False}
@@ -638,7 +668,9 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
                 "supplier": supplier_tf.value,
                 "bag_weight_kg": bag_tf.value,
                 "low_stock_threshold_bags": threshold_tf.value,
-                "is_active": active_sw.value,
+                # 啟用 / 停用統一由原料清單上的按鈕處理。
+                # 編輯表單不再顯示「啟用原料」開關，避免與「停用 / 啟用」操作重複。
+                "is_active": bool(material.get("is_active", True)) if editing else True,
                 "is_stock_managed": managed_sw.value,
                 "note": note_tf.value,
             }
@@ -706,8 +738,8 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
         )
         submit_button_ref["control"] = submit_button
 
-        title = "編輯原料" if editing else "新增原料"
-        subtitle = "更新 materials 主檔，不直接增加或覆蓋正式庫存。"
+        title = f"編輯原料：{material.get('material_name') or '-'}" if editing else "新增原料"
+        subtitle = "編輯主檔不會改變啟用狀態；若需停用或啟用，請使用原料清單上的狀態按鈕。" if editing else "新增 materials 主檔，不直接增加或覆蓋正式庫存。"
 
         return card(
             padding=18,
@@ -762,14 +794,8 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
                             ft.Container(col={"xs": 6, "md": 4}, content=field_block("低水位門檻（包）*", threshold_tf)),
                         ],
                     ),
-                    ft.ResponsiveRow(
-                        columns=12,
-                        spacing=12,
-                        run_spacing=10,
-                        controls=[
-                            ft.Container(col={"xs": 12, "sm": 6}, content=switch_block("啟用原料", active_sw)),
-                            ft.Container(col={"xs": 12, "sm": 6}, content=switch_block("納管庫存", managed_sw)),
-                        ],
+                    ft.Container(
+                        content=switch_block("納管庫存", managed_sw),
                     ),
                     field_block("備註", note_tf),
                     ft.ResponsiveRow(
@@ -790,6 +816,7 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
         state["active_form"] = "toggle"
         state["confirm_material"] = material
         state["editing_material"] = None
+        request_scroll_to_top()
         rebuild()
 
     def build_toggle_active_panel() -> ft.Control:
@@ -1146,28 +1173,21 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
 
         def filter_chip(label: str, active: bool, on_click, color: str = BLUE_BTN, bg: str = BLUE_SOFT):
             return ft.Container(
-                height=36,
-                border_radius=18,
+                height=32,
+                border_radius=16,
                 bgcolor=bg if active else "#FFFFFF",
                 border=ft.border.all(1, color if active else BORDER),
                 padding=ft.padding.symmetric(horizontal=12),
                 alignment=ft.Alignment(0, 0),
                 ink=True,
                 on_click=on_click,
-                content=ft.Row(
-                    spacing=6,
-                    tight=True,
-                    alignment=ft.MainAxisAlignment.CENTER,
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                    controls=[
-                        ft.Icon(ft.Icons.CHECK_CIRCLE if active else ft.Icons.CIRCLE_OUTLINED, size=16, color=color if active else TEXT_MUTED),
-                        ft.Text(
-                            label,
-                            size=12,
-                            color=color if active else TEXT_MUTED,
-                            weight=ft.FontWeight.BOLD if active else ft.FontWeight.W_500,
-                        ),
-                    ],
+                content=ft.Text(
+                    label,
+                    size=12,
+                    color=color if active else TEXT_MUTED,
+                    weight=ft.FontWeight.BOLD if active else ft.FontWeight.W_500,
+                    max_lines=1,
+                    overflow=ft.TextOverflow.ELLIPSIS,
                 ),
             )
 
@@ -1196,21 +1216,42 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
             ],
         )
 
-        chips_wrap = ft.Row(
-            wrap=True,
-            spacing=8,
-            run_spacing=8,
-            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        def segmented_filter_row(title: str, controls: list[ft.Control]) -> ft.Control:
+            return ft.Column(
+                spacing=7,
+                controls=[
+                    ft.Text(title, size=12, color=TEXT_MUTED, weight=ft.FontWeight.W_600),
+                    ft.Row(wrap=True, spacing=8, run_spacing=8, controls=controls),
+                ],
+            )
+
+        chips_wrap = ft.ResponsiveRow(
+            columns=12,
+            spacing=12,
+            run_spacing=10,
             controls=[
-                ft.Text("啟用狀態", size=12, color=TEXT_MUTED, weight=ft.FontWeight.W_600),
-                filter_chip("全部", state["filter_active"] == "全部", lambda _: set_active_filter("全部")),
-                filter_chip("啟用", state["filter_active"] == "啟用", lambda _: set_active_filter("啟用"), GREEN, GREEN_SOFT),
-                filter_chip("停用", state["filter_active"] == "停用", lambda _: set_active_filter("停用"), ORANGE, ORANGE_SOFT),
-                ft.Container(width=8),
-                ft.Text("庫存", size=12, color=TEXT_MUTED, weight=ft.FontWeight.W_600),
-                filter_chip("全部", state["filter_managed"] == "全部", lambda _: set_managed_filter("全部")),
-                filter_chip("納管", state["filter_managed"] == "納管", lambda _: set_managed_filter("納管"), BLUE_BTN, BLUE_SOFT),
-                filter_chip("未納管", state["filter_managed"] == "未納管", lambda _: set_managed_filter("未納管"), PURPLE_BTN, PURPLE_SOFT),
+                ft.Container(
+                    col={"xs": 12, "md": 6},
+                    content=segmented_filter_row(
+                        "啟用狀態",
+                        [
+                            filter_chip("全部", state["filter_active"] == "全部", lambda _: set_active_filter("全部")),
+                            filter_chip("啟用", state["filter_active"] == "啟用", lambda _: set_active_filter("啟用"), GREEN, GREEN_SOFT),
+                            filter_chip("停用", state["filter_active"] == "停用", lambda _: set_active_filter("停用"), ORANGE, ORANGE_SOFT),
+                        ],
+                    ),
+                ),
+                ft.Container(
+                    col={"xs": 12, "md": 6},
+                    content=segmented_filter_row(
+                        "庫存納管",
+                        [
+                            filter_chip("全部", state["filter_managed"] == "全部", lambda _: set_managed_filter("全部")),
+                            filter_chip("納管", state["filter_managed"] == "納管", lambda _: set_managed_filter("納管"), BLUE_BTN, BLUE_SOFT),
+                            filter_chip("未納管", state["filter_managed"] == "未納管", lambda _: set_managed_filter("未納管"), PURPLE_BTN, PURPLE_SOFT),
+                        ],
+                    ),
+                ),
             ],
         )
 
@@ -1359,7 +1400,7 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
                                     expand=True,
                                     spacing=3,
                                     controls=[
-                                        ft.Text("原料清單", size=18, color=TEXT, weight=ft.FontWeight.BOLD),
+                                        ft.Text("篩選後原料清單", size=18, color=TEXT, weight=ft.FontWeight.BOLD),
                                         ft.Text("左右滑動可查看完整欄位與操作。", size=12, color=TEXT_MUTED),
                                     ],
                                 ),
@@ -1425,9 +1466,36 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
         )
 
     def build_mobile_list(rows: list[dict[str, Any]]) -> ft.Control:
+        list_body: ft.Control
         if not rows:
-            return card(padding=18, content=ft.Text("目前沒有符合條件的原料資料。", size=14, color=TEXT_MUTED))
-        return ft.Column(spacing=12, controls=[build_mobile_card(row) for row in rows])
+            list_body = card(padding=18, content=ft.Text("目前沒有符合條件的原料資料。", size=14, color=TEXT_MUTED))
+        else:
+            list_body = ft.Column(spacing=12, controls=[build_mobile_card(row) for row in rows])
+
+        return ft.Column(
+            spacing=10,
+            controls=[
+                card(
+                    padding=14,
+                    content=ft.Row(
+                        spacing=10,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[
+                            ft.Icon(ft.Icons.FORMAT_LIST_BULLETED, size=22, color=BLUE_BTN),
+                            ft.Column(
+                                expand=True,
+                                spacing=2,
+                                controls=[
+                                    ft.Text("篩選後原料清單", size=18, color=TEXT, weight=ft.FontWeight.BOLD),
+                                    ft.Text(f"依目前條件顯示 {len(rows)} 筆原料。", size=12, color=TEXT_MUTED),
+                                ],
+                            ),
+                        ],
+                    ),
+                ),
+                list_body,
+            ],
+        )
 
     def build_materials_content(is_mobile: bool) -> ft.Control:
         rows = filtered_materials()
@@ -1465,23 +1533,26 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
                 content=ft.Column(spacing=16, controls=[breadcrumb(), build_loading()]),
             )
 
+        layout_col = ft.Column(
+            expand=True,
+            scroll=ft.ScrollMode.AUTO,
+            spacing=16,
+            controls=[
+                build_header(is_mobile),
+                build_active_inline_panel(),
+                build_summary_cards(is_mobile),
+                build_filter_bar(is_mobile),
+                build_materials_content(is_mobile),
+                ft.Container(height=90),
+            ],
+        )
+        layout_scroll_ref["control"] = layout_col
+
         return ft.Container(
             expand=True,
             bgcolor=BG,
             padding=ft.padding.only(left=20 if is_mobile else 24, right=20 if is_mobile else 24, top=18, bottom=18),
-            content=ft.Column(
-                expand=True,
-                scroll=ft.ScrollMode.AUTO,
-                spacing=16,
-                controls=[
-                    build_header(is_mobile),
-                    build_active_inline_panel(),
-                    build_summary_cards(is_mobile),
-                    build_filter_bar(is_mobile),
-                    build_materials_content(is_mobile),
-                    ft.Container(height=90),
-                ],
-            ),
+            content=layout_col,
         )
 
     def rebuild() -> None:
@@ -1492,6 +1563,7 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
                     main_host.update()
                 except Exception:
                     page.update()
+                run_pending_scroll_to_top()
         except Exception as exc:
             state["error_message"] = f"原料設定畫面重建失敗：{exc}"
             print("admin_materials rebuild failed:", repr(exc), flush=True)
