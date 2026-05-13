@@ -1,24 +1,25 @@
 # =====================================================
 # KNH MMS v2
 # File: views/inventory_stocktake.py
-# File Revision: 2026-05-13-stocktake-view-r1
-# Status: first implementation
+# File Revision: 2026-05-13-stocktake-width-r2
+# Status: width layout fix
 # Last Updated: 2026-05-13 Asia/Taipei
 #
 # Purpose:
 # - 人工盤點功能頁面：建立盤點單、輸入實盤數、送出待審核、超級管理員確認盤點。
 #
 # Major Changes in This Revision:
-# - 新增 /inventory/stocktake 頁面第一版。
-# - 採頁內卡片式操作，不使用 modal / AlertDialog，避免手機 Web 浮層與底部導覽列衝突。
-# - 盤點明細以手機友善卡片顯示，每筆可輸入實盤包數與備註。
-# - 草稿可送出待審核；超級管理員可確認盤點並寫入 stock_adjustments。
+# - 延續 r1 人工盤點頁面功能。
+# - 修正 /inventory/stocktake 內容區寬度：移除頁面內層左右 padding，改由 main.py shell 統一控制左右邊距。
+# - 補上外層容器 width=float("inf") / expand=True，讓頁面寬度接近 reports.py r2 後的滿版效果。
+# - 不修改盤點建立、明細儲存、送出待審核、確認盤點與 stock_adjustments 寫入邏輯。
 #
 # Notes:
 # - Flet 0.84。
 # - 不使用 page.push_route()。
 # - 時間與庫存調整邏輯由 services/stocktake_service.py 統一使用 Asia/Taipei。
 # - 第一版只處理新料 / 母粒正式庫存盤點，不處理回用料逐筆盤點。
+# - r2 只調整版面寬度，不更動資料流程。
 # =====================================================
 
 from __future__ import annotations
@@ -1261,14 +1262,19 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
 
         return ft.Container(
             bgcolor=BG,
-            padding=ft.padding.only(left=18, right=18, top=18, bottom=18),
+            width=float("inf"),
+            expand=True,
+            # main.py shell 已有主要左右留白；此頁不再額外加 left/right padding，
+            # 避免像 reports.py 早期版本一樣比其他頁面窄。
+            padding=ft.padding.only(top=18, bottom=18),
             content=ft.Column(
                 spacing=16,
                 controls=controls,
+                expand=True,
             ),
         )
 
-    main_host = ft.Container(content=build_page())
+    main_host = ft.Container(width=float("inf"), expand=True, content=build_page())
 
     def rebuild() -> None:
         if not is_active_view():
