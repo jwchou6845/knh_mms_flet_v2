@@ -1,7 +1,24 @@
-# views/inventory.py
-# KNH MMS - 原料入庫作業 Supabase 版 v1.3
-# 修正：回用料最近入庫列表日期補正、排序與顯示格式
-# Flet 0.84 + Python + Supabase
+# =====================================================
+# KNH MMS v2
+# File: views/inventory.py
+# File Revision: 2026-05-14-inventory-stocktake-entry-r2
+# Status: current working version
+# Last Updated: 2026-05-14 Asia/Taipei
+#
+# Purpose:
+# - 原料入庫作業頁面：供應商新料 / 母粒入庫、廠內回用料入庫與最近紀錄。
+#
+# Major Changes in This Revision:
+# - 新增「人工盤點」入口卡，導向 /inventory/stocktake。
+# - r2 修正 is_mobile_page 未定義問題，補上頁面寬度判斷。
+# - 只做入口整合，不修改入庫送出、回用料入庫、批號防重複或資料同步流程。
+# - 不修改 stocktake service / repository，也不影響既有原料啟用 / 納管聯動。
+#
+# Notes:
+# - Flet 0.84。
+# - 不使用 page.push_route()，路由導向使用 page.go()。
+# - 時間處理仍由 service 層維持 Asia/Taipei。
+# =====================================================
 
 import flet as ft
 import threading
@@ -50,6 +67,11 @@ def InventoryContent(page: ft.Page):
 
     view_token = object()
     page.session_data["_inventory_view_token"] = view_token
+
+    # Flet Web / 手機版入口卡排版判斷。
+    # r2：補上此變數，避免人工盤點入口使用 is_mobile_page 時未定義。
+    page_w = page.width or 430
+    is_mobile_page = page_w <= 520
 
     def is_active_view() -> bool:
         route = str(getattr(page, "route", "") or "")
@@ -1295,6 +1317,125 @@ def InventoryContent(page: ft.Page):
     tab_btn_rec.on_click = lambda e: switch_tab("rec")
 
     # =====================================================
+    # 9-1. 人工盤點入口
+    # =====================================================
+    def open_stocktake_page(e=None):
+        page.go("/inventory/stocktake")
+
+    stocktake_entry_card = ft.Container(
+        width=float("inf"),
+        bgcolor="#FFFFFF",
+        border=ft.border.all(1, "#BFDBFE"),
+        border_radius=16,
+        padding=16,
+        shadow=ft.BoxShadow(
+            spread_radius=0,
+            blur_radius=8,
+            color="#06000000",
+            offset=ft.Offset(0, 2),
+        ),
+        content=(
+            ft.Column(
+                controls=[
+                    ft.Row(
+                        controls=[
+                            ft.Container(
+                                width=46,
+                                height=46,
+                                border_radius=14,
+                                bgcolor="#E5F0FF",
+                                alignment=ft.Alignment(0, 0),
+                                content=ft.Icon(ft.Icons.FACT_CHECK_OUTLINED, size=25, color=BLUE),
+                            ),
+                            ft.Column(
+                                expand=True,
+                                spacing=2,
+                                controls=[
+                                    ft.Text("人工盤點", size=17, weight=ft.FontWeight.BOLD, color=TEXT_MAIN),
+                                    ft.Text(
+                                        "核對帳面庫存與現場實盤數，送出後由超級管理員確認調整。",
+                                        size=12,
+                                        color=TEXT_SUB,
+                                        max_lines=3,
+                                        overflow=ft.TextOverflow.VISIBLE,
+                                    ),
+                                ],
+                            ),
+                        ],
+                        spacing=12,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    ft.Container(
+                        height=44,
+                        border_radius=12,
+                        bgcolor=BLUE_BTN,
+                        alignment=ft.Alignment(0, 0),
+                        on_click=open_stocktake_page,
+                        content=ft.Row(
+                            controls=[
+                                ft.Icon(ft.Icons.ARROW_FORWARD_ROUNDED, size=18, color="#FFFFFF"),
+                                ft.Text("前往人工盤點", size=14, color="#FFFFFF", weight=ft.FontWeight.BOLD),
+                            ],
+                            alignment=ft.MainAxisAlignment.CENTER,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                            spacing=8,
+                            tight=True,
+                        ),
+                    ),
+                ],
+                spacing=12,
+            )
+            if is_mobile_page
+            else ft.Row(
+                controls=[
+                    ft.Container(
+                        width=48,
+                        height=48,
+                        border_radius=14,
+                        bgcolor="#E5F0FF",
+                        alignment=ft.Alignment(0, 0),
+                        content=ft.Icon(ft.Icons.FACT_CHECK_OUTLINED, size=26, color=BLUE),
+                    ),
+                    ft.Column(
+                        expand=True,
+                        spacing=3,
+                        controls=[
+                            ft.Text("人工盤點", size=18, weight=ft.FontWeight.BOLD, color=TEXT_MAIN),
+                            ft.Text(
+                                "核對帳面庫存與現場實盤數，送出後由超級管理員確認調整。",
+                                size=13,
+                                color=TEXT_SUB,
+                                max_lines=2,
+                                overflow=ft.TextOverflow.ELLIPSIS,
+                            ),
+                        ],
+                    ),
+                    ft.Container(
+                        width=150,
+                        height=42,
+                        border_radius=12,
+                        bgcolor=BLUE_BTN,
+                        alignment=ft.Alignment(0, 0),
+                        on_click=open_stocktake_page,
+                        content=ft.Row(
+                            controls=[
+                                ft.Icon(ft.Icons.ARROW_FORWARD_ROUNDED, size=18, color="#FFFFFF"),
+                                ft.Text("前往盤點", size=14, color="#FFFFFF", weight=ft.FontWeight.BOLD),
+                            ],
+                            alignment=ft.MainAxisAlignment.CENTER,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                            spacing=8,
+                            tight=True,
+                        ),
+                    ),
+                ],
+                spacing=14,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            )
+        ),
+    )
+
+    # =====================================================
     # 10. Supabase 資料載入
     # =====================================================
     def refresh_material_dropdown():
@@ -1389,6 +1530,7 @@ def InventoryContent(page: ft.Page):
             controls=[
                 title_block(),
                 status_slot,
+                stocktake_entry_card,
                 ft.Row(
                     controls=[tab_btn_new, tab_btn_rec],
                     spacing=15,
