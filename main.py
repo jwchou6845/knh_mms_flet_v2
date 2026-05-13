@@ -1,9 +1,9 @@
 # =====================================================
 # KNH MMS v2
 # File: main.py
-# File Revision: 2026-05-12-admin-phase1-r1
+# File Revision: 2026-05-13-stocktake-route-r1
 # Status: current working version
-# Last Updated: 2026-05-12 Asia/Taipei
+# Last Updated: 2026-05-13 Asia/Taipei
 #
 # Purpose:
 # - 系統主路由、12 小時免重登恢復流程、共用 shell 與導覽
@@ -13,6 +13,7 @@
 # - 加入 restore watchdog timeout 與 late result guard，避免畫面永久停在登入檢查狀態
 # - 保留 maintenance items / deleted 子頁路由與既有 page.go() route fallback 修正
 # - 新增 /admin 系統控制中心第一階段路由與超級管理員 Drawer 入口
+# - 新增 /inventory/stocktake 人工盤點功能路由
 #
 # Notes:
 # - 本檔以 2026-05-11 auth restore guard 穩定版為基礎
@@ -27,6 +28,7 @@ import threading
 from views.login import LoginView
 from views.dashboard import DashboardContent
 from views.inventory import InventoryContent
+from views.inventory_stocktake import InventoryStocktakeContent
 from views.spinneret import SpinneretContent
 from views.handover import HandoverContent
 from views.handover_tasks import HandoverTasksContent
@@ -1211,6 +1213,14 @@ def main(page: ft.Page):
                     "/inventory",
                     "原料入庫作業",
                     InventoryContent(page),
+                    0,
+                )
+
+            elif route == "/inventory/stocktake":
+                target_view = shell(
+                    "/inventory/stocktake",
+                    "人工盤點",
+                    InventoryStocktakeContent(page),
                     0,
                 )
 
