@@ -1,21 +1,22 @@
 # =====================================================
 # KNH MMS v2
 # File: repositories/reports_repo.py
-# File Revision: 2026-05-12-reports-advanced-mapping-r1
+# File Revision: 2026-05-13-reports-current-stock-active-managed-r1
 # Status: current working version
-# Last Updated: 2026-05-12 Asia/Taipei
+# Last Updated: 2026-05-13 Asia/Taipei
 #
 # Purpose:
 # - 報表中心資料存取層：Supabase 查詢快速報表與全條件篩選資料來源。
 #
 # Major Changes in This Revision:
-# - 入庫紀錄查詢排除 is_deleted = true，避免已刪除入庫資料進入報表。
-# - 本月入庫、全條件入庫與篩選選項來源一致排除已刪除資料。
-# - 保養逾期清單來源排除已軟刪除保養項目。
+# - 修正「目前低水位清單」與「目前庫存總表」資料來源。
+# - material_stock_view 目前狀態類報表只讀取 is_active = true 且 is_stock_managed = true 的原料。
+# - 歷史報表來源 monthly_usage_view、feed_records、purchase_records 不變，停用原料仍可查歷史資料。
 #
 # Notes:
-# - 本次不變更資料表結構、不變更 Nginx /exports/ 下載機制。
-# - reports_service.py 負責欄位 mapping；本檔只維持資料來源查詢。
+# - 本次只調整 reports_repo.py 的目前狀態資料來源。
+# - 不修改 views/reports.py、不修改 services/reports_service.py、不修改 CSV / PDF 匯出邏輯。
+# - 不變更 Supabase schema / RLS / SQL view。
 # =====================================================
 from __future__ import annotations
 
@@ -61,10 +62,17 @@ def get_monthly_usage_rows(
 
 
 def get_material_stock_rows() -> list[dict[str, Any]]:
+    """
+    讀取目前有效且納管的正式庫存資料。
+
+    用於「目前低水位清單」與「目前庫存總表」這類目前狀態報表。
+    歷史用量、打料紀錄與入庫紀錄不得使用此函式過濾，避免停用原料歷史資料消失。
+    """
     res = (
         supabase.table(VIEW_MATERIAL_STOCK)
         .select("*")
         .eq("is_active", True)
+        .eq("is_stock_managed", True)
         .order("material_name", desc=False)
         .execute()
     )
