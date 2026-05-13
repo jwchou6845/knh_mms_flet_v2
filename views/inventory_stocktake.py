@@ -1,17 +1,17 @@
 # =====================================================
 # KNH MMS v2
 # File: views/inventory_stocktake.py
-# File Revision: 2026-05-14-stocktake-breadcrumb-r3
-# Status: breadcrumb navigation fix
+# File Revision: 2026-05-14-stocktake-breadcrumb-r4
+# Status: breadcrumb style alignment fix
 # Last Updated: 2026-05-14 Asia/Taipei
 #
 # Purpose:
 # - 人工盤點功能頁面：建立盤點單、輸入實盤數、送出待審核、超級管理員確認盤點。
 #
 # Major Changes in This Revision:
-# - 延續 r2 寬度修正版。
-# - 在頁首加入輕量麵包屑導覽：原料入庫作業 > 人工盤點。
-# - 進入盤點明細後，麵包屑加上目前盤點單號。
+# - 延續 r2 寬度修正版與 r3 麵包屑導覽。
+# - 修正 r3 麵包屑在手機 Web 被渲染成整列外框膠囊、分行顯示的問題。
+# - 麵包屑樣式改為對齊控制中心 / admin_materials.py：透明文字連結 + 小型 active 標籤。
 # - 麵包屑使用 page.go("/inventory") / page.go("/inventory/stocktake") 導航，不使用 page.push_route()。
 # - 不修改盤點建立、明細儲存、送出待審核、確認盤點與 stock_adjustments 寫入邏輯。
 #
@@ -20,7 +20,7 @@
 # - 不使用 page.push_route()。
 # - 時間與庫存調整邏輯由 services/stocktake_service.py 統一使用 Asia/Taipei。
 # - 第一版只處理新料 / 母粒正式庫存盤點，不處理回用料逐筆盤點。
-# - r3 只調整導覽顯示，不更動資料流程。
+# - r4 只調整麵包屑視覺樣式，不更動資料流程。
 # =====================================================
 
 from __future__ import annotations
@@ -711,35 +711,31 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
     # 畫面區塊
     # =====================================================
     def breadcrumb_item(label: str, route: str | None = None, active: bool = False) -> ft.Control:
-        color = TEXT if active else BLUE
-        bg = "#FFFFFF" if not active else "#F8FAFC"
-        border_color = "#E5EAF2" if active else BLUE_BORDER
+        """
+        對齊控制中心的輕量麵包屑樣式。
 
-        def go_target(e=None):
-            if route:
-                navigate(route)
-
+        r3 使用外框膠囊，在手機 Web 上會被渲染成整列按鈕並換行，
+        造成「原料入庫作業 / > / 人工盤點」各自佔一列。
+        r4 改為透明文字連結 + 小型 active 底色，避免破壞版面。
+        """
         return ft.Container(
-            height=32,
-            padding=ft.padding.symmetric(horizontal=10),
-            border_radius=16,
-            bgcolor=bg,
-            border=ft.border.all(1, border_color),
-            alignment=ft.Alignment(0, 0),
+            padding=ft.padding.symmetric(horizontal=8, vertical=4),
+            border_radius=8,
+            bgcolor=BLUE_SOFT if active else "transparent",
             ink=bool(route),
-            on_click=go_target if route else None,
+            on_click=(lambda _: navigate(route)) if route else None,
             content=ft.Text(
                 label,
                 size=12,
-                color=color,
-                weight=ft.FontWeight.W_600,
+                color=BLUE_BTN if route or active else TEXT_MUTED,
+                weight=ft.FontWeight.W_600 if active else ft.FontWeight.W_500,
                 max_lines=1,
                 overflow=ft.TextOverflow.ELLIPSIS,
             ),
         )
 
     def breadcrumb_separator() -> ft.Control:
-        return ft.Text(">", size=13, color=TEXT_MUTED, weight=ft.FontWeight.W_600)
+        return ft.Text(">", size=12, color=TEXT_MUTED)
 
     def build_breadcrumb() -> ft.Control:
         detail = state.get("detail") or {}
@@ -753,15 +749,17 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
         ]
 
         if count_no:
-            controls.extend([
-                breadcrumb_separator(),
-                breadcrumb_item(count_no, active=True),
-            ])
+            controls.extend(
+                [
+                    breadcrumb_separator(),
+                    breadcrumb_item(count_no, active=True),
+                ]
+            )
 
         return ft.Row(
-            spacing=8,
-            run_spacing=8,
             wrap=True,
+            spacing=2,
+            run_spacing=4,
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
             controls=controls,
         )
