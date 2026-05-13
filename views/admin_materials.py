@@ -1,8 +1,8 @@
 # =====================================================
 # KNH MMS v2
 # File: views/admin_materials.py
-# File Revision: 2026-05-13-admin-materials-r9
-# Status: /admin materials phase 1 implementation - inline row action fix
+# File Revision: 2026-05-13-admin-materials-r11
+# Status: /admin materials phase 1 implementation - create default active clarification
 # Last Updated: 2026-05-13 Asia/Taipei
 #
 # Purpose:
@@ -10,16 +10,15 @@
 # - 供超級管理員讀取 materials 真實清單、搜尋篩選、新增原料、編輯原料、啟用 / 停用原料。
 #
 # Major Changes in This Revision:
-# - 編輯表單移除「啟用原料」開關，啟用 / 停用統一由原料清單按鈕處理，避免同一欄位有兩種入口造成混淆。
-# - 編輯 / 停用 / 啟用改成在原料列下方就地展開，避免自動 scroll_to 造成 Flet Web 連線卡住。
-# - 篩選區的啟用狀態 / 庫存納管選項改為較小 segmented chips，降低手機版高度占用。
-# - 原料列表區補上「篩選後原料清單」標題，明確標示下方資料是目前條件篩選結果。
-# - 延續 r7：不再使用浮層 modal；新增維持頁面上方表單，編輯 / 啟用停用採清單列下方展開。
+# - 明確定義「新增原料」後預設啟用：建立 materials 主檔時固定帶入 is_active=True。
+# - 新增表單說明文字補充：新增後此原料會預設啟用，若暫不使用可於原料清單按「停用」。
+# - 編輯表單仍不提供「啟用原料」開關，啟用 / 停用統一由原料清單列的狀態按鈕處理。
+# - 延續 r10：手機欄位 placeholder / compact chips / inline row actions 修正。
 #
 # Notes:
 # - Flet 0.84；不使用 page.push_route()。
 # - Dropdown 不使用 on_change 建構子參數；篩選採「套用篩選」按鈕集中更新。
-# - 新增原料只建立 materials 主檔，不直接建立初始庫存，不覆蓋正式庫存數字。
+# - 新增原料只建立 materials 主檔，不直接建立初始庫存，不覆蓋正式庫存數字；新增後預設 is_active=True。
 # - 所有時間顯示由 service 層轉為 Asia/Taipei。
 # =====================================================
 
@@ -564,11 +563,20 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
         multiline: bool = False,
         keyboard_type=None,
     ) -> ft.TextField:
-        # 欄位標題由 field_block / compact_filter_field 顯示；TextField 本身不放 label，
-        # 避免手機 Web 浮動 label 不顯示或被遮住。
-        return ft.TextField(
-            value="" if value is None else str(value),
-            hint_text=hint or label,
+        """
+        建立穩定 TextField。
+
+        r10 修正重點：
+        - 空欄位不要傳 value=""，避免 Flet Web 把空字串視為已填值，導致 hint_text / placeholder 不顯示。
+        - 補 hint_style，並把 hint 同步放到 label / label_style 當備援。
+        - 外部標題仍由 field_block / compact_filter_field 顯示，欄位內 label 只作為 placeholder 備援。
+        """
+        placeholder = hint or label
+        field_kwargs = dict(
+            hint_text=placeholder,
+            hint_style=ft.TextStyle(size=14, color="#64748B"),
+            label=placeholder,
+            label_style=ft.TextStyle(size=14, color="#64748B"),
             multiline=multiline,
             min_lines=2 if multiline else 1,
             max_lines=4 if multiline else 1,
@@ -583,6 +591,11 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
             width=float("inf"),
             content_padding=ft.padding.symmetric(horizontal=12, vertical=11),
         )
+
+        if value not in (None, ""):
+            field_kwargs["value"] = str(value)
+
+        return ft.TextField(**field_kwargs)
 
 
     def field_block(label: str, field: ft.Control) -> ft.Control:
@@ -655,6 +668,7 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
                 "low_stock_threshold_bags": threshold_tf.value,
                 # 啟用 / 停用統一由原料清單上的按鈕處理。
                 # 編輯表單不再顯示「啟用原料」開關，避免與「停用 / 啟用」操作重複。
+                # 新增原料時固定預設啟用，避免新增後還要再到清單手動啟用。
                 "is_active": bool(material.get("is_active", True)) if editing else True,
                 "is_stock_managed": managed_sw.value,
                 "note": note_tf.value,
@@ -724,7 +738,7 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
         submit_button_ref["control"] = submit_button
 
         title = f"編輯原料：{material.get('material_name') or '-'}" if editing else "新增原料"
-        subtitle = "編輯主檔不會改變啟用狀態；若需停用或啟用，請使用原料清單上的狀態按鈕。" if editing else "新增 materials 主檔，不直接增加或覆蓋正式庫存。"
+        subtitle = "編輯主檔不會改變啟用狀態；若需停用或啟用，請使用原料清單上的狀態按鈕。" if editing else "新增 materials 主檔後會預設啟用；是否納管庫存由下方開關決定。"
 
         return card(
             padding=18,
@@ -761,7 +775,7 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
                         border_radius=12,
                         padding=12,
                         content=ft.Text(
-                            "若需建立初始庫存，後續應透過盤點或庫存調整流程處理。停用原料不會刪除歷史紀錄。",
+                            "若需建立初始庫存，後續應透過盤點或庫存調整流程處理。新增後此原料會預設啟用；若暫不使用，可在原料清單按「停用」。",
                             size=12,
                             color=BLUE_BTN,
                         ),
@@ -1156,22 +1170,38 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
             rebuild()
 
         def filter_chip(label: str, active: bool, on_click, color: str = BLUE_BTN, bg: str = BLUE_SOFT):
+            # r10：固定小尺寸，避免手機版每顆 chip 佔滿整列。
+            chip_width = 74 if len(str(label)) <= 2 else 88
             return ft.Container(
-                height=32,
-                border_radius=16,
+                width=chip_width,
+                height=30,
+                border_radius=15,
                 bgcolor=bg if active else "#FFFFFF",
                 border=ft.border.all(1, color if active else BORDER),
-                padding=ft.padding.symmetric(horizontal=12),
+                padding=ft.padding.symmetric(horizontal=8),
                 alignment=ft.Alignment(0, 0),
                 ink=True,
                 on_click=on_click,
-                content=ft.Text(
-                    label,
-                    size=12,
-                    color=color if active else TEXT_MUTED,
-                    weight=ft.FontWeight.BOLD if active else ft.FontWeight.W_500,
-                    max_lines=1,
-                    overflow=ft.TextOverflow.ELLIPSIS,
+                content=ft.Row(
+                    tight=True,
+                    alignment=ft.MainAxisAlignment.CENTER,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    spacing=4,
+                    controls=[
+                        ft.Icon(
+                            ft.Icons.CHECK_CIRCLE if active else ft.Icons.CIRCLE_OUTLINED,
+                            size=13,
+                            color=color if active else TEXT_MUTED,
+                        ),
+                        ft.Text(
+                            label,
+                            size=11,
+                            color=color if active else TEXT_MUTED,
+                            weight=ft.FontWeight.BOLD if active else ft.FontWeight.W_500,
+                            max_lines=1,
+                            overflow=ft.TextOverflow.ELLIPSIS,
+                        ),
+                    ],
                 ),
             )
 
@@ -1202,10 +1232,17 @@ def AdminMaterialsContent(page: ft.Page) -> ft.Control:
 
         def segmented_filter_row(title: str, controls: list[ft.Control]) -> ft.Control:
             return ft.Column(
-                spacing=7,
+                spacing=6,
                 controls=[
                     ft.Text(title, size=12, color=TEXT_MUTED, weight=ft.FontWeight.W_600),
-                    ft.Row(wrap=True, spacing=8, run_spacing=8, controls=controls),
+                    ft.Row(
+                        wrap=True,
+                        spacing=7,
+                        run_spacing=6,
+                        alignment=ft.MainAxisAlignment.START,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=controls,
+                    ),
                 ],
             )
 
