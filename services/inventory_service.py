@@ -1,21 +1,23 @@
 # =====================================================
 # KNH MMS v2
 # File: services/inventory_service.py
-# File Revision: 2026-05-13-inventory-active-material-guard-r1
-# Status: current working version
-# Last Updated: 2026-05-13 Asia/Taipei
+# File Revision: 2026-05-14-recycled-created-by-r3
+# Status: ready for testing
+# Last Updated: 2026-05-14 Asia/Taipei
 #
 # Purpose:
 # - 原料入庫作業服務層：載入原料清單、近期入庫紀錄、寫入供應商新料/母粒與回用料入庫。
 #
 # Major Changes in This Revision:
-# - 供應商新料 / 母粒入庫送出前，增加 materials.is_active 與 is_stock_managed 防呆檢查。
-# - 避免控制中心停用或取消納管後，舊頁面下拉殘留仍可建立正式入庫紀錄。
-# - 保留回用料入庫流程、近期紀錄整理與 Asia/Taipei 日期處理。
+# - 回用料入庫 submit_recycled_material() 新增 created_by_user_id / created_by_name 參數。
+# - 新增回用料時寫入 recycled_materials.created_by_user_id / created_by_name。
+# - 讓報表中心「入庫紀錄」合併 recycled_materials 後，人員欄位可正確顯示。
+# - 保留供應商新料 / 母粒入庫原有啟用與納管防呆。
 #
 # Notes:
 # - Flet 0.84 專案使用。
-# - 本次不修改 views/inventory.py UI、不修改 Supabase schema。
+# - 部署本檔前，Supabase recycled_materials 需先補 created_by_user_id / created_by_name 欄位。
+# - 時間處理維持 Asia/Taipei。
 # =====================================================
 
 from __future__ import annotations
@@ -318,6 +320,8 @@ def submit_recycled_material(
     source_machine: str,
     weight_kg: float,
     supplier: str,
+    created_by_user_id: str | None = None,
+    created_by_name: str | None = None,
 ) -> ServiceResult:
     recycled_no = str(recycled_no or "").strip()
     material_type = str(material_type or "").strip()
@@ -359,6 +363,8 @@ def submit_recycled_material(
             "is_used": False,
             "is_scrapped": False,
             "note": None,
+            "created_by_user_id": created_by_user_id,
+            "created_by_name": created_by_name,
         }
 
         created = create_recycled_material(payload)

@@ -1,23 +1,23 @@
 # =====================================================
 # KNH MMS v2
 # File: views/inventory.py
-# File Revision: 2026-05-14-inventory-stocktake-entry-r2
-# Status: current working version
+# File Revision: 2026-05-14-recycled-created-by-r3
+# Status: ready for testing
 # Last Updated: 2026-05-14 Asia/Taipei
 #
 # Purpose:
 # - 原料入庫作業頁面：供應商新料 / 母粒入庫、廠內回用料入庫與最近紀錄。
 #
 # Major Changes in This Revision:
-# - 新增「人工盤點」入口卡，導向 /inventory/stocktake。
-# - r2 修正 is_mobile_page 未定義問題，補上頁面寬度判斷。
-# - 只做入口整合，不修改入庫送出、回用料入庫、批號防重複或資料同步流程。
-# - 不修改 stocktake service / repository，也不影響既有原料啟用 / 納管聯動。
+# - 回用料入庫送出時，從 page.session_data 帶入 created_by_user_id / created_by_name。
+# - 讓 recycled_materials 寫入建立人員，供報表中心入庫紀錄顯示「人員」。
+# - 保留人工盤點入口、近期紀錄、批號防重複、防連點與背景同步流程。
 #
 # Notes:
 # - Flet 0.84。
 # - 不使用 page.push_route()，路由導向使用 page.go()。
-# - 時間處理仍由 service 層維持 Asia/Taipei。
+# - 時間處理由 service 層維持 Asia/Taipei。
+# - 部署前需先確認 recycled_materials 已有 created_by_user_id / created_by_name 欄位。
 # =====================================================
 
 import flet as ft
@@ -882,6 +882,8 @@ def InventoryContent(page: ft.Page):
         material_type = str(r_type.value or "")
         source_machine = str(r_machine.value or "")
         supplier = str(r_vendor.value or "")
+        created_by_user_id = session_get("user_id")
+        created_by_name = session_get("user_name")
 
         if not submit_locks["recycled"].acquire(blocking=False):
             set_status("回用料入庫資料寫入中，請勿重複點擊。", theme="green", loading=True)
@@ -901,6 +903,8 @@ def InventoryContent(page: ft.Page):
                     source_machine=source_machine,
                     weight_kg=weight_val,
                     supplier=supplier,
+                    created_by_user_id=created_by_user_id,
+                    created_by_name=created_by_name,
                 )
 
                 if not is_active_view():
