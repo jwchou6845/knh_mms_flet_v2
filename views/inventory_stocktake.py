@@ -1,26 +1,27 @@
 # =====================================================
 # KNH MMS v2
 # File: views/inventory_stocktake.py
-# File Revision: 2026-05-14-stocktake-breadcrumb-r4
-# Status: breadcrumb style alignment fix
+# File Revision: 2026-05-14-stocktake-ux-r5
+# Status: stocktake UX flow refinement
 # Last Updated: 2026-05-14 Asia/Taipei
 #
 # Purpose:
 # - 人工盤點功能頁面：建立盤點單、輸入實盤數、送出待審核、超級管理員確認盤點。
 #
 # Major Changes in This Revision:
-# - 延續 r2 寬度修正版與 r3 麵包屑導覽。
-# - 修正 r3 麵包屑在手機 Web 被渲染成整列外框膠囊、分行顯示的問題。
-# - 麵包屑樣式改為對齊控制中心 / admin_materials.py：透明文字連結 + 小型 active 標籤。
-# - 麵包屑使用 page.go("/inventory") / page.go("/inventory/stocktake") 導航，不使用 page.push_route()。
-# - 不修改盤點建立、明細儲存、送出待審核、確認盤點與 stock_adjustments 寫入邏輯。
+# - 延續 r2 寬度修正版與 r4 控制中心風格麵包屑。
+# - 新增「目前進行中的盤點」區塊，草稿盤點單獨立顯示，避免混在底下盤點單列表。
+# - 盤點單列表預設不重複顯示草稿盤點單，降低操作員誤點與視覺干擾。
+# - 草稿明細拆成「待盤點品項」與「已盤點品項」；儲存後的品項移至已盤點收合區。
+# - 全部品項完成前，送出待審核按鈕維持停用，並顯示尚未盤點數量。
+# - 不修改盤點建立、明細儲存、確認盤點與 stock_adjustments 寫入邏輯。
 #
 # Notes:
 # - Flet 0.84。
 # - 不使用 page.push_route()。
 # - 時間與庫存調整邏輯由 services/stocktake_service.py 統一使用 Asia/Taipei。
 # - 第一版只處理新料 / 母粒正式庫存盤點，不處理回用料逐筆盤點。
-# - r4 只調整麵包屑視覺樣式，不更動資料流程。
+# - r5 只調整前端 UX 呈現與操作節奏，不更動資料表與 service / repo 流程。
 # =====================================================
 
 from __future__ import annotations
@@ -115,6 +116,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
         "show_create_form": False,
         "create_count_type": "all",
         "void_reason": "",
+        "show_entered_items": False,
     }
 
     ui_lock = threading.RLock()
@@ -428,6 +430,10 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
 
     def set_create_count_type(value: str):
         state["create_count_type"] = value
+        rebuild()
+
+    def toggle_entered_items(e=None):
+        state["show_entered_items"] = not bool(state.get("show_entered_items"))
         rebuild()
 
     def sync_status_banner() -> ft.Control:
@@ -894,10 +900,48 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
             ],
         )
 
-    def build_count_card(count: dict[str, Any]) -> ft.Control:
+    def build_in_progress_section() -> ft.Control:
+        counts = state.get("counts") or []
+        active_id = str(state.get("active_count_id") or "")
+        drafts = [
+            count
+            for count in counts
+            if str(count.get("status") or "") == "draft"
+            and str(count.get("id") or "") != active_id
+        ]
+
+        if not drafts:
+            return ft.Container(height=0)
+
+        controls: list[ft.Control] = [
+            ft.Row(
+                spacing=12,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[
+                    ft.Icon(ft.Icons.PLAYLIST_ADD_CHECK_OUTLINED, size=25, color=BLUE),
+                    section_title(
+                        "目前進行中的盤點",
+                        "草稿盤點單可從這裡繼續盤點或作廢；不再混在下方盤點單列表中。",
+                    ),
+                ],
+            )
+        ]
+
+        for count in drafts:
+            controls.append(build_count_card(count, action_label="繼續盤點", highlight=True))
+
+        return ft.Container(
+            bgcolor=BLUE_SOFT,
+            border=ft.border.all(1, BLUE_BORDER),
+            border_radius=20,
+            padding=18,
+            content=ft.Column(spacing=14, controls=controls),
+        )
+
+    def build_count_card(count: dict[str, Any], action_label: str = "查看明細", highlight: bool = False) -> ft.Control:
         return ft.Container(
             bgcolor="#FFFFFF",
-            border=ft.border.all(1, BORDER),
+            border=ft.border.all(1, BLUE_BORDER if highlight else BORDER),
             border_radius=18,
             padding=16,
             content=ft.Column(
@@ -941,7 +985,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
                     ft.Row(
                         spacing=10,
                         controls=[
-                            outline_button("查看明細", ft.Icons.VISIBILITY_OUTLINED, BLUE, lambda e, cid=count.get("id"): load_detail(str(cid)), expand=True),
+                            outline_button(action_label, ft.Icons.VISIBILITY_OUTLINED, BLUE, lambda e, cid=count.get("id"): load_detail(str(cid)), expand=True),
                         ],
                     ),
                 ],
@@ -949,7 +993,9 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
         )
 
     def build_count_list() -> ft.Control:
-        counts = state.get("counts") or []
+        all_counts = state.get("counts") or []
+        # 草稿盤點單移到「目前進行中的盤點」區塊，避免剛建立的盤點單又出現在底下列表。
+        counts = [count for count in all_counts if str(count.get("status") or "") != "draft"]
 
         controls: list[ft.Control] = [
             ft.Row(
@@ -957,7 +1003,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 controls=[
                     ft.Icon(ft.Icons.LIST_ALT, size=25, color=TEXT_MUTED),
-                    section_title("盤點單列表", f"目前顯示最近 {len(counts)} 張盤點單。"),
+                    section_title("盤點單列表", f"顯示待審核、已確認與已作廢盤點單，共 {len(counts)} 張。"),
                 ],
             )
         ]
@@ -973,7 +1019,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
                         spacing=10,
                         controls=[
                             ft.Icon(ft.Icons.INFO_OUTLINE, color=TEXT_MUTED, size=20),
-                            ft.Text("目前尚未建立盤點單。", size=14, color=TEXT_MUTED),
+                            ft.Text("目前尚無待審核、已確認或已作廢的盤點單。", size=14, color=TEXT_MUTED),
                         ],
                     ),
                 )
@@ -1161,6 +1207,8 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
         summary = detail.get("summary") or {}
         status = count.get("status") or "draft"
         editable = status == "draft"
+        remaining_items = int(summary.get("not_entered_items", 0) or 0)
+        can_submit = editable and remaining_items == 0
         can_confirm = status == "submitted" and is_super_admin()
         can_void = status in ["draft", "submitted"] and is_super_admin()
 
@@ -1237,7 +1285,14 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
 
         if editable:
             action_buttons.append(
-                stable_button("送出待審核", ft.Icons.SEND_OUTLINED, ORANGE_BTN, on_click=submit_count_action, expand=True, disabled=state.get("busy"))
+                stable_button(
+                    "送出待審核" if can_submit else f"尚有 {remaining_items} 筆未盤",
+                    ft.Icons.SEND_OUTLINED,
+                    ORANGE_BTN,
+                    on_click=submit_count_action,
+                    expand=True,
+                    disabled=state.get("busy") or not can_submit,
+                )
             )
 
         if can_confirm:
@@ -1271,16 +1326,99 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
                 )
             )
 
-        controls.append(
-            ft.Divider(height=18, color="#EEF2F7")
-        )
-        controls.append(section_title("盤點項目", "草稿狀態可逐筆輸入實盤包數；送出後即鎖定等待審核。"))
+        controls.append(ft.Divider(height=18, color="#EEF2F7"))
 
         if not items:
+            controls.append(section_title("盤點項目", "此盤點單沒有明細。"))
             controls.append(ft.Text("此盤點單沒有明細。", size=14, color=TEXT_MUTED))
+        elif editable:
+            pending_items = [item for item in items if not bool(item.get("has_actual"))]
+            entered_items = [item for item in items if bool(item.get("has_actual"))]
+
+            controls.append(
+                section_title(
+                    "待盤點品項",
+                    f"剩餘 {len(pending_items)} 筆尚未輸入實盤包數；儲存後會移到下方已盤點區。",
+                )
+            )
+
+            if not pending_items:
+                controls.append(
+                    ft.Container(
+                        bgcolor=GREEN_SOFT,
+                        border=ft.border.all(1, GREEN_BORDER),
+                        border_radius=14,
+                        padding=14,
+                        content=ft.Row(
+                            spacing=10,
+                            controls=[
+                                ft.Icon(ft.Icons.CHECK_CIRCLE_OUTLINE, color=GREEN, size=20),
+                                ft.Text("所有品項都已輸入實盤數，可以送出待審核。", size=13, color=GREEN, weight=ft.FontWeight.W_600),
+                            ],
+                        ),
+                    )
+                )
+            else:
+                for item in pending_items:
+                    controls.append(build_item_card(item, editable=not state.get("busy")))
+
+            entered_visible = bool(state.get("show_entered_items"))
+            controls.append(
+                ft.Container(
+                    bgcolor="#FFFFFF",
+                    border=ft.border.all(1, BORDER),
+                    border_radius=16,
+                    padding=14,
+                    content=ft.Column(
+                        spacing=12,
+                        controls=[
+                            ft.Row(
+                                spacing=10,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                controls=[
+                                    ft.Icon(ft.Icons.DONE_ALL_OUTLINED, size=23, color=GREEN),
+                                    ft.Column(
+                                        expand=True,
+                                        spacing=2,
+                                        controls=[
+                                            ft.Text(f"已盤點品項：{len(entered_items)} 筆", size=17, color=TEXT, weight=ft.FontWeight.BOLD),
+                                            ft.Text("預設收合，避免已完成品項佔滿畫面；草稿狀態仍可展開修改。", size=12, color=TEXT_MUTED),
+                                        ],
+                                    ),
+                                    ft.Container(
+                                        height=36,
+                                        padding=ft.padding.symmetric(horizontal=12),
+                                        border_radius=18,
+                                        bgcolor=GREEN_SOFT if entered_visible else "#FFFFFF",
+                                        border=ft.border.all(1, GREEN_BORDER),
+                                        ink=True,
+                                        on_click=toggle_entered_items,
+                                        content=ft.Row(
+                                            tight=True,
+                                            spacing=6,
+                                            alignment=ft.MainAxisAlignment.CENTER,
+                                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                            controls=[
+                                                ft.Icon(ft.Icons.EXPAND_LESS if entered_visible else ft.Icons.EXPAND_MORE, size=17, color=GREEN),
+                                                ft.Text("收合" if entered_visible else "顯示", size=13, color=GREEN, weight=ft.FontWeight.W_600),
+                                            ],
+                                        ),
+                                    ),
+                                ],
+                            ),
+                            *(
+                                [build_item_card(item, editable=not state.get("busy")) for item in entered_items]
+                                if entered_visible
+                                else []
+                            ),
+                        ],
+                    ),
+                )
+            )
         else:
+            controls.append(section_title("盤點項目", "此盤點單已送出或鎖定，以下為完整盤點明細。"))
             for item in items:
-                controls.append(build_item_card(item, editable=editable and not state.get("busy")))
+                controls.append(build_item_card(item, editable=False))
 
         return ft.Container(
             bgcolor="#FFFFFF",
@@ -1316,6 +1454,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
             build_summary_cards(),
             build_top_actions(),
             build_create_form(),
+            build_in_progress_section(),
             build_detail_panel(),
             build_count_list(),
             ft.Container(height=90),
