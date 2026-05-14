@@ -1,8 +1,8 @@
 # =====================================================
 # KNH MMS v2
 # File: views/inventory_stocktake.py
-# File Revision: 2026-05-14-stocktake-return-r7
-# Status: danger operation UX refinement
+# File Revision: 2026-05-14-stocktake-blind-r8
+# Status: blind stocktake mode implementation
 # Last Updated: 2026-05-14 Asia/Taipei
 #
 # Purpose:
@@ -16,13 +16,16 @@
 # - 全部品項完成前，送出待審核按鈕維持停用，並顯示尚未盤點數量。
 # - 不修改盤點建立、明細儲存、確認盤點與 stock_adjustments 寫入邏輯。
 # - r6 將作廢盤點單改為底部「危險操作」收合式區塊；未輸入作廢原因不得送出。
+# - r7 新增待審核退回修改流程。
+# - r8 新增盲盤模式 count_mode：草稿階段隱藏帳面庫存與差異，送出待審核後才顯示差異。
 #
 # Notes:
 # - Flet 0.84。
 # - 不使用 page.push_route()。
 # - 時間與庫存調整邏輯由 services/stocktake_service.py 統一使用 Asia/Taipei。
 # - 第一版只處理新料 / 母粒正式庫存盤點，不處理回用料逐筆盤點。
-# - r6 只調整作廢操作 UX，不更動資料表、service / repo 與 stock_adjustments 流程。
+# - r8 需搭配 services/stocktake_service.py r3 與 inventory_counts.count_mode 欄位。
+# - 盲盤只適用第一版新料 / 母粒盤點，不處理回用料逐筆盤點。
 # =====================================================
 
 from __future__ import annotations
@@ -117,6 +120,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
         "active_count_id": "",
         "show_create_form": False,
         "create_count_type": "all",
+        "create_count_mode": "normal",
         "void_reason": "",
         "show_entered_items": False,
         "show_void_form": False,
@@ -380,6 +384,21 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
             content=ft.Text(label, size=12, color=PURPLE, weight=ft.FontWeight.W_600),
         )
 
+    def count_mode_badge(mode: str, label: str) -> ft.Container:
+        is_blind = str(mode or "normal") == "blind"
+        bg = ORANGE_SOFT if is_blind else BLUE_SOFT
+        fg = ORANGE if is_blind else BLUE
+        border = ORANGE_BORDER if is_blind else BLUE_BORDER
+        return ft.Container(
+            height=28,
+            padding=ft.padding.symmetric(horizontal=10),
+            border_radius=14,
+            bgcolor=bg,
+            border=ft.border.all(1, border),
+            alignment=ft.Alignment(0, 0),
+            content=ft.Text(label, size=12, color=fg, weight=ft.FontWeight.W_600),
+        )
+
     def metric_card(label: str, value: Any, color: str, icon) -> ft.Container:
         return ft.Container(
             col={"xs": 6, "md": 3},
@@ -435,6 +454,43 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
     def set_create_count_type(value: str):
         state["create_count_type"] = value
         rebuild()
+
+    def mode_chip(value: str, label: str, subtitle: str = "") -> ft.Container:
+        selected = state.get("create_count_mode") == value
+        color = ORANGE if value == "blind" else BLUE
+        soft = ORANGE_SOFT if value == "blind" else BLUE_SOFT
+        border = ORANGE_BORDER if value == "blind" else BLUE_BORDER
+        return ft.Container(
+            padding=ft.padding.symmetric(horizontal=13, vertical=10),
+            border_radius=16,
+            bgcolor=soft if selected else "#FFFFFF",
+            border=ft.border.all(1, color if selected else BORDER),
+            ink=True,
+            on_click=lambda e, v=value: set_create_count_mode(v),
+            content=ft.Row(
+                tight=True,
+                spacing=8,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[
+                    ft.Icon(ft.Icons.CHECK_CIRCLE if selected else ft.Icons.RADIO_BUTTON_UNCHECKED, size=17, color=color if selected else TEXT_MUTED),
+                    ft.Column(
+                        tight=True,
+                        spacing=1,
+                        controls=[
+                            ft.Text(label, size=13, color=color if selected else TEXT_MUTED, weight=ft.FontWeight.W_700),
+                            ft.Text(subtitle, size=11, color=TEXT_MUTED, visible=bool(subtitle)),
+                        ],
+                    ),
+                ],
+            ),
+        )
+
+    def set_create_count_mode(value: str):
+        state["create_count_mode"] = "blind" if value == "blind" else "normal"
+        rebuild()
+
+    def is_blind_draft(count: dict[str, Any]) -> bool:
+        return str(count.get("count_mode") or "normal") == "blind" and str(count.get("status") or "draft") == "draft"
 
     def toggle_entered_items(e=None):
         state["show_entered_items"] = not bool(state.get("show_entered_items"))
@@ -588,6 +644,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
     def open_create_form(e=None) -> None:
         state["show_create_form"] = True
         state["create_count_type"] = "all"
+        state["create_count_mode"] = "normal"
         state["show_void_form"] = False
         state["show_return_form"] = False
         rebuild()
@@ -605,6 +662,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
             result = create_new_inventory_count(
                 count_date=str(count_date_field.value or ""),
                 count_type=str(state.get("create_count_type") or "all"),
+                count_mode=str(state.get("create_count_mode") or "normal"),
                 note=str(create_note_field.value or ""),
                 created_by_user_id=current_user_id(),
                 created_by_name=current_user_name(),
@@ -935,7 +993,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
                         border_radius=14,
                         padding=14,
                         content=ft.Text(
-                            "第一版支援新料 / 母粒盤點；回用料逐筆盤點後續再獨立設計。盤點確認前不會影響正式庫存。",
+                            "第一版支援新料 / 母粒盤點；回用料逐筆盤點後續再獨立設計。盲盤模式在草稿階段不顯示帳面庫存與差異，送出待審核後才顯示盤盈盤虧。",
                             size=13,
                             color="#315F9A",
                         ),
@@ -960,6 +1018,24 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
                                                 type_chip("all", "全部"),
                                                 type_chip("new", "新料"),
                                                 type_chip("aux", "母粒"),
+                                            ],
+                                        ),
+                                    ],
+                                ),
+                            ),
+                            ft.Container(
+                                col={"xs": 12},
+                                content=ft.Column(
+                                    spacing=7,
+                                    controls=[
+                                        ft.Text("盤點模式 *", size=13, color=TEXT, weight=ft.FontWeight.W_600),
+                                        ft.Row(
+                                            wrap=True,
+                                            spacing=10,
+                                            run_spacing=10,
+                                            controls=[
+                                                mode_chip("normal", "一般盤點", "盤點中顯示帳面與差異"),
+                                                mode_chip("blind", "盲盤", "草稿盤點中隱藏帳面與差異"),
                                             ],
                                         ),
                                     ],
@@ -1068,6 +1144,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
                         controls=[
                             status_badge(count.get("status"), count.get("status_label") or "-"),
                             count_type_badge(count.get("count_type_label") or "全部"),
+                            count_mode_badge(count.get("count_mode") or "normal", count.get("count_mode_label") or "一般盤點"),
                         ],
                     ),
                     ft.Row(
@@ -1124,17 +1201,27 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
             content=ft.Column(spacing=14, controls=controls),
         )
 
-    def build_detail_summary(summary: dict[str, Any]) -> ft.Control:
-        return ft.ResponsiveRow(
-            columns=12,
-            spacing=12,
-            run_spacing=12,
-            controls=[
+    def build_detail_summary(summary: dict[str, Any], blind_draft: bool = False) -> ft.Control:
+        if blind_draft:
+            controls = [
+                metric_card("總項目", summary.get("total_items", 0), BLUE, ft.Icons.INVENTORY_2_OUTLINED),
+                metric_card("已輸入", summary.get("entered_items", 0), GREEN, ft.Icons.CHECK_CIRCLE_OUTLINE),
+                metric_card("未輸入", summary.get("not_entered_items", 0), RED, ft.Icons.ERROR_OUTLINE),
+                metric_card("盤點模式", "盲盤", ORANGE, ft.Icons.VISIBILITY_OFF_OUTLINED),
+            ]
+        else:
+            controls = [
                 metric_card("總項目", summary.get("total_items", 0), BLUE, ft.Icons.INVENTORY_2_OUTLINED),
                 metric_card("已輸入", summary.get("entered_items", 0), GREEN, ft.Icons.CHECK_CIRCLE_OUTLINE),
                 metric_card("有差異", summary.get("difference_items", 0), ORANGE, ft.Icons.COMPARE_ARROWS),
                 metric_card("未輸入", summary.get("not_entered_items", 0), RED, ft.Icons.ERROR_OUTLINE),
-            ],
+            ]
+
+        return ft.ResponsiveRow(
+            columns=12,
+            spacing=12,
+            run_spacing=12,
+            controls=controls,
         )
 
     def diff_color(item: dict[str, Any]) -> tuple[str, str, str]:
@@ -1147,7 +1234,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
             return RED_SOFT, RED, RED_BORDER
         return GRAY_SOFT, TEXT_MUTED, BORDER
 
-    def build_item_card(item: dict[str, Any], editable: bool) -> ft.Control:
+    def build_item_card(item: dict[str, Any], editable: bool, hide_system_values: bool = False) -> ft.Control:
         bg, fg, border = diff_color(item)
         actual_value = item.get("actual_stock_bags")
         qty_field = text_field(
@@ -1161,61 +1248,109 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
             multiline=True,
         )
 
-        details = [
-            ft.Container(
-                bgcolor="#F8FAFC",
-                border_radius=12,
-                padding=12,
-                content=ft.ResponsiveRow(
-                    columns=12,
-                    spacing=8,
-                    run_spacing=8,
-                    controls=[
-                        ft.Container(
-                            col={"xs": 4, "md": 3},
-                            content=ft.Column(
-                                spacing=2,
-                                controls=[
-                                    ft.Text("帳面", size=12, color=TEXT_MUTED),
-                                    ft.Text(fmt_num(item.get("system_stock_bags"), " 包"), size=15, color=TEXT, weight=ft.FontWeight.BOLD),
-                                ],
+        if hide_system_values:
+            details = [
+                ft.Container(
+                    bgcolor=ORANGE_SOFT,
+                    border=ft.border.all(1, ORANGE_BORDER),
+                    border_radius=12,
+                    padding=12,
+                    content=ft.ResponsiveRow(
+                        columns=12,
+                        spacing=8,
+                        run_spacing=8,
+                        controls=[
+                            ft.Container(
+                                col={"xs": 6, "md": 4},
+                                content=ft.Column(
+                                    spacing=2,
+                                    controls=[
+                                        ft.Text("包重", size=12, color=TEXT_MUTED),
+                                        ft.Text(fmt_num(item.get("bag_weight_kg"), " KG"), size=15, color=TEXT, weight=ft.FontWeight.BOLD),
+                                    ],
+                                ),
                             ),
-                        ),
-                        ft.Container(
-                            col={"xs": 4, "md": 3},
-                            content=ft.Column(
-                                spacing=2,
-                                controls=[
-                                    ft.Text("實盤", size=12, color=TEXT_MUTED),
-                                    ft.Text("未輸入" if actual_value is None else fmt_num(actual_value, " 包"), size=15, color=TEXT, weight=ft.FontWeight.BOLD),
-                                ],
+                            ft.Container(
+                                col={"xs": 6, "md": 4},
+                                content=ft.Column(
+                                    spacing=2,
+                                    controls=[
+                                        ft.Text("實盤", size=12, color=TEXT_MUTED),
+                                        ft.Text("未輸入" if actual_value is None else fmt_num(actual_value, " 包"), size=15, color=TEXT, weight=ft.FontWeight.BOLD),
+                                    ],
+                                ),
                             ),
-                        ),
-                        ft.Container(
-                            col={"xs": 4, "md": 3},
-                            content=ft.Column(
-                                spacing=2,
-                                controls=[
-                                    ft.Text("包重", size=12, color=TEXT_MUTED),
-                                    ft.Text(fmt_num(item.get("bag_weight_kg"), " KG"), size=15, color=TEXT, weight=ft.FontWeight.BOLD),
-                                ],
+                            ft.Container(
+                                col={"xs": 12, "md": 4},
+                                content=ft.Container(
+                                    height=34,
+                                    border_radius=17,
+                                    bgcolor=ORANGE_SOFT,
+                                    border=ft.border.all(1, ORANGE_BORDER),
+                                    alignment=ft.Alignment(0, 0),
+                                    content=ft.Text("盲盤中：帳面與差異已隱藏", size=13, color=ORANGE, weight=ft.FontWeight.BOLD),
+                                ),
                             ),
-                        ),
-                        ft.Container(
-                            col={"xs": 12, "md": 3},
-                            content=ft.Container(
-                                height=34,
-                                border_radius=17,
-                                bgcolor=bg,
-                                border=ft.border.all(1, border),
-                                alignment=ft.Alignment(0, 0),
-                                content=ft.Text(item.get("difference_label") or "未輸入", size=13, color=fg, weight=ft.FontWeight.BOLD),
+                        ],
+                    ),
+                )
+            ]
+        else:
+            details = [
+                ft.Container(
+                    bgcolor="#F8FAFC",
+                    border_radius=12,
+                    padding=12,
+                    content=ft.ResponsiveRow(
+                        columns=12,
+                        spacing=8,
+                        run_spacing=8,
+                        controls=[
+                            ft.Container(
+                                col={"xs": 4, "md": 3},
+                                content=ft.Column(
+                                    spacing=2,
+                                    controls=[
+                                        ft.Text("帳面", size=12, color=TEXT_MUTED),
+                                        ft.Text(fmt_num(item.get("system_stock_bags"), " 包"), size=15, color=TEXT, weight=ft.FontWeight.BOLD),
+                                    ],
+                                ),
                             ),
-                        ),
-                    ],
-                ),
-            )
-        ]
+                            ft.Container(
+                                col={"xs": 4, "md": 3},
+                                content=ft.Column(
+                                    spacing=2,
+                                    controls=[
+                                        ft.Text("實盤", size=12, color=TEXT_MUTED),
+                                        ft.Text("未輸入" if actual_value is None else fmt_num(actual_value, " 包"), size=15, color=TEXT, weight=ft.FontWeight.BOLD),
+                                    ],
+                                ),
+                            ),
+                            ft.Container(
+                                col={"xs": 4, "md": 3},
+                                content=ft.Column(
+                                    spacing=2,
+                                    controls=[
+                                        ft.Text("包重", size=12, color=TEXT_MUTED),
+                                        ft.Text(fmt_num(item.get("bag_weight_kg"), " KG"), size=15, color=TEXT, weight=ft.FontWeight.BOLD),
+                                    ],
+                                ),
+                            ),
+                            ft.Container(
+                                col={"xs": 12, "md": 3},
+                                content=ft.Container(
+                                    height=34,
+                                    border_radius=17,
+                                    bgcolor=bg,
+                                    border=ft.border.all(1, border),
+                                    alignment=ft.Alignment(0, 0),
+                                    content=ft.Text(item.get("difference_label") or "未輸入", size=13, color=fg, weight=ft.FontWeight.BOLD),
+                                ),
+                            ),
+                        ],
+                    ),
+                )
+            ]
 
         if editable:
             details.extend(
@@ -1295,6 +1430,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
         summary = detail.get("summary") or {}
         status = count.get("status") or "draft"
         editable = status == "draft"
+        blind_draft = is_blind_draft(count)
         remaining_items = int(summary.get("not_entered_items", 0) or 0)
         can_submit = editable and remaining_items == 0
         can_confirm = status == "submitted" and is_super_admin()
@@ -1315,9 +1451,10 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
                         ],
                     ),
                     status_badge(status, count.get("status_label") or "-"),
+                    count_mode_badge(count.get("count_mode") or "normal", count.get("count_mode_label") or "一般盤點"),
                 ],
             ),
-            build_detail_summary(summary),
+            build_detail_summary(summary, blind_draft=blind_draft),
         ]
 
         if status == "submitted":
@@ -1328,7 +1465,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
                     border_radius=14,
                     padding=14,
                     content=ft.Text(
-                        "此盤點單已送出待審核。退回可修改；確認將依差異值影響首頁庫存與低水位。",
+                        "此盤點單已送出待審核。若資料需要修正，可先退回修改；確認後將依差異寫入 stock_adjustments，並影響首頁庫存與低水位。",
                         size=13,
                         color="#9A4A12",
                     ),
@@ -1367,6 +1504,29 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
                 )
             )
 
+        if blind_draft:
+            controls.append(
+                ft.Container(
+                    bgcolor=ORANGE_SOFT,
+                    border=ft.border.all(1, ORANGE_BORDER),
+                    border_radius=14,
+                    padding=14,
+                    content=ft.Row(
+                        spacing=10,
+                        controls=[
+                            ft.Icon(ft.Icons.VISIBILITY_OFF_OUTLINED, color=ORANGE, size=20),
+                            ft.Text(
+                                "盲盤草稿中：帳面庫存與盤盈盤虧已隱藏；送出待審核後才會顯示差異。",
+                                size=13,
+                                color="#9A4A12",
+                                weight=ft.FontWeight.W_600,
+                                expand=True,
+                            ),
+                        ],
+                    ),
+                )
+            )
+
         if status == "draft" and str(count.get("return_reason") or "").strip():
             controls.append(
                 ft.Container(
@@ -1394,7 +1554,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
             )
 
         action_buttons: list[ft.Control] = [
-            outline_button("關閉", ft.Icons.CLOSE, TEXT_MUTED, close_detail, expand=True),
+            outline_button("關閉明細", ft.Icons.CLOSE, TEXT_MUTED, close_detail, expand=True),
         ]
 
         if editable:
@@ -1411,10 +1571,10 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
 
         if can_confirm:
             action_buttons.append(
-                outline_button("退回", ft.Icons.REPLY_OUTLINED, ORANGE, toggle_return_form, expand=True, disabled=state.get("busy"))
+                outline_button("退回修改", ft.Icons.REPLY_OUTLINED, ORANGE, toggle_return_form, expand=True, disabled=state.get("busy"))
             )
             action_buttons.append(
-                stable_button("確認", ft.Icons.VERIFIED_OUTLINED, GREEN_BTN, on_click=confirm_count_action, expand=True, disabled=state.get("busy"))
+                stable_button("確認並調整庫存", ft.Icons.VERIFIED_OUTLINED, GREEN_BTN, on_click=confirm_count_action, expand=True, disabled=state.get("busy"))
             )
 
         controls.append(ft.Row(spacing=10, controls=action_buttons))
@@ -1469,7 +1629,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
             controls.append(
                 section_title(
                     "待盤點品項",
-                    f"剩餘 {len(pending_items)} 筆尚未輸入實盤包數；儲存後會移到下方已盤點區。",
+                    (f"剩餘 {len(pending_items)} 筆尚未輸入實盤包數；盲盤中不顯示帳面與差異。" if blind_draft else f"剩餘 {len(pending_items)} 筆尚未輸入實盤包數；儲存後會移到下方已盤點區。"),
                 )
             )
 
@@ -1491,7 +1651,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
                 )
             else:
                 for item in pending_items:
-                    controls.append(build_item_card(item, editable=not state.get("busy")))
+                    controls.append(build_item_card(item, editable=not state.get("busy"), hide_system_values=blind_draft))
 
             entered_visible = bool(state.get("show_entered_items"))
             controls.append(
@@ -1538,7 +1698,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
                                 ],
                             ),
                             *(
-                                [build_item_card(item, editable=not state.get("busy")) for item in entered_items]
+                                [build_item_card(item, editable=not state.get("busy"), hide_system_values=blind_draft) for item in entered_items]
                                 if entered_visible
                                 else []
                             ),

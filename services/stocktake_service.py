@@ -1,8 +1,8 @@
 # =====================================================
 # KNH MMS v2
 # File: services/stocktake_service.py
-# File Revision: 2026-05-14-stocktake-return-r2
-# Status: stocktake review return flow
+# File Revision: 2026-05-14-stocktake-blind-r3
+# Status: stocktake blind mode service update
 # Last Updated: 2026-05-14 Asia/Taipei
 #
 # Purpose:
@@ -161,6 +161,15 @@ def count_type_label(value: Any) -> str:
     return mapping.get(text, text)
 
 
+def count_mode_label(value: Any) -> str:
+    text = clean_text(value, "normal")
+    mapping = {
+        "normal": "一般盤點",
+        "blind": "盲盤",
+    }
+    return mapping.get(text, text)
+
+
 def status_label(value: Any) -> str:
     text = clean_text(value, "draft")
     mapping = {
@@ -176,6 +185,13 @@ def validate_count_type(count_type: str) -> str:
     value = clean_text(count_type, "all")
     if value not in ["all", "new", "aux"]:
         return "all"
+    return value
+
+
+def validate_count_mode(count_mode: str) -> str:
+    value = clean_text(count_mode, "normal")
+    if value not in ["normal", "blind"]:
+        return "normal"
     return value
 
 
@@ -195,6 +211,8 @@ def normalize_count_row(row: dict[str, Any]) -> dict[str, Any]:
         "count_date_raw": row.get("count_date"),
         "count_type": row.get("count_type") or "all",
         "count_type_label": count_type_label(row.get("count_type")),
+        "count_mode": row.get("count_mode") or "normal",
+        "count_mode_label": count_mode_label(row.get("count_mode")),
         "status": row.get("status") or "draft",
         "status_label": status_label(row.get("status")),
         "note": row.get("note") or "",
@@ -404,6 +422,7 @@ def load_inventory_count_detail(count_id: str) -> ServiceResult:
 def create_new_inventory_count(
     count_date: Any,
     count_type: str = "all",
+    count_mode: str = "normal",
     note: str | None = None,
     created_by_user_id: str | None = None,
     created_by_name: str | None = None,
@@ -414,6 +433,7 @@ def create_new_inventory_count(
             return ServiceResult(ok=False, message="盤點日期格式錯誤。")
 
         safe_count_type = validate_count_type(count_type)
+        safe_count_mode = validate_count_mode(count_mode)
         stock_rows = get_stocktake_material_stock_rows()
         stock_rows = filter_stock_rows_by_count_type(stock_rows, safe_count_type)
 
@@ -426,6 +446,7 @@ def create_new_inventory_count(
             "count_no": count_no,
             "count_date": parsed_date.isoformat(),
             "count_type": safe_count_type,
+            "count_mode": safe_count_mode,
             "status": "draft",
             "note": clean_text(note) or None,
             "created_by_user_id": created_by_user_id,
