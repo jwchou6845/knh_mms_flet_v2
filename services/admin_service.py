@@ -1,9 +1,9 @@
 # =====================================================
 # KNH MMS v2
 # File: services/admin_service.py
-# File Revision: 2026-05-13-admin-materials-r1
-# Status: /admin materials phase 1 implementation
-# Last Updated: 2026-05-13 Asia/Taipei
+# File Revision: 2026-05-14-admin-stocktake-summary-r1
+# Status: /admin stocktake management summary integration
+# Last Updated: 2026-05-14 Asia/Taipei
 #
 # Purpose:
 # - /admin 系統控制中心服務層。
@@ -14,6 +14,7 @@
 # - 新增 load_admin_materials_page_data()，讀取 materials 真實清單並合併 material_stock_view 庫存狀態。
 # - 新增 create_material_from_form()、update_material_from_form()、toggle_material_active()。
 # - 新增原料表單驗證、同名 + 同供應商重複檢查、數字欄位轉換。
+# - 新增控制中心首頁人工盤點摘要，整合草稿、待審核、本月已確認與已作廢盤點單數量。
 #
 # Notes:
 # - 所有時間處理使用 Asia/Taipei。
@@ -36,6 +37,7 @@ from repositories.admin_repo import (
     get_user_session_rows_for_admin,
     get_maintenance_item_rows_for_admin,
     get_maintenance_node_rows_for_admin,
+    get_inventory_count_rows_for_admin,
     set_material_active,
     update_material,
 )
@@ -331,6 +333,41 @@ def build_maintenance_summary(
 
 
 # ============================================================
+# Stocktake summary
+# ============================================================
+
+def _is_this_month_taipei(value: Any) -> bool:
+    dt = parse_datetime(value)
+    if not dt:
+        return False
+    current = now_taipei()
+    return dt.year == current.year and dt.month == current.month
+
+
+def build_stocktake_summary(count_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """
+    控制中心首頁人工盤點摘要。
+
+    第一階段只統計 inventory_counts 主檔狀態，不讀明細，避免首頁載入過重。
+    本月已確認以 confirmed_at 為準；若舊資料沒有 confirmed_at，則不列入本月確認數。
+    """
+    draft_rows = [row for row in count_rows if clean_text(row.get("status")) == "draft"]
+    submitted_rows = [row for row in count_rows if clean_text(row.get("status")) == "submitted"]
+    confirmed_rows = [row for row in count_rows if clean_text(row.get("status")) == "confirmed"]
+    voided_rows = [row for row in count_rows if clean_text(row.get("status")) == "voided"]
+    confirmed_this_month = [row for row in confirmed_rows if _is_this_month_taipei(row.get("confirmed_at"))]
+
+    return {
+        "draft_count": len(draft_rows),
+        "submitted_count": len(submitted_rows),
+        "confirmed_count": len(confirmed_rows),
+        "confirmed_this_month_count": len(confirmed_this_month),
+        "voided_count": len(voided_rows),
+        "total_count": len(count_rows),
+    }
+
+
+# ============================================================
 # Materials form validation / write
 # ============================================================
 
@@ -520,10 +557,12 @@ def load_admin_home_data() -> ServiceResult:
         session_rows = get_user_session_rows_for_admin(limit=500)
         item_rows = get_maintenance_item_rows_for_admin()
         node_rows = get_maintenance_node_rows_for_admin()
+        count_rows = get_inventory_count_rows_for_admin(limit=500)
 
         material_summary = build_material_summary(material_rows, stock_rows)
         session_summary = build_session_summary(session_rows)
         maintenance_summary = build_maintenance_summary(item_rows, node_rows)
+        stocktake_summary = build_stocktake_summary(count_rows)
 
         return ServiceResult(
             ok=True,
@@ -531,6 +570,7 @@ def load_admin_home_data() -> ServiceResult:
                 "material_summary": material_summary,
                 "session_summary": session_summary,
                 "maintenance_summary": maintenance_summary,
+                "stocktake_summary": stocktake_summary,
                 "generated_at": now_taipei().strftime("%Y/%m/%d %H:%M"),
                 "recent_actions": [],
             },
@@ -557,6 +597,14 @@ def load_admin_home_data() -> ServiceResult:
                     "active_node_count": 0,
                     "deleted_item_count": 0,
                     "deleted_node_count": 0,
+                },
+                "stocktake_summary": {
+                    "draft_count": 0,
+                    "submitted_count": 0,
+                    "confirmed_count": 0,
+                    "confirmed_this_month_count": 0,
+                    "voided_count": 0,
+                    "total_count": 0,
                 },
                 "generated_at": now_taipei().strftime("%Y/%m/%d %H:%M"),
                 "recent_actions": [],

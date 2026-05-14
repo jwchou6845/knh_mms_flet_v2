@@ -1,9 +1,9 @@
 # =====================================================
 # KNH MMS v2
 # File: repositories/admin_repo.py
-# File Revision: 2026-05-13-admin-materials-r1
-# Status: /admin materials phase 1 implementation
-# Last Updated: 2026-05-13 Asia/Taipei
+# File Revision: 2026-05-14-admin-stocktake-summary-r1
+# Status: /admin stocktake management summary integration
+# Last Updated: 2026-05-14 Asia/Taipei
 #
 # Purpose:
 # - /admin 系統控制中心資料存取層。
@@ -13,6 +13,7 @@
 # - 保留 Phase 1 控制中心首頁使用的 materials / material_stock_view / user_sessions / maintenance 摘要查詢。
 # - 新增 create_material()、update_material()、set_material_active()，支援 /admin/materials 正式功能頁。
 # - 原料管理只更新 materials 主檔，不直接覆蓋庫存數字，不修改 Supabase schema。
+# - 新增 inventory_counts 查詢，供控制中心首頁顯示人工盤點摘要與入口。
 #
 # Notes:
 # - Flet 0.84；此檔不含 UI。
@@ -33,6 +34,7 @@ VIEW_MATERIAL_STOCK = "material_stock_view"
 TABLE_USER_SESSIONS = "user_sessions"
 TABLE_MAINTENANCE_ITEMS = "maintenance_items"
 TABLE_MAINTENANCE_NODES = "maintenance_nodes"
+TABLE_INVENTORY_COUNTS = "inventory_counts"
 
 
 # ============================================================
@@ -156,6 +158,30 @@ def get_user_session_rows_for_admin(limit: int = 500) -> list[dict[str, Any]]:
     query = (
         supabase.table(TABLE_USER_SESSIONS)
         .select("*")
+        .order("created_at", desc=True)
+        .limit(limit)
+    )
+    return _safe_execute(query)
+
+
+# ============================================================
+# Stocktake admin summaries
+# ============================================================
+
+def get_inventory_count_rows_for_admin(limit: int = 500) -> list[dict[str, Any]]:
+    """
+    讀取人工盤點單供控制中心摘要使用。
+
+    注意：
+    - 此查詢只讀取 inventory_counts 主表，不讀取盤點明細，避免控制中心首頁載入過重。
+    - is_deleted=true 的資料不進入一般控制中心摘要；未來若建立已刪除盤點單頁再另開查詢。
+    - VM 後端目前使用 Supabase secret key，可 bypass RLS；仍保留 RLS enabled 的資料表安全設定。
+    """
+    query = (
+        supabase.table(TABLE_INVENTORY_COUNTS)
+        .select("*")
+        .eq("is_deleted", False)
+        .order("count_date", desc=True)
         .order("created_at", desc=True)
         .limit(limit)
     )

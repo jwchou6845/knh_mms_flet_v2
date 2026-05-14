@@ -2,7 +2,7 @@
 # KNH MMS v2
 # File: views/admin.py
 # File Revision: 2026-05-12-admin-home-phase1-r1
-# Status: phase 1 compatibility fix
+# Status: phase 1 new file
 # Last Updated: 2026-05-12 Asia/Taipei
 #
 # Purpose:
@@ -14,6 +14,8 @@
 # - 摘要卡讀取 Supabase 真實資料：啟用原料、停用原料、低水位品項、有效 Session。
 # - 管理入口卡提供 /admin/materials、/admin/maintenance 與第二階段 placeholder 提示。
 # - 使用背景 thread 載入資料，避免阻塞 Flet Web 手機畫面。
+# - 新增人工盤點管理入口，導向既有 /inventory/stocktake 頁面。
+# - 新增人工盤點摘要：草稿、待審核、本月已確認、已作廢。
 #
 # Notes:
 # - Flet 0.84；不使用 page.push_route()。
@@ -91,6 +93,14 @@ def AdminContent(page: ft.Page) -> ft.Control:
                 "active_node_count": 0,
                 "deleted_item_count": 0,
                 "deleted_node_count": 0,
+            },
+            "stocktake_summary": {
+                "draft_count": 0,
+                "submitted_count": 0,
+                "confirmed_count": 0,
+                "confirmed_this_month_count": 0,
+                "voided_count": 0,
+                "total_count": 0,
             },
             "generated_at": "-",
             "recent_actions": [],
@@ -310,6 +320,28 @@ def AdminContent(page: ft.Page) -> ft.Control:
 
         return ft.Row(spacing=12, controls=[ft.Container(expand=True, content=c) for c in cards])
 
+    def build_stocktake_summary_cards(is_mobile: bool) -> ft.Control:
+        data = state["data"]
+        stocktake = data.get("stocktake_summary") or {}
+
+        cards = [
+            metric_card("草稿盤點", stocktake.get("draft_count", 0), "張", ft.Icons.EDIT_NOTE, BLUE_BTN, BLUE_SOFT, BLUE_BORDER, "尚未送出，可繼續盤點"),
+            metric_card("待審核盤點", stocktake.get("submitted_count", 0), "張", ft.Icons.PENDING_ACTIONS, ORANGE_BTN, ORANGE_SOFT, ORANGE_BORDER, "需超級管理員確認"),
+            metric_card("本月已確認", stocktake.get("confirmed_this_month_count", 0), "張", ft.Icons.CHECK_CIRCLE_OUTLINE, GREEN, GREEN_SOFT, GREEN_BORDER, "本月確認完成盤點"),
+            metric_card("已作廢盤點", stocktake.get("voided_count", 0), "張", ft.Icons.BLOCK, RED, RED_SOFT, RED_BORDER, "保留作廢稽核紀錄"),
+        ]
+
+        if is_mobile:
+            return ft.Column(
+                spacing=10,
+                controls=[
+                    ft.Row(spacing=10, controls=[ft.Container(expand=True, content=cards[0]), ft.Container(expand=True, content=cards[1])]),
+                    ft.Row(spacing=10, controls=[ft.Container(expand=True, content=cards[2]), ft.Container(expand=True, content=cards[3])]),
+                ],
+            )
+
+        return ft.Row(spacing=12, controls=[ft.Container(expand=True, content=c) for c in cards])
+
     def module_card(
         number: int,
         title: str,
@@ -375,11 +407,12 @@ def AdminContent(page: ft.Page) -> ft.Control:
             run_spacing=12,
             controls=[
                 module_card(1, "原料與庫存設定", "新增、停用原料，管理包重與低水位。", ft.Icons.INVENTORY_2_OUTLINED, BLUE_BTN, BLUE_SOFT, BLUE_BORDER, "/admin/materials"),
-                module_card(2, "保養管理", "整合保養項目管理與已刪除項目入口。", ft.Icons.HANDYMAN_OUTLINED, PURPLE_BTN, PURPLE_SOFT, PURPLE_BORDER, "/admin/maintenance"),
-                module_card(3, "使用者與權限", "管理帳號啟用狀態、角色與 Session。", ft.Icons.GROUP_OUTLINED, BLUE_BTN, BLUE_SOFT, BLUE_BORDER, "/admin/users", planned=True),
-                module_card(4, "報表與匯出設定", "設定報表欄位、預覽筆數與匯出格式。", ft.Icons.BAR_CHART_OUTLINED, BLUE_BTN, BLUE_SOFT, BLUE_BORDER, "/admin/reports", planned=True),
-                module_card(5, "系統參數", "管理同步秒數、預設查詢筆數與模組開關。", ft.Icons.SETTINGS_OUTLINED, ORANGE_BTN, ORANGE_SOFT, ORANGE_BORDER, "/admin/settings", planned=True),
-                module_card(6, "稽核與刪除還原", "查詢操作紀錄與刪除還原紀錄。", ft.Icons.ADMIN_PANEL_SETTINGS_OUTLINED, GREEN, GREEN_SOFT, GREEN_BORDER, "/admin/audit", planned=True),
+                module_card(2, "人工盤點管理", "查看盤點單、待審核盤點與作廢紀錄。", ft.Icons.FACT_CHECK_OUTLINED, GREEN, GREEN_SOFT, GREEN_BORDER, "/inventory/stocktake"),
+                module_card(3, "保養管理", "整合保養項目管理與已刪除項目入口。", ft.Icons.HANDYMAN_OUTLINED, PURPLE_BTN, PURPLE_SOFT, PURPLE_BORDER, "/admin/maintenance"),
+                module_card(4, "使用者與權限", "管理帳號啟用狀態、角色與 Session。", ft.Icons.GROUP_OUTLINED, BLUE_BTN, BLUE_SOFT, BLUE_BORDER, "/admin/users", planned=True),
+                module_card(5, "報表與匯出設定", "設定報表欄位、預覽筆數與匯出格式。", ft.Icons.BAR_CHART_OUTLINED, BLUE_BTN, BLUE_SOFT, BLUE_BORDER, "/admin/reports", planned=True),
+                module_card(6, "系統參數", "管理同步秒數、預設查詢筆數與模組開關。", ft.Icons.SETTINGS_OUTLINED, ORANGE_BTN, ORANGE_SOFT, ORANGE_BORDER, "/admin/settings", planned=True),
+                module_card(7, "稽核與刪除還原", "查詢操作紀錄與刪除還原紀錄。", ft.Icons.ADMIN_PANEL_SETTINGS_OUTLINED, GREEN, GREEN_SOFT, GREEN_BORDER, "/admin/audit", planned=True),
             ],
         )
 
@@ -431,7 +464,7 @@ def AdminContent(page: ft.Page) -> ft.Control:
                                 ft.Icon(ft.Icons.LOCK_OUTLINE, size=48, color=RED),
                                 ft.Text("無權限存取", size=24, color=TEXT, weight=ft.FontWeight.BOLD),
                                 ft.Text("此頁面僅限超級管理員使用。如需調整權限，請聯繫系統管理員。", size=14, color=TEXT_MUTED, text_align=ft.TextAlign.CENTER),
-                                ft.ElevatedButton("返回首頁", icon=ft.Icons.HOME_OUTLINED, bgcolor=BLUE_BTN, color="#FFFFFF", on_click=lambda _: navigate("/")),
+                                ft.ElevatedButton(text="返回首頁", icon=ft.Icons.HOME_OUTLINED, bgcolor=BLUE_BTN, color="#FFFFFF", on_click=lambda _: navigate("/")),
                             ],
                         ),
                     )
@@ -446,7 +479,8 @@ def AdminContent(page: ft.Page) -> ft.Control:
         controls: list[ft.Control] = [
             build_header(is_mobile),
             build_summary_cards(is_mobile),
-            ft.Column(spacing=8, controls=[section_title("管理模組", "第一階段先建立控制中心骨架，未完成項目會標示第二階段。"), build_module_grid()]),
+            ft.Column(spacing=8, controls=[section_title("人工盤點摘要", "顯示盤點單目前狀態，方便超級管理員快速掌握待處理項目。"), build_stocktake_summary_cards(is_mobile)]),
+            ft.Column(spacing=8, controls=[section_title("管理模組", "已完成項目可直接使用，未完成項目會標示第二階段。"), build_module_grid()]),
             build_recent_actions_placeholder(),
             ft.Container(height=90),
         ]
