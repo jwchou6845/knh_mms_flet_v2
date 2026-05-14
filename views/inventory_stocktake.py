@@ -1328,7 +1328,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
                     border_radius=14,
                     padding=14,
                     content=ft.Text(
-                        "此盤點單已送出待審核。若資料需要修正，可先退回修改；確認後將依差異寫入 stock_adjustments，並影響首頁庫存與低水位。",
+                        "此盤點單已送出待審核。退回可修改；確認將依差異值影響首頁庫存與低水位。",
                         size=13,
                         color="#9A4A12",
                     ),
