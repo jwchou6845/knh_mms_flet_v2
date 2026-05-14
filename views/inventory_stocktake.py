@@ -1,8 +1,8 @@
 # =====================================================
 # KNH MMS v2
 # File: views/inventory_stocktake.py
-# File Revision: 2026-05-14-stocktake-ux-r5
-# Status: stocktake UX flow refinement
+# File Revision: 2026-05-14-stocktake-danger-void-r6
+# Status: danger operation UX refinement
 # Last Updated: 2026-05-14 Asia/Taipei
 #
 # Purpose:
@@ -15,13 +15,14 @@
 # - 草稿明細拆成「待盤點品項」與「已盤點品項」；儲存後的品項移至已盤點收合區。
 # - 全部品項完成前，送出待審核按鈕維持停用，並顯示尚未盤點數量。
 # - 不修改盤點建立、明細儲存、確認盤點與 stock_adjustments 寫入邏輯。
+# - r6 將作廢盤點單改為底部「危險操作」收合式區塊；未輸入作廢原因不得送出。
 #
 # Notes:
 # - Flet 0.84。
 # - 不使用 page.push_route()。
 # - 時間與庫存調整邏輯由 services/stocktake_service.py 統一使用 Asia/Taipei。
 # - 第一版只處理新料 / 母粒正式庫存盤點，不處理回用料逐筆盤點。
-# - r5 只調整前端 UX 呈現與操作節奏，不更動資料表與 service / repo 流程。
+# - r6 只調整作廢操作 UX，不更動資料表、service / repo 與 stock_adjustments 流程。
 # =====================================================
 
 from __future__ import annotations
@@ -117,6 +118,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
         "create_count_type": "all",
         "void_reason": "",
         "show_entered_items": False,
+        "show_void_form": False,
     }
 
     ui_lock = threading.RLock()
@@ -436,6 +438,19 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
         state["show_entered_items"] = not bool(state.get("show_entered_items"))
         rebuild()
 
+    def toggle_void_form(e=None):
+        state["show_void_form"] = not bool(state.get("show_void_form"))
+        rebuild()
+
+    def close_void_form(e=None):
+        state["show_void_form"] = False
+        try:
+            void_reason_field.value = ""
+            state["show_void_form"] = False
+        except Exception:
+            pass
+        rebuild()
+
     def sync_status_banner() -> ft.Control:
         if not state.get("status_visible"):
             return ft.Container(height=0)
@@ -519,6 +534,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
 
     def load_detail(count_id: str, show_status: bool = True) -> None:
         state["active_count_id"] = count_id
+        state["show_void_form"] = False
         if show_status:
             set_status("正在讀取盤點明細", "blue", True)
             rebuild()
@@ -548,11 +564,13 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
     def close_detail(e=None) -> None:
         state["active_count_id"] = ""
         state["detail"] = None
+        state["show_void_form"] = False
         rebuild()
 
     def open_create_form(e=None) -> None:
         state["show_create_form"] = True
         state["create_count_type"] = "all"
+        state["show_void_form"] = False
         rebuild()
 
     def close_create_form(e=None) -> None:
@@ -685,6 +703,12 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
             show_snack("只有超級管理員可以作廢盤點單。", success=False)
             return
 
+        reason = str(void_reason_field.value or "").strip()
+        if not reason:
+            set_status("請輸入作廢原因。", "red", True)
+            show_snack("請輸入作廢原因。", success=False)
+            return
+
         detail = state.get("detail") or {}
         count = detail.get("count") or {}
         count_id = str(count.get("id") or "")
@@ -692,7 +716,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
         def action():
             result = void_inventory_count(
                 count_id=count_id,
-                void_reason=str(void_reason_field.value or ""),
+                void_reason=reason,
                 voided_by_user_id=current_user_id(),
                 voided_by_name=current_user_name(),
             )
@@ -704,6 +728,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
                 return
 
             void_reason_field.value = ""
+            state["show_void_form"] = False
             refresh_counts(silent=True)
             detail_result = load_inventory_count_detail(count_id)
             if detail_result.ok:
@@ -1240,7 +1265,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
                     border_radius=14,
                     padding=14,
                     content=ft.Text(
-                        "此盤點單已送出待審核。確認後將依差異寫入 stock_adjustments，並影響首頁庫存與低水位。",
+                        "此盤點單已送出待審核。確認後差異值將寫入影響首頁庫存與低水位。",
                         size=13,
                         color="#9A4A12",
                     ),
@@ -1302,30 +1327,6 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
 
         controls.append(ft.Row(spacing=10, controls=action_buttons))
 
-        if can_void:
-            controls.append(
-                ft.Container(
-                    bgcolor=RED_SOFT,
-                    border=ft.border.all(1, RED_BORDER),
-                    border_radius=16,
-                    padding=14,
-                    content=ft.Column(
-                        spacing=12,
-                        controls=[
-                            ft.Row(
-                                spacing=8,
-                                controls=[
-                                    ft.Icon(ft.Icons.WARNING_AMBER_ROUNDED, color=RED, size=22),
-                                    ft.Text("作廢盤點單", size=16, color=RED, weight=ft.FontWeight.BOLD),
-                                ],
-                            ),
-                            field_group("作廢原因", void_reason_field, True),
-                            stable_button("確認作廢", ft.Icons.BLOCK, RED_BTN, on_click=void_count_action, disabled=state.get("busy")),
-                        ],
-                    ),
-                )
-            )
-
         controls.append(ft.Divider(height=18, color="#EEF2F7"))
 
         if not items:
@@ -1382,7 +1383,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
                                         spacing=2,
                                         controls=[
                                             ft.Text(f"已盤點品項：{len(entered_items)} 筆", size=17, color=TEXT, weight=ft.FontWeight.BOLD),
-                                            ft.Text("預設收合，避免已完成品項佔滿畫面；草稿狀態仍可展開修改。", size=12, color=TEXT_MUTED),
+                                            ft.Text("點 顯示 按鈕仍可展開已盤點品項並修改內容。", size=12, color=TEXT_MUTED),
                                         ],
                                     ),
                                     ft.Container(
@@ -1419,6 +1420,78 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
             controls.append(section_title("盤點項目", "此盤點單已送出或鎖定，以下為完整盤點明細。"))
             for item in items:
                 controls.append(build_item_card(item, editable=False))
+
+        if can_void:
+            controls.append(ft.Divider(height=18, color="#EEF2F7"))
+            if state.get("show_void_form"):
+                controls.append(
+                    ft.Container(
+                        bgcolor=RED_SOFT,
+                        border=ft.border.all(1, RED_BORDER),
+                        border_radius=16,
+                        padding=14,
+                        content=ft.Column(
+                            spacing=12,
+                            controls=[
+                                ft.Row(
+                                    spacing=8,
+                                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                    controls=[
+                                        ft.Icon(ft.Icons.WARNING_AMBER_ROUNDED, color=RED, size=22),
+                                        ft.Column(
+                                            expand=True,
+                                            spacing=2,
+                                            controls=[
+                                                ft.Text("危險操作：作廢盤點單", size=16, color=RED, weight=ft.FontWeight.BOLD),
+                                                ft.Text("作廢後不會影響正式庫存，但會保留稽核紀錄；請務必填寫原因。", size=12, color=TEXT_MUTED),
+                                            ],
+                                        ),
+                                    ],
+                                ),
+                                field_group("作廢原因", void_reason_field, True),
+                                ft.Row(
+                                    spacing=10,
+                                    controls=[
+                                        outline_button("取消作廢", ft.Icons.CLOSE, TEXT_MUTED, close_void_form, expand=True, disabled=state.get("busy")),
+                                        stable_button("確認作廢", ft.Icons.BLOCK, RED_BTN, on_click=void_count_action, expand=True, disabled=state.get("busy")),
+                                    ],
+                                ),
+                            ],
+                        ),
+                    )
+                )
+            else:
+                controls.append(
+                    ft.Container(
+                        bgcolor="#FFFFFF",
+                        border=ft.border.all(1, RED_BORDER),
+                        border_radius=16,
+                        padding=14,
+                        content=ft.Row(
+                            spacing=12,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                            controls=[
+                                ft.Container(
+                                    width=42,
+                                    height=42,
+                                    border_radius=13,
+                                    bgcolor=RED_SOFT,
+                                    alignment=ft.Alignment(0, 0),
+                                    content=ft.Icon(ft.Icons.WARNING_AMBER_ROUNDED, color=RED, size=22),
+                                ),
+                                ft.Column(
+                                    expand=True,
+                                    spacing=2,
+                                    controls=[
+                                        ft.Text("危險操作", size=15, color=TEXT, weight=ft.FontWeight.BOLD),
+                                        ft.Text("需要取消本張草稿或待審核盤點單時，請從這裡作廢。", size=12, color=TEXT_MUTED),
+                                    ],
+                                ),
+                                outline_button("作廢盤點單", ft.Icons.BLOCK, RED, toggle_void_form, disabled=state.get("busy")),
+                            ],
+                        ),
+                    )
+                )
 
         return ft.Container(
             bgcolor="#FFFFFF",
