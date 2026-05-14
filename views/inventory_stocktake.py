@@ -1,8 +1,8 @@
 # =====================================================
 # KNH MMS v2
 # File: views/inventory_stocktake.py
-# File Revision: 2026-05-15-recycled-step3-r10
-# Status: recycled stocktake step 3 - single item check save
+# File Revision: 2026-05-15-recycled-step3-r11
+# Status: recycled stocktake step 3 hotfix - direct save buttons
 # Last Updated: 2026-05-15 Asia/Taipei
 #
 # Purpose:
@@ -20,6 +20,7 @@
 # - r8 新增盲盤模式 count_mode：草稿階段隱藏帳面庫存與差異，送出待審核後才顯示差異。
 # - r9 Step 2 新增回用料盤點單建立入口與唯讀明細顯示。
 # - r10 Step 3 新增回用料單筆核對儲存最小版；暫不做待核對 / 已核對分類移動。
+# - r11 修正回用料核對狀態 chip 無法穩定點選問題，改為「儲存為某狀態」直接按鈕。
 #
 # Notes:
 # - Flet 0.84。
@@ -29,6 +30,7 @@
 # - r8 需搭配 services/stocktake_service.py r3 與 inventory_counts.count_mode 欄位。
 # - r9 Step 2 需搭配已部署的 stocktake_repo.py / stocktake_service.py 回用料資料層。
 # - r10 Step 3 需搭配 services/stocktake_service.py 內的 update_count_recycled_item_check()。
+# - r11 只改回用料核對 UX，不修改 service / repo / main.py。
 # - 回用料不使用盲盤；此版新增單筆核對儲存，但暫不做列表分類移動。
 # =====================================================
 
@@ -1616,16 +1618,106 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
                             spacing=10,
                             controls=[
                                 ft.Text("盤點結果 *", size=13, color=TEXT, weight=ft.FontWeight.W_600),
-                                ft.Row(
-                                    wrap=True,
+                                ft.Text(
+                                    "請先確認現場狀況，需要填寫現場重量 / 供應商 / 狀態時先填好，再直接按下對應結果儲存。",
+                                    size=12,
+                                    color=TEXT_MUTED,
+                                ),
+                                ft.ResponsiveRow(
+                                    columns=12,
                                     spacing=8,
                                     run_spacing=8,
                                     controls=[
-                                        recycled_status_chip(status_state, "confirmed", "在庫確認", status_chips),
-                                        recycled_status_chip(status_state, "missing", "找不到實物", status_chips),
-                                        recycled_status_chip(status_state, "used_not_recorded", "已領用未登錄", status_chips),
-                                        recycled_status_chip(status_state, "scrap_required", "需報廢", status_chips),
-                                        recycled_status_chip(status_state, "data_abnormal", "資料異常", status_chips),
+                                        ft.Container(
+                                            col={"xs": 12, "md": 6},
+                                            content=stable_button(
+                                                "儲存為在庫確認",
+                                                ft.Icons.CHECK_CIRCLE_OUTLINE,
+                                                GREEN_BTN,
+                                                on_click=lambda e, it=item, aw=actual_weight_field, aps=actual_supplier_field, ast=actual_status_field, nf=note_field: save_recycled_item_action(
+                                                    it,
+                                                    lambda: "confirmed",
+                                                    aw,
+                                                    aps,
+                                                    ast,
+                                                    nf,
+                                                ),
+                                                expand=True,
+                                                disabled=state.get("busy"),
+                                            ),
+                                        ),
+                                        ft.Container(
+                                            col={"xs": 12, "md": 6},
+                                            content=stable_button(
+                                                "儲存為找不到實物",
+                                                ft.Icons.SEARCH_OFF_OUTLINED,
+                                                RED_BTN,
+                                                on_click=lambda e, it=item, aw=actual_weight_field, aps=actual_supplier_field, ast=actual_status_field, nf=note_field: save_recycled_item_action(
+                                                    it,
+                                                    lambda: "missing",
+                                                    aw,
+                                                    aps,
+                                                    ast,
+                                                    nf,
+                                                ),
+                                                expand=True,
+                                                disabled=state.get("busy"),
+                                            ),
+                                        ),
+                                        ft.Container(
+                                            col={"xs": 12, "md": 6},
+                                            content=stable_button(
+                                                "儲存為已領用未登錄",
+                                                ft.Icons.OUTBOX_OUTLINED,
+                                                RED_BTN,
+                                                on_click=lambda e, it=item, aw=actual_weight_field, aps=actual_supplier_field, ast=actual_status_field, nf=note_field: save_recycled_item_action(
+                                                    it,
+                                                    lambda: "used_not_recorded",
+                                                    aw,
+                                                    aps,
+                                                    ast,
+                                                    nf,
+                                                ),
+                                                expand=True,
+                                                disabled=state.get("busy"),
+                                            ),
+                                        ),
+                                        ft.Container(
+                                            col={"xs": 12, "md": 6},
+                                            content=stable_button(
+                                                "儲存為需報廢",
+                                                ft.Icons.DELETE_FOREVER_OUTLINED,
+                                                RED_BTN,
+                                                on_click=lambda e, it=item, aw=actual_weight_field, aps=actual_supplier_field, ast=actual_status_field, nf=note_field: save_recycled_item_action(
+                                                    it,
+                                                    lambda: "scrap_required",
+                                                    aw,
+                                                    aps,
+                                                    ast,
+                                                    nf,
+                                                ),
+                                                expand=True,
+                                                disabled=state.get("busy"),
+                                            ),
+                                        ),
+                                        ft.Container(
+                                            col={"xs": 12},
+                                            content=stable_button(
+                                                "儲存為資料異常",
+                                                ft.Icons.REPORT_PROBLEM_OUTLINED,
+                                                ORANGE_BTN,
+                                                on_click=lambda e, it=item, aw=actual_weight_field, aps=actual_supplier_field, ast=actual_status_field, nf=note_field: save_recycled_item_action(
+                                                    it,
+                                                    lambda: "data_abnormal",
+                                                    aw,
+                                                    aps,
+                                                    ast,
+                                                    nf,
+                                                ),
+                                                expand=True,
+                                                disabled=state.get("busy"),
+                                            ),
+                                        ),
                                     ],
                                 ),
                             ],
