@@ -1394,7 +1394,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
             )
 
         action_buttons: list[ft.Control] = [
-            outline_button("關閉明細", ft.Icons.CLOSE, TEXT_MUTED, close_detail, expand=True),
+            outline_button("關閉", ft.Icons.CLOSE, TEXT_MUTED, close_detail, expand=True),
         ]
 
         if editable:
@@ -1411,10 +1411,10 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
 
         if can_confirm:
             action_buttons.append(
-                outline_button("退回修改", ft.Icons.REPLY_OUTLINED, ORANGE, toggle_return_form, expand=True, disabled=state.get("busy"))
+                outline_button("退回", ft.Icons.REPLY_OUTLINED, ORANGE, toggle_return_form, expand=True, disabled=state.get("busy"))
             )
             action_buttons.append(
-                stable_button("確認並調整庫存", ft.Icons.VERIFIED_OUTLINED, GREEN_BTN, on_click=confirm_count_action, expand=True, disabled=state.get("busy"))
+                stable_button("確認", ft.Icons.VERIFIED_OUTLINED, GREEN_BTN, on_click=confirm_count_action, expand=True, disabled=state.get("busy"))
             )
 
         controls.append(ft.Row(spacing=10, controls=action_buttons))
