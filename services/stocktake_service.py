@@ -1,9 +1,9 @@
 # =====================================================
 # KNH MMS v2
 # File: services/stocktake_service.py
-# File Revision: 2026-05-13-stocktake-service-r1
-# Status: first implementation for inventory stocktake module
-# Last Updated: 2026-05-13 Asia/Taipei
+# File Revision: 2026-05-14-stocktake-return-r2
+# Status: stocktake review return flow
+# Last Updated: 2026-05-14 Asia/Taipei
 #
 # Purpose:
 # - 人工盤點功能服務層。
@@ -20,6 +20,8 @@
 # - 第一版只處理新料 / 母粒，不處理回用料逐筆盤點。
 # - 不直接覆蓋庫存；確認後透過 stock_adjustments 影響 material_stock_view。
 # - stock_adjustments 第一版沿用 source / source_airtable_record_id 記錄盤點來源。
+# - r2 新增待審核盤點單「退回修改」流程，退回原因必填並回復草稿狀態。
+# - 退回修改需先於 Supabase inventory_counts 補 returned_by_user_id / returned_by_name / returned_at / return_reason 欄位。
 # =====================================================
 
 from __future__ import annotations
@@ -200,6 +202,9 @@ def normalize_count_row(row: dict[str, Any]) -> dict[str, Any]:
         "created_at": format_datetime(row.get("created_at")),
         "submitted_by_name": row.get("submitted_by_name") or "-",
         "submitted_at": format_datetime(row.get("submitted_at")) if row.get("submitted_at") else "-",
+        "returned_by_name": row.get("returned_by_name") or "-",
+        "returned_at": format_datetime(row.get("returned_at")) if row.get("returned_at") else "-",
+        "return_reason": row.get("return_reason") or "",
         "confirmed_by_name": row.get("confirmed_by_name") or "-",
         "confirmed_at": format_datetime(row.get("confirmed_at")) if row.get("confirmed_at") else "-",
         "voided_by_name": row.get("voided_by_name") or "-",
@@ -538,6 +543,11 @@ def submit_inventory_count(
                 "submitted_by_user_id": submitted_by_user_id,
                 "submitted_by_name": submitted_by_name,
                 "submitted_at": now_taipei_iso(),
+                # 若此盤點單曾被退回，重新送審後清除上一輪退回標記，避免畫面誤判。
+                "returned_by_user_id": None,
+                "returned_by_name": None,
+                "returned_at": None,
+                "return_reason": None,
             },
         )
 
@@ -552,6 +562,57 @@ def submit_inventory_count(
 
     except Exception as exc:
         return ServiceResult(ok=False, message=f"送出盤點單失敗：{exc}")
+
+
+def return_inventory_count(
+    count_id: str,
+    return_reason: str,
+    returned_by_user_id: str | None = None,
+    returned_by_name: str | None = None,
+) -> ServiceResult:
+    """
+    將待審核盤點單退回草稿，讓盤點人可重新修改明細。
+
+    規則：
+    - 只有 submitted 狀態可退回。
+    - 退回原因必填。
+    - 不寫入 stock_adjustments，不影響正式庫存。
+    """
+    try:
+        reason = clean_text(return_reason)
+        if not reason:
+            return ServiceResult(ok=False, message="請輸入退回原因。")
+
+        count = get_inventory_count_by_id(count_id)
+        if not count:
+            return ServiceResult(ok=False, message="找不到盤點單。")
+
+        status = clean_text(count.get("status"), "draft")
+        if status != "submitted":
+            return ServiceResult(ok=False, message="只有待審核盤點單可以退回修改。")
+
+        updated = update_inventory_count(
+            count_id,
+            {
+                "status": "draft",
+                "returned_by_user_id": returned_by_user_id,
+                "returned_by_name": returned_by_name,
+                "returned_at": now_taipei_iso(),
+                "return_reason": reason,
+            },
+        )
+
+        if not updated:
+            return ServiceResult(ok=False, message="退回盤點單失敗，Supabase 未回傳資料。")
+
+        return ServiceResult(
+            ok=True,
+            message="盤點單已退回草稿，可重新修改。",
+            data={"count": normalize_count_row(updated)},
+        )
+
+    except Exception as exc:
+        return ServiceResult(ok=False, message=f"退回盤點單失敗：{exc}")
 
 
 def confirm_inventory_count(

@@ -1,7 +1,7 @@
 # =====================================================
 # KNH MMS v2
 # File: views/inventory_stocktake.py
-# File Revision: 2026-05-14-stocktake-danger-void-r6
+# File Revision: 2026-05-14-stocktake-return-r7
 # Status: danger operation UX refinement
 # Last Updated: 2026-05-14 Asia/Taipei
 #
@@ -39,6 +39,7 @@ from services.stocktake_service import (
     load_inventory_count_detail,
     load_inventory_counts,
     now_taipei,
+    return_inventory_count,
     submit_inventory_count,
     update_count_item_actual_stock,
     void_inventory_count,
@@ -119,6 +120,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
         "void_reason": "",
         "show_entered_items": False,
         "show_void_form": False,
+        "show_return_form": False,
     }
 
     ui_lock = threading.RLock()
@@ -451,6 +453,20 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
             pass
         rebuild()
 
+    def toggle_return_form(e=None):
+        state["show_return_form"] = not bool(state.get("show_return_form"))
+        if state.get("show_return_form"):
+            state["show_void_form"] = False
+        rebuild()
+
+    def close_return_form(e=None):
+        state["show_return_form"] = False
+        try:
+            return_reason_field.value = ""
+        except Exception:
+            pass
+        rebuild()
+
     def sync_status_banner() -> ft.Control:
         if not state.get("status_visible"):
             return ft.Container(height=0)
@@ -535,6 +551,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
     def load_detail(count_id: str, show_status: bool = True) -> None:
         state["active_count_id"] = count_id
         state["show_void_form"] = False
+        state["show_return_form"] = False
         if show_status:
             set_status("正在讀取盤點明細", "blue", True)
             rebuild()
@@ -565,12 +582,14 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
         state["active_count_id"] = ""
         state["detail"] = None
         state["show_void_form"] = False
+        state["show_return_form"] = False
         rebuild()
 
     def open_create_form(e=None) -> None:
         state["show_create_form"] = True
         state["create_count_type"] = "all"
         state["show_void_form"] = False
+        state["show_return_form"] = False
         rebuild()
 
     def close_create_form(e=None) -> None:
@@ -601,6 +620,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
             count = data.get("count") or {}
             count_id = str(count.get("id") or "")
             state["show_create_form"] = False
+            state["show_return_form"] = False
             create_note_field.value = ""
             count_date_field.value = today_text()
             refresh_counts(silent=True)
@@ -696,6 +716,48 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
 
         run_action(action, "正在確認盤點並寫入庫存調整...")
 
+    return_reason_field = text_field(hint="請輸入退回原因", multiline=True)
+
+    def return_count_action(e=None):
+        if not is_super_admin():
+            show_snack("只有超級管理員可以退回盤點單。", success=False)
+            return
+
+        reason = str(return_reason_field.value or "").strip()
+        if not reason:
+            set_status("請輸入退回原因。", "red", True)
+            show_snack("請輸入退回原因。", success=False)
+            return
+
+        detail = state.get("detail") or {}
+        count = detail.get("count") or {}
+        count_id = str(count.get("id") or "")
+
+        def action():
+            result = return_inventory_count(
+                count_id=count_id,
+                return_reason=reason,
+                returned_by_user_id=current_user_id(),
+                returned_by_name=current_user_name(),
+            )
+            if not is_active_view():
+                return
+            if not result.ok:
+                set_status(result.message, "red", True)
+                show_snack(result.message, success=False)
+                return
+
+            return_reason_field.value = ""
+            state["show_return_form"] = False
+            refresh_counts(silent=True)
+            detail_result = load_inventory_count_detail(count_id)
+            if detail_result.ok:
+                state["detail"] = detail_result.data or {}
+            set_status(result.message, "green", True, auto_hide=True)
+            show_snack(result.message, success=True)
+
+        run_action(action, "正在退回盤點單...")
+
     void_reason_field = text_field(hint="請輸入作廢原因", multiline=True)
 
     def void_count_action(e=None):
@@ -729,6 +791,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
 
             void_reason_field.value = ""
             state["show_void_form"] = False
+            state["show_return_form"] = False
             refresh_counts(silent=True)
             detail_result = load_inventory_count_detail(count_id)
             if detail_result.ok:
@@ -946,7 +1009,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
                     ft.Icon(ft.Icons.PLAYLIST_ADD_CHECK_OUTLINED, size=25, color=BLUE),
                     section_title(
                         "目前進行中的盤點",
-                        "草稿盤點單可從這裡繼續盤點或作廢。",
+                        "草稿盤點單可從這裡繼續盤點或作廢；不再混在下方盤點單列表中。",
                     ),
                 ],
             )
@@ -1265,7 +1328,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
                     border_radius=14,
                     padding=14,
                     content=ft.Text(
-                        "此盤點單已送出待審核。確認後差異值將寫入影響首頁庫存與低水位。",
+                        "此盤點單已送出待審核。若資料需要修正，可先退回修改；確認後將依差異寫入 stock_adjustments，並影響首頁庫存與低水位。",
                         size=13,
                         color="#9A4A12",
                     ),
@@ -1304,6 +1367,32 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
                 )
             )
 
+        if status == "draft" and str(count.get("return_reason") or "").strip():
+            controls.append(
+                ft.Container(
+                    bgcolor=ORANGE_SOFT,
+                    border=ft.border.all(1, ORANGE_BORDER),
+                    border_radius=14,
+                    padding=14,
+                    content=ft.Column(
+                        spacing=4,
+                        controls=[
+                            ft.Text(
+                                f"此盤點單曾由 {count.get('returned_by_name') or '-'} 退回修改。",
+                                size=13,
+                                color=ORANGE,
+                                weight=ft.FontWeight.W_600,
+                            ),
+                            ft.Text(
+                                f"退回原因：{count.get('return_reason') or '-'}",
+                                size=13,
+                                color="#9A4A12",
+                            ),
+                        ],
+                    ),
+                )
+            )
+
         action_buttons: list[ft.Control] = [
             outline_button("關閉明細", ft.Icons.CLOSE, TEXT_MUTED, close_detail, expand=True),
         ]
@@ -1322,10 +1411,51 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
 
         if can_confirm:
             action_buttons.append(
+                outline_button("退回修改", ft.Icons.REPLY_OUTLINED, ORANGE, toggle_return_form, expand=True, disabled=state.get("busy"))
+            )
+            action_buttons.append(
                 stable_button("確認並調整庫存", ft.Icons.VERIFIED_OUTLINED, GREEN_BTN, on_click=confirm_count_action, expand=True, disabled=state.get("busy"))
             )
 
         controls.append(ft.Row(spacing=10, controls=action_buttons))
+
+        if can_confirm and state.get("show_return_form"):
+            controls.append(
+                ft.Container(
+                    bgcolor=ORANGE_SOFT,
+                    border=ft.border.all(1, ORANGE_BORDER),
+                    border_radius=16,
+                    padding=14,
+                    content=ft.Column(
+                        spacing=12,
+                        controls=[
+                            ft.Row(
+                                spacing=8,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                controls=[
+                                    ft.Icon(ft.Icons.REPLY_OUTLINED, color=ORANGE, size=22),
+                                    ft.Column(
+                                        expand=True,
+                                        spacing=2,
+                                        controls=[
+                                            ft.Text("退回修改", size=16, color=ORANGE, weight=ft.FontWeight.BOLD),
+                                            ft.Text("退回後盤點單會回到草稿狀態，可重新修改實盤數；此動作不會影響正式庫存。", size=12, color=TEXT_MUTED),
+                                        ],
+                                    ),
+                                ],
+                            ),
+                            field_group("退回原因", return_reason_field, True),
+                            ft.Row(
+                                spacing=10,
+                                controls=[
+                                    outline_button("取消退回", ft.Icons.CLOSE, TEXT_MUTED, close_return_form, expand=True, disabled=state.get("busy")),
+                                    stable_button("確認退回", ft.Icons.REPLY_OUTLINED, ORANGE_BTN, on_click=return_count_action, expand=True, disabled=state.get("busy")),
+                                ],
+                            ),
+                        ],
+                    ),
+                )
+            )
 
         controls.append(ft.Divider(height=18, color="#EEF2F7"))
 
@@ -1383,7 +1513,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
                                         spacing=2,
                                         controls=[
                                             ft.Text(f"已盤點品項：{len(entered_items)} 筆", size=17, color=TEXT, weight=ft.FontWeight.BOLD),
-                                            ft.Text("點 顯示 按鈕仍可展開已盤點品項並修改內容。", size=12, color=TEXT_MUTED),
+                                            ft.Text("預設收合，避免已完成品項佔滿畫面；草稿狀態仍可展開修改。", size=12, color=TEXT_MUTED),
                                         ],
                                     ),
                                     ft.Container(
