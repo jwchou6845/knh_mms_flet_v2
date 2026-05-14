@@ -1465,7 +1465,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
                     border_radius=14,
                     padding=14,
                     content=ft.Text(
-                        "此盤點單已送出待審核。若資料需要修正，可先退回修改；確認後將依差異寫入 stock_adjustments，並影響首頁庫存與低水位。",
+                        "此盤點單已送出待審核。退回可修改；確認將依差異值影響首頁庫存與低水位。",
                         size=13,
                         color="#9A4A12",
                     ),
@@ -1554,7 +1554,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
             )
 
         action_buttons: list[ft.Control] = [
-            outline_button("關閉明細", ft.Icons.CLOSE, TEXT_MUTED, close_detail, expand=True),
+            outline_button("關閉", ft.Icons.CLOSE, TEXT_MUTED, close_detail, expand=True),
         ]
 
         if editable:
@@ -1571,10 +1571,10 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
 
         if can_confirm:
             action_buttons.append(
-                outline_button("退回修改", ft.Icons.REPLY_OUTLINED, ORANGE, toggle_return_form, expand=True, disabled=state.get("busy"))
+                outline_button("退回", ft.Icons.REPLY_OUTLINED, ORANGE, toggle_return_form, expand=True, disabled=state.get("busy"))
             )
             action_buttons.append(
-                stable_button("確認並調整庫存", ft.Icons.VERIFIED_OUTLINED, GREEN_BTN, on_click=confirm_count_action, expand=True, disabled=state.get("busy"))
+                stable_button("確認", ft.Icons.VERIFIED_OUTLINED, GREEN_BTN, on_click=confirm_count_action, expand=True, disabled=state.get("busy"))
             )
 
         controls.append(ft.Row(spacing=10, controls=action_buttons))
