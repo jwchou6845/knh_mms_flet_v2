@@ -1,9 +1,9 @@
 # =====================================================
 # KNH MMS v2
 # File: views/inventory_stocktake.py
-# File Revision: 2026-05-14-recycled-step2-r9
-# Status: recycled stocktake step 2 - create and readonly detail
-# Last Updated: 2026-05-14 Asia/Taipei
+# File Revision: 2026-05-15-recycled-step3-r10
+# Status: recycled stocktake step 3 - single item check save
+# Last Updated: 2026-05-15 Asia/Taipei
 #
 # Purpose:
 # - 人工盤點功能頁面：建立盤點單、輸入實盤數、送出待審核、超級管理員確認盤點。
@@ -18,7 +18,8 @@
 # - r6 將作廢盤點單改為底部「危險操作」收合式區塊；未輸入作廢原因不得送出。
 # - r7 新增待審核退回修改流程。
 # - r8 新增盲盤模式 count_mode：草稿階段隱藏帳面庫存與差異，送出待審核後才顯示差異。
-# - r9 Step 2 新增回用料盤點單建立入口與唯讀明細顯示；暫不接單筆核對儲存 UI。
+# - r9 Step 2 新增回用料盤點單建立入口與唯讀明細顯示。
+# - r10 Step 3 新增回用料單筆核對儲存最小版；暫不做待核對 / 已核對分類移動。
 #
 # Notes:
 # - Flet 0.84。
@@ -27,7 +28,8 @@
 # - 第一版新料 / 母粒正式庫存盤點已完成；回用料逐筆盤點採分階段重新導入。
 # - r8 需搭配 services/stocktake_service.py r3 與 inventory_counts.count_mode 欄位。
 # - r9 Step 2 需搭配已部署的 stocktake_repo.py / stocktake_service.py 回用料資料層。
-# - 回用料不使用盲盤；此版只建立回用料盤點單並顯示在庫回用料明細。
+# - r10 Step 3 需搭配 services/stocktake_service.py 內的 update_count_recycled_item_check()。
+# - 回用料不使用盲盤；此版新增單筆核對儲存，但暫不做列表分類移動。
 # =====================================================
 
 from __future__ import annotations
@@ -47,6 +49,7 @@ from services.stocktake_service import (
     return_inventory_count,
     submit_inventory_count,
     update_count_item_actual_stock,
+    update_count_recycled_item_check,
     void_inventory_count,
 )
 
@@ -723,6 +726,42 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
             show_snack(result.message, success=True)
 
         run_action(action, "正在更新實盤數...")
+
+    def save_recycled_item_action(
+        item: dict[str, Any],
+        status_getter,
+        actual_weight_field: ft.TextField,
+        actual_supplier_field: ft.TextField,
+        actual_status_field: ft.TextField,
+        note_field: ft.TextField,
+    ):
+        def action():
+            result = update_count_recycled_item_check(
+                item_id=str(item.get("id") or ""),
+                check_status=str(status_getter() or "unchecked"),
+                actual_weight_kg=str(actual_weight_field.value or ""),
+                actual_supplier=str(actual_supplier_field.value or ""),
+                actual_status=str(actual_status_field.value or ""),
+                note=str(note_field.value or ""),
+                checked_by_user_id=current_user_id(),
+                checked_by_name=current_user_name(),
+            )
+            if not is_active_view():
+                return
+            if not result.ok:
+                set_status(result.message, "red", True)
+                show_snack(result.message, success=False)
+                return
+
+            active_id = str(state.get("active_count_id") or "")
+            if active_id:
+                detail_result = load_inventory_count_detail(active_id)
+                if detail_result.ok:
+                    state["detail"] = detail_result.data or {}
+            set_status(result.message, "green", True, auto_hide=True)
+            show_snack(result.message, success=True)
+
+        run_action(action, "正在更新回用料核對結果...")
 
     def submit_count_action(e=None):
         detail = state.get("detail") or {}
@@ -1488,7 +1527,160 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
             content=ft.Text(label, size=12, color=fg, weight=ft.FontWeight.W_600),
         )
 
-    def build_recycled_readonly_item_card(item: dict[str, Any]) -> ft.Control:
+    def recycled_status_chip(status_state: dict[str, str], value: str, label: str, all_chips: list[ft.Container]) -> ft.Container:
+        def color_for(selected: bool):
+            if value == "confirmed":
+                return (GREEN_SOFT, GREEN, GREEN_BORDER) if selected else ("#FFFFFF", GREEN, GREEN_BORDER)
+            if value in ["missing", "used_not_recorded", "scrap_required", "data_abnormal"]:
+                return (RED_SOFT, RED, RED_BORDER) if selected else ("#FFFFFF", RED, RED_BORDER)
+            return (GRAY_SOFT, TEXT_MUTED, BORDER) if selected else ("#FFFFFF", TEXT_MUTED, BORDER)
+
+        selected = status_state.get("value") == value
+        bg, fg, border = color_for(selected)
+        chip = ft.Container(
+            height=34,
+            padding=ft.padding.symmetric(horizontal=10),
+            border_radius=17,
+            bgcolor=bg,
+            border=ft.border.all(1, border),
+            ink=True,
+            content=ft.Row(
+                tight=True,
+                spacing=5,
+                alignment=ft.MainAxisAlignment.CENTER,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[
+                    ft.Icon(ft.Icons.CHECK_CIRCLE if selected else ft.Icons.RADIO_BUTTON_UNCHECKED, size=15, color=fg),
+                    ft.Text(label, size=12, color=fg, weight=ft.FontWeight.W_600, max_lines=1),
+                ],
+            ),
+        )
+
+        def refresh():
+            for item_chip in all_chips:
+                chip_value = getattr(item_chip, "data", "unchecked")
+                item_selected = status_state.get("value") == chip_value
+                item_bg, item_fg, item_border = color_for_value(chip_value, item_selected)
+                item_chip.bgcolor = item_bg
+                item_chip.border = ft.border.all(1, item_border)
+                try:
+                    item_chip.content.controls[0].name = ft.Icons.CHECK_CIRCLE if item_selected else ft.Icons.RADIO_BUTTON_UNCHECKED
+                    item_chip.content.controls[0].color = item_fg
+                    item_chip.content.controls[1].color = item_fg
+                except Exception:
+                    pass
+                try:
+                    item_chip.update()
+                except Exception:
+                    pass
+
+        def color_for_value(chip_value: str, selected_value: bool):
+            if chip_value == "confirmed":
+                return (GREEN_SOFT, GREEN, GREEN_BORDER) if selected_value else ("#FFFFFF", GREEN, GREEN_BORDER)
+            if chip_value in ["missing", "used_not_recorded", "scrap_required", "data_abnormal"]:
+                return (RED_SOFT, RED, RED_BORDER) if selected_value else ("#FFFFFF", RED, RED_BORDER)
+            return (GRAY_SOFT, TEXT_MUTED, BORDER) if selected_value else ("#FFFFFF", TEXT_MUTED, BORDER)
+
+        def choose(e=None):
+            status_state["value"] = value
+            refresh()
+
+        chip.data = value
+        chip.on_click = choose
+        all_chips.append(chip)
+        return chip
+
+    def build_recycled_item_card(item: dict[str, Any], editable: bool) -> ft.Control:
+        status_state = {"value": str(item.get("check_status") or "unchecked")}
+        actual_weight_field = text_field(
+            value="" if item.get("actual_weight_kg") is None else fmt_num(item.get("actual_weight_kg")),
+            hint="現場重量 KG",
+            number=True,
+        )
+        actual_supplier_field = text_field(value=item.get("actual_supplier") or "", hint="現場供應商")
+        actual_status_field = text_field(value=item.get("actual_status") or "", hint="現場狀態")
+        note_field = text_field(value=item.get("note") or "", hint="此筆備註", multiline=True)
+
+        status_chips: list[ft.Container] = []
+        check_controls: list[ft.Control] = []
+
+        if editable:
+            check_controls.extend(
+                [
+                    ft.Container(
+                        bgcolor="#FFFFFF",
+                        border=ft.border.all(1, BORDER),
+                        border_radius=12,
+                        padding=12,
+                        content=ft.Column(
+                            spacing=10,
+                            controls=[
+                                ft.Text("盤點結果 *", size=13, color=TEXT, weight=ft.FontWeight.W_600),
+                                ft.Row(
+                                    wrap=True,
+                                    spacing=8,
+                                    run_spacing=8,
+                                    controls=[
+                                        recycled_status_chip(status_state, "confirmed", "在庫確認", status_chips),
+                                        recycled_status_chip(status_state, "missing", "找不到實物", status_chips),
+                                        recycled_status_chip(status_state, "used_not_recorded", "已領用未登錄", status_chips),
+                                        recycled_status_chip(status_state, "scrap_required", "需報廢", status_chips),
+                                        recycled_status_chip(status_state, "data_abnormal", "資料異常", status_chips),
+                                    ],
+                                ),
+                            ],
+                        ),
+                    ),
+                    ft.ResponsiveRow(
+                        columns=12,
+                        spacing=14,
+                        run_spacing=14,
+                        controls=[
+                            ft.Container(col={"xs": 12, "md": 4}, content=field_group("現場重量 KG", actual_weight_field, False)),
+                            ft.Container(col={"xs": 12, "md": 4}, content=field_group("現場供應商", actual_supplier_field, False)),
+                            ft.Container(col={"xs": 12, "md": 4}, content=field_group("現場狀態", actual_status_field, False)),
+                            ft.Container(col={"xs": 12}, content=field_group("備註", note_field, False)),
+                        ],
+                    ),
+                    ft.Row(
+                        controls=[
+                            stable_button(
+                                "儲存此筆核對",
+                                ft.Icons.SAVE_OUTLINED,
+                                BLUE_BTN,
+                                on_click=lambda e: save_recycled_item_action(
+                                    item,
+                                    lambda: status_state.get("value"),
+                                    actual_weight_field,
+                                    actual_supplier_field,
+                                    actual_status_field,
+                                    note_field,
+                                ),
+                                expand=True,
+                                disabled=state.get("busy"),
+                            )
+                        ]
+                    ),
+                ]
+            )
+        elif item.get("has_checked"):
+            check_controls.append(
+                ft.Container(
+                    bgcolor=GREEN_SOFT if item.get("check_status") == "confirmed" else RED_SOFT,
+                    border=ft.border.all(1, GREEN_BORDER if item.get("check_status") == "confirmed" else RED_BORDER),
+                    border_radius=12,
+                    padding=12,
+                    content=ft.Column(
+                        spacing=4,
+                        controls=[
+                            ft.Text(f"核對結果：{item.get('check_status_label') or '-'}", size=13, color=TEXT, weight=ft.FontWeight.W_600),
+                            ft.Text(f"核對人員：{item.get('checked_by_name') or '-'}｜{item.get('checked_at') or '-'}", size=12, color=TEXT_MUTED),
+                            ft.Text(f"備註：{item.get('note') or '-'}", size=12, color=TEXT_MUTED),
+                        ],
+                    ),
+                )
+            )
+
         return ft.Container(
             bgcolor="#FFFFFF",
             border=ft.border.all(1, BORDER),
@@ -1568,17 +1760,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
                             ],
                         ),
                     ),
-                    ft.Container(
-                        bgcolor=BLUE_SOFT,
-                        border=ft.border.all(1, BLUE_BORDER),
-                        border_radius=12,
-                        padding=12,
-                        content=ft.Text(
-                            "此階段先顯示回用料逐筆明細；單筆核對與儲存按鈕將於下一步接上。",
-                            size=12,
-                            color="#315F9A",
-                        ),
-                    ),
+                    *check_controls,
                 ],
             ),
         )
@@ -1597,7 +1779,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
         editable = status == "draft"
         blind_draft = is_blind_draft(count)
         remaining_items = int(summary.get("not_entered_items", 0) or 0)
-        # Step 2 先只顯示回用料明細，不開放單筆核對與送出待審核。
+        # Step 3 先開放單筆回用料核對儲存，但仍不開放回用料送出待審核。
         can_submit = editable and remaining_items == 0 and not recycled_count
         can_confirm = status == "submitted" and is_super_admin()
         can_void = status in ["draft", "submitted"] and is_super_admin()
@@ -1727,7 +1909,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
             if recycled_count:
                 action_buttons.append(
                     stable_button(
-                        "回用料核對下階段開放",
+                        "回用料送審下階段開放",
                         ft.Icons.SEND_OUTLINED,
                         ORANGE_BTN,
                         on_click=None,
@@ -1801,14 +1983,14 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
             controls.append(
                 section_title(
                     "回用料盤點明細",
-                    "此階段先顯示回用料盤點單與在庫明細；單筆核對儲存將於下一步接上。",
+                    "此階段先開放單筆核對儲存；暫不做待核對 / 已核對分類移動，也暫不開放送出待審核。",
                 )
             )
             if not recycled_items:
                 controls.append(ft.Text("此回用料盤點單沒有明細。", size=14, color=TEXT_MUTED))
             else:
                 for item in recycled_items:
-                    controls.append(build_recycled_readonly_item_card(item))
+                    controls.append(build_recycled_item_card(item, editable=editable and not state.get("busy")))
         elif not items:
             controls.append(section_title("盤點項目", "此盤點單沒有明細。"))
             controls.append(ft.Text("此盤點單沒有明細。", size=14, color=TEXT_MUTED))
