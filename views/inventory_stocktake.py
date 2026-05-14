@@ -921,7 +921,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
                     ft.Icon(ft.Icons.PLAYLIST_ADD_CHECK_OUTLINED, size=25, color=BLUE),
                     section_title(
                         "目前進行中的盤點",
-                        "草稿盤點單可從這裡繼續盤點或作廢；不再混在下方盤點單列表中。",
+                        "草稿盤點單可從這裡繼續盤點或作廢。",
                     ),
                 ],
             )
