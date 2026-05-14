@@ -1,8 +1,8 @@
 # =====================================================
 # KNH MMS v2
 # File: views/inventory_stocktake.py
-# File Revision: 2026-05-14-stocktake-blind-r8
-# Status: blind stocktake mode implementation
+# File Revision: 2026-05-14-recycled-step2-r9
+# Status: recycled stocktake step 2 - create and readonly detail
 # Last Updated: 2026-05-14 Asia/Taipei
 #
 # Purpose:
@@ -18,14 +18,16 @@
 # - r6 將作廢盤點單改為底部「危險操作」收合式區塊；未輸入作廢原因不得送出。
 # - r7 新增待審核退回修改流程。
 # - r8 新增盲盤模式 count_mode：草稿階段隱藏帳面庫存與差異，送出待審核後才顯示差異。
+# - r9 Step 2 新增回用料盤點單建立入口與唯讀明細顯示；暫不接單筆核對儲存 UI。
 #
 # Notes:
 # - Flet 0.84。
 # - 不使用 page.push_route()。
 # - 時間與庫存調整邏輯由 services/stocktake_service.py 統一使用 Asia/Taipei。
-# - 第一版只處理新料 / 母粒正式庫存盤點，不處理回用料逐筆盤點。
+# - 第一版新料 / 母粒正式庫存盤點已完成；回用料逐筆盤點採分階段重新導入。
 # - r8 需搭配 services/stocktake_service.py r3 與 inventory_counts.count_mode 欄位。
-# - 盲盤只適用第一版新料 / 母粒盤點，不處理回用料逐筆盤點。
+# - r9 Step 2 需搭配已部署的 stocktake_repo.py / stocktake_service.py 回用料資料層。
+# - 回用料不使用盲盤；此版只建立回用料盤點單並顯示在庫回用料明細。
 # =====================================================
 
 from __future__ import annotations
@@ -453,6 +455,9 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
 
     def set_create_count_type(value: str):
         state["create_count_type"] = value
+        if value == "recycled":
+            # 回用料採逐筆核對，不使用一般盤點 / 盲盤模式。
+            state["create_count_mode"] = "normal"
         rebuild()
 
     def mode_chip(value: str, label: str, subtitle: str = "") -> ft.Container:
@@ -491,6 +496,9 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
 
     def is_blind_draft(count: dict[str, Any]) -> bool:
         return str(count.get("count_mode") or "normal") == "blind" and str(count.get("status") or "draft") == "draft"
+
+    def is_recycled_count(count: dict[str, Any]) -> bool:
+        return str(count.get("count_type") or "") == "recycled"
 
     def toggle_entered_items(e=None):
         state["show_entered_items"] = not bool(state.get("show_entered_items"))
@@ -967,6 +975,49 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
             ],
         )
 
+    def build_create_mode_control() -> ft.Control:
+        if state.get("create_count_type") == "recycled":
+            return ft.Container(
+                col={"xs": 12},
+                bgcolor=ORANGE_SOFT,
+                border=ft.border.all(1, ORANGE_BORDER),
+                border_radius=14,
+                padding=14,
+                content=ft.Row(
+                    spacing=10,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    controls=[
+                        ft.Icon(ft.Icons.INFO_OUTLINE, color=ORANGE, size=20),
+                        ft.Text(
+                            "回用料採逐筆核對，不使用盲盤模式；本階段先建立盤點單並顯示在庫回用料明細。",
+                            size=13,
+                            color="#9A4A12",
+                            weight=ft.FontWeight.W_600,
+                            expand=True,
+                        ),
+                    ],
+                ),
+            )
+
+        return ft.Container(
+            col={"xs": 12},
+            content=ft.Column(
+                spacing=7,
+                controls=[
+                    ft.Text("盤點模式 *", size=13, color=TEXT, weight=ft.FontWeight.W_600),
+                    ft.Row(
+                        wrap=True,
+                        spacing=10,
+                        run_spacing=10,
+                        controls=[
+                            mode_chip("normal", "一般盤點", "盤點中顯示帳面與差異"),
+                            mode_chip("blind", "盲盤", "草稿盤點中隱藏帳面與差異"),
+                        ],
+                    ),
+                ],
+            ),
+        )
+
     def build_create_form() -> ft.Control:
         if not state.get("show_create_form"):
             return ft.Container(height=0)
@@ -993,7 +1044,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
                         border_radius=14,
                         padding=14,
                         content=ft.Text(
-                            "第一版支援新料 / 母粒盤點；回用料逐筆盤點後續再獨立設計。盲盤模式在草稿階段不顯示帳面庫存與差異，送出待審核後才顯示盤盈盤虧。",
+                            "第一版支援新料 / 母粒盤點；回用料逐筆盤點採分階段導入，本階段先建立盤點單並顯示明細。盲盤模式在草稿階段不顯示帳面庫存與差異，送出待審核後才顯示盤盈盤虧。",
                             size=13,
                             color="#315F9A",
                         ),
@@ -1018,29 +1069,13 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
                                                 type_chip("all", "全部"),
                                                 type_chip("new", "新料"),
                                                 type_chip("aux", "母粒"),
+                                                type_chip("recycled", "回用料"),
                                             ],
                                         ),
                                     ],
                                 ),
                             ),
-                            ft.Container(
-                                col={"xs": 12},
-                                content=ft.Column(
-                                    spacing=7,
-                                    controls=[
-                                        ft.Text("盤點模式 *", size=13, color=TEXT, weight=ft.FontWeight.W_600),
-                                        ft.Row(
-                                            wrap=True,
-                                            spacing=10,
-                                            run_spacing=10,
-                                            controls=[
-                                                mode_chip("normal", "一般盤點", "盤點中顯示帳面與差異"),
-                                                mode_chip("blind", "盲盤", "草稿盤點中隱藏帳面與差異"),
-                                            ],
-                                        ),
-                                    ],
-                                ),
-                            ),
+                            build_create_mode_control(),
                             ft.Container(col={"xs": 12}, content=field_group("備註", create_note_field, False)),
                         ],
                     ),
@@ -1222,6 +1257,19 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
             spacing=12,
             run_spacing=12,
             controls=controls,
+        )
+
+    def build_recycled_detail_summary(summary: dict[str, Any]) -> ft.Control:
+        return ft.ResponsiveRow(
+            columns=12,
+            spacing=12,
+            run_spacing=12,
+            controls=[
+                metric_card("總筆數", summary.get("total_items", 0), BLUE, ft.Icons.RECYCLING_OUTLINED),
+                metric_card("已核對", summary.get("checked_items", 0), GREEN, ft.Icons.CHECK_CIRCLE_OUTLINE),
+                metric_card("異常", summary.get("abnormal_items", 0), ORANGE, ft.Icons.REPORT_PROBLEM_OUTLINED),
+                metric_card("未核對", summary.get("unchecked_items", 0), RED, ft.Icons.ERROR_OUTLINE),
+            ],
         )
 
     def diff_color(item: dict[str, Any]) -> tuple[str, str, str]:
@@ -1420,6 +1468,121 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
             ),
         )
 
+    def recycled_status_badge(item: dict[str, Any]) -> ft.Container:
+        status = str(item.get("check_status") or "unchecked")
+        label = str(item.get("check_status_label") or "未核對")
+        if status == "confirmed":
+            bg, fg, border = GREEN_SOFT, GREEN, GREEN_BORDER
+        elif status in ["missing", "used_not_recorded", "scrap_required", "data_abnormal"]:
+            bg, fg, border = RED_SOFT, RED, RED_BORDER
+        else:
+            bg, fg, border = GRAY_SOFT, TEXT_MUTED, BORDER
+
+        return ft.Container(
+            height=30,
+            padding=ft.padding.symmetric(horizontal=10),
+            border_radius=15,
+            bgcolor=bg,
+            border=ft.border.all(1, border),
+            alignment=ft.Alignment(0, 0),
+            content=ft.Text(label, size=12, color=fg, weight=ft.FontWeight.W_600),
+        )
+
+    def build_recycled_readonly_item_card(item: dict[str, Any]) -> ft.Control:
+        return ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, BORDER),
+            border_radius=18,
+            padding=16,
+            content=ft.Column(
+                spacing=12,
+                controls=[
+                    ft.Row(
+                        spacing=12,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[
+                            ft.Container(
+                                width=48,
+                                height=48,
+                                border_radius=14,
+                                bgcolor=GREEN_SOFT,
+                                alignment=ft.Alignment(0, 0),
+                                content=ft.Icon(ft.Icons.RECYCLING_OUTLINED, color=GREEN, size=25),
+                            ),
+                            ft.Column(
+                                expand=True,
+                                spacing=3,
+                                controls=[
+                                    ft.Text(item.get("recycled_no") or "-", size=18, color=TEXT, weight=ft.FontWeight.BOLD),
+                                    ft.Text(
+                                        f"{item.get('material_type') or '-'}｜{item.get('supplier') or '-'}｜{fmt_num(item.get('weight_kg'), ' KG')}",
+                                        size=13,
+                                        color=TEXT_MUTED,
+                                        max_lines=1,
+                                        overflow=ft.TextOverflow.ELLIPSIS,
+                                    ),
+                                ],
+                            ),
+                            recycled_status_badge(item),
+                        ],
+                    ),
+                    ft.Container(
+                        bgcolor="#F8FAFC",
+                        border_radius=12,
+                        padding=12,
+                        content=ft.ResponsiveRow(
+                            columns=12,
+                            spacing=8,
+                            run_spacing=8,
+                            controls=[
+                                ft.Container(
+                                    col={"xs": 6, "md": 3},
+                                    content=ft.Column(
+                                        spacing=2,
+                                        controls=[
+                                            ft.Text("重量", size=12, color=TEXT_MUTED),
+                                            ft.Text(fmt_num(item.get("weight_kg"), " KG"), size=15, color=TEXT, weight=ft.FontWeight.BOLD),
+                                        ],
+                                    ),
+                                ),
+                                ft.Container(
+                                    col={"xs": 6, "md": 3},
+                                    content=ft.Column(
+                                        spacing=2,
+                                        controls=[
+                                            ft.Text("供應商", size=12, color=TEXT_MUTED),
+                                            ft.Text(to_text(item.get("supplier")), size=15, color=TEXT, weight=ft.FontWeight.BOLD),
+                                        ],
+                                    ),
+                                ),
+                                ft.Container(
+                                    col={"xs": 12, "md": 6},
+                                    content=ft.Column(
+                                        spacing=2,
+                                        controls=[
+                                            ft.Text("目前狀態", size=12, color=TEXT_MUTED),
+                                            ft.Text(to_text(item.get("usage_status")), size=15, color=TEXT, weight=ft.FontWeight.BOLD),
+                                        ],
+                                    ),
+                                ),
+                            ],
+                        ),
+                    ),
+                    ft.Container(
+                        bgcolor=BLUE_SOFT,
+                        border=ft.border.all(1, BLUE_BORDER),
+                        border_radius=12,
+                        padding=12,
+                        content=ft.Text(
+                            "此階段先顯示回用料逐筆明細；單筆核對與儲存按鈕將於下一步接上。",
+                            size=12,
+                            color="#315F9A",
+                        ),
+                    ),
+                ],
+            ),
+        )
+
     def build_detail_panel() -> ft.Control:
         detail = state.get("detail")
         if not detail:
@@ -1427,12 +1590,15 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
 
         count = detail.get("count") or {}
         items = detail.get("items") or []
+        recycled_items = detail.get("recycled_items") or []
         summary = detail.get("summary") or {}
         status = count.get("status") or "draft"
+        recycled_count = is_recycled_count(count)
         editable = status == "draft"
         blind_draft = is_blind_draft(count)
         remaining_items = int(summary.get("not_entered_items", 0) or 0)
-        can_submit = editable and remaining_items == 0
+        # Step 2 先只顯示回用料明細，不開放單筆核對與送出待審核。
+        can_submit = editable and remaining_items == 0 and not recycled_count
         can_confirm = status == "submitted" and is_super_admin()
         can_void = status in ["draft", "submitted"] and is_super_admin()
 
@@ -1454,7 +1620,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
                     count_mode_badge(count.get("count_mode") or "normal", count.get("count_mode_label") or "一般盤點"),
                 ],
             ),
-            build_detail_summary(summary, blind_draft=blind_draft),
+            build_recycled_detail_summary(summary) if recycled_count else build_detail_summary(summary, blind_draft=blind_draft),
         ]
 
         if status == "submitted":
@@ -1558,16 +1724,28 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
         ]
 
         if editable:
-            action_buttons.append(
-                stable_button(
-                    "送出待審核" if can_submit else f"尚有 {remaining_items} 筆未盤",
-                    ft.Icons.SEND_OUTLINED,
-                    ORANGE_BTN,
-                    on_click=submit_count_action,
-                    expand=True,
-                    disabled=state.get("busy") or not can_submit,
+            if recycled_count:
+                action_buttons.append(
+                    stable_button(
+                        "回用料核對下階段開放",
+                        ft.Icons.SEND_OUTLINED,
+                        ORANGE_BTN,
+                        on_click=None,
+                        expand=True,
+                        disabled=True,
+                    )
                 )
-            )
+            else:
+                action_buttons.append(
+                    stable_button(
+                        "送出待審核" if can_submit else f"尚有 {remaining_items} 筆未盤",
+                        ft.Icons.SEND_OUTLINED,
+                        ORANGE_BTN,
+                        on_click=submit_count_action,
+                        expand=True,
+                        disabled=state.get("busy") or not can_submit,
+                    )
+                )
 
         if can_confirm:
             action_buttons.append(
@@ -1619,7 +1797,19 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
 
         controls.append(ft.Divider(height=18, color="#EEF2F7"))
 
-        if not items:
+        if recycled_count:
+            controls.append(
+                section_title(
+                    "回用料盤點明細",
+                    "此階段先顯示回用料盤點單與在庫明細；單筆核對儲存將於下一步接上。",
+                )
+            )
+            if not recycled_items:
+                controls.append(ft.Text("此回用料盤點單沒有明細。", size=14, color=TEXT_MUTED))
+            else:
+                for item in recycled_items:
+                    controls.append(build_recycled_readonly_item_card(item))
+        elif not items:
             controls.append(section_title("盤點項目", "此盤點單沒有明細。"))
             controls.append(ft.Text("此盤點單沒有明細。", size=14, color=TEXT_MUTED))
         elif editable:
