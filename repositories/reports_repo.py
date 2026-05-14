@@ -1,22 +1,23 @@
 # =====================================================
 # KNH MMS v2
 # File: repositories/reports_repo.py
-# File Revision: 2026-05-13-reports-current-stock-active-managed-r1
-# Status: current working version
-# Last Updated: 2026-05-13 Asia/Taipei
+# File Revision: 2026-05-14-reports-recycled-inbound-r2
+# Status: ready for testing
+# Last Updated: 2026-05-14 Asia/Taipei
 #
 # Purpose:
 # - 報表中心資料存取層：Supabase 查詢快速報表與全條件篩選資料來源。
 #
 # Major Changes in This Revision:
-# - 修正「目前低水位清單」與「目前庫存總表」資料來源。
-# - material_stock_view 目前狀態類報表只讀取 is_active = true 且 is_stock_managed = true 的原料。
-# - 歷史報表來源 monthly_usage_view、feed_records、purchase_records 不變，停用原料仍可查歷史資料。
+# - 新增 get_recycled_materials_between()，供報表中心「入庫紀錄」合併回用料入庫。
+# - 新增 get_recycled_materials_for_options()，讓篩選選項可參考完整回用料歷史資料。
+# - 保留目前狀態類報表只讀取 is_active = true 且 is_stock_managed = true 的原料邏輯。
+# - 歷史報表來源仍保留停用原料歷史資料，不因原料停用或未納管而消失。
 #
 # Notes:
-# - 本次只調整 reports_repo.py 的目前狀態資料來源。
-# - 不修改 views/reports.py、不修改 services/reports_service.py、不修改 CSV / PDF 匯出邏輯。
-# - 不變更 Supabase schema / RLS / SQL view。
+# - 本次不修改 views/reports.py。
+# - 回用料入庫正式來源為 recycled_materials，日期欄位使用 inbound_date。
+# - 所有日期區間函式採 end_date exclusive，與 service 層一致。
 # =====================================================
 from __future__ import annotations
 
@@ -103,12 +104,30 @@ def get_available_recycled_material_rows() -> list[dict[str, Any]]:
     return res.data or []
 
 
+def get_recycled_materials_for_options(limit: int = 1000) -> list[dict[str, Any]]:
+    """
+    報表篩選選項用回用料來源。
+
+    與 get_available_recycled_material_rows() 不同，這裡保留已領用 / 已報廢歷史資料，
+    避免歷史報表的供應商或原料種類下拉選項缺漏。
+    """
+    res = (
+        supabase.table(TABLE_RECYCLED_MATERIALS)
+        .select("*")
+        .order("inbound_date", desc=True)
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return res.data or []
+
+
 def get_purchase_records_between(
     start_date: str,
     end_date: str,
 ) -> list[dict[str, Any]]:
     """
-    讀取入庫紀錄。
+    讀取供應商新料 / 母粒入庫紀錄。
     purchase_records 實際日期欄位為 purchase_date，不是 purchase_at。
     start_date / end_date 使用 YYYY-MM-DD，end_date 為 exclusive。
     """
@@ -119,6 +138,32 @@ def get_purchase_records_between(
         .gte("purchase_date", start_date)
         .lt("purchase_date", end_date)
         .order("purchase_date", desc=True)
+        .order("created_at", desc=True)
+        .execute()
+    )
+    return res.data or []
+
+
+def get_recycled_materials_between(
+    start_date: str,
+    end_date: str,
+) -> list[dict[str, Any]]:
+    """
+    讀取回用料入庫紀錄。
+
+    recycled_materials 是回用料入庫主檔，日期欄位為 inbound_date。
+    start_date / end_date 使用 YYYY-MM-DD，end_date 為 exclusive。
+
+    注意：
+    - 本函式只回傳日期區間內的回用料入庫。
+    - 已領用或已報廢的回用料仍是歷史入庫紀錄，不應在報表中排除。
+    """
+    res = (
+        supabase.table(TABLE_RECYCLED_MATERIALS)
+        .select("*")
+        .gte("inbound_date", start_date)
+        .lt("inbound_date", end_date)
+        .order("inbound_date", desc=True)
         .order("created_at", desc=True)
         .execute()
     )

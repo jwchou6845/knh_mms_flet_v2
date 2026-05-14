@@ -1,25 +1,24 @@
 # =====================================================
 # KNH MMS v2
 # File: services/reports_service.py
-# File Revision: 2026-05-12-reports-advanced-mapping-r1
-# Status: current working version
-# Last Updated: 2026-05-12 Asia/Taipei
+# File Revision: 2026-05-14-reports-recycled-inbound-r2
+# Status: ready for testing
+# Last Updated: 2026-05-14 Asia/Taipei
 #
 # Purpose:
 # - 報表中心服務層：快速報表、全條件篩選、CSV / PDF 匯出資料整理。
 #
 # Major Changes in This Revision:
-# - 修正全條件篩選「打料紀錄」欄位 mapping，對齊 feed.py 最近打料紀錄。
-# - 打料紀錄輸出：日期、時間、類型、批號、機台/塔別、原料、數量、人員、備註。
-# - 修正 feed_type 原始值 new / aux / recycled 顯示為新料 / 母粒 / 回用料。
-# - 修正全條件篩選「入庫紀錄」欄位 mapping，保留類型與批號，不顯示機台/塔別。
-# - 入庫紀錄輸出：日期、類型、批號、原料名稱、供應商、數量、單位、人員、備註。
-# - 預覽、查看全部、CSV、PDF 共用同一份 columns / rows，確保欄位一致。
+# - 修正全條件篩選「入庫紀錄」只查 purchase_records、漏查 recycled_materials 的問題。
+# - 入庫紀錄改為合併：purchase_records（新料 / 母粒）+ recycled_materials（回用料）。
+# - 回用料入庫欄位 mapping：inbound_date -> 日期、recycled_no -> 批號、material_type -> 原料名稱、weight_kg -> 數量、單位固定 KG。
+# - 快速報表「本月入庫紀錄」同步套用同一份合併邏輯。
+# - 篩選選項改納入完整回用料歷史來源，避免已領用回用料的供應商 / 原料種類消失。
 #
 # Notes:
-# - 本次主要修改 service 層；不動 Nginx /exports/ 下載機制與 PDF 中文字型邏輯。
-# - 所有日期時間處理維持 Asia/Taipei。
-# - Flet 0.84；reports.py 會直接使用本檔回傳的 columns / rows。
+# - 本次不修改 views/reports.py。
+# - 預覽、查看全部、CSV、PDF 共用同一份 columns / rows，修正後會一起套用。
+# - 所有日期時間處理維持 Asia/Taipei；查詢日期 end_date 仍採 exclusive。
 # =====================================================
 from __future__ import annotations
 
@@ -43,7 +42,9 @@ from repositories.reports_repo import (
     get_monthly_usage_rows,
     get_open_handover_items,
     get_purchase_records_between,
+    get_recycled_materials_between,
     get_purchase_records_for_options,
+    get_recycled_materials_for_options,
     get_feed_records_for_options,
     get_user_rows,
 )
@@ -458,6 +459,7 @@ def purchase_batch_no(row: dict[str, Any]) -> str:
         [
             "batch_no",
             "purchase_batch_no",
+            "recycled_no",
             "lot_no",
             "serial_no",
             "batch_number",
@@ -475,6 +477,82 @@ def feed_batch_no(row: dict[str, Any]) -> str:
 
 def purchase_note_text(row: dict[str, Any]) -> str:
     return first_value(row, ["note", "remark", "remarks", "memo", "description"], "-")
+
+
+def normalize_recycled_as_purchase_record(row: dict[str, Any]) -> dict[str, Any]:
+    """
+    將 recycled_materials raw row 轉成 build_purchase_result() 可共用的入庫紀錄格式。
+
+    recycled_materials 與 purchase_records 是不同資料表：
+    - purchase_records：供應商新料 / 母粒入庫。
+    - recycled_materials：廠內回用料入庫。
+
+    報表中心「入庫紀錄」對使用者來說應該是同一類查詢，因此在 service 層做標準化。
+    """
+    normalized = dict(row)
+
+    recycled_no = first_value(row, ["recycled_no", "batch_no", "serial_no"], "-")
+    material_name = first_value(row, ["material_type", "material_name", "display_name", "name"], "-")
+    weight_kg = first_value(row, ["weight_kg", "weight", "qty", "quantity"], 0)
+    inbound_date = first_value(row, ["inbound_date", "purchase_date", "created_at"], "")
+
+    normalized["purchase_type"] = "回用料"
+    normalized["category"] = "回用料"
+    normalized["purchase_date"] = inbound_date
+    normalized["batch_no"] = recycled_no
+    normalized["purchase_batch_no"] = recycled_no
+    normalized["material_name"] = material_name
+    normalized["quantity_kg"] = weight_kg
+    normalized["unit"] = "KG"
+    normalized["machine_code"] = first_value(row, ["source_machine", "machine_code", "machine"], "")
+    normalized["_source_table"] = "recycled_materials"
+
+    return normalized
+
+
+def normalize_recycled_purchase_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [normalize_recycled_as_purchase_record(row) for row in rows]
+
+
+def datetime_sort_timestamp(value: Any) -> float:
+    text = str(value or "").strip()
+    if not text:
+        return 0.0
+
+    try:
+        normalized = text.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(normalized)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=TAIPEI_TZ)
+        return dt.astimezone(TAIPEI_TZ).timestamp()
+    except Exception:
+        return 0.0
+
+
+def purchase_report_sort_key(row: dict[str, Any]) -> tuple[int, float, str]:
+    record_date = parse_date(first_value(row, ["purchase_date", "inbound_date", "created_at"], ""), date.min) or date.min
+    created_ts = datetime_sort_timestamp(row.get("created_at"))
+    batch_no = clean_text(first_value(row, ["batch_no", "purchase_batch_no", "recycled_no"], ""))
+    return (record_date.toordinal(), created_ts, batch_no)
+
+
+def load_combined_purchase_rows(start_date: date, end_exclusive: date) -> list[dict[str, Any]]:
+    """
+    報表中心入庫紀錄共用資料來源。
+
+    合併兩個資料表：
+    - purchase_records：新料 / 母粒入庫。
+    - recycled_materials：回用料入庫。
+    """
+    purchase_rows = get_purchase_records_between(start_date.isoformat(), end_exclusive.isoformat())
+    recycled_rows = get_recycled_materials_between(start_date.isoformat(), end_exclusive.isoformat())
+
+    combined: list[dict[str, Any]] = []
+    combined.extend(dict(row) for row in purchase_rows)
+    combined.extend(normalize_recycled_purchase_rows(recycled_rows))
+
+    combined.sort(key=purchase_report_sort_key, reverse=True)
+    return combined
 
 
 def row_material_match(row: dict[str, Any], material_name: str) -> bool:
@@ -807,10 +885,7 @@ def quick_current_month_purchase_report() -> ServiceResult:
     start = month_start(today_taipei())
     end = add_months(start, 1)
 
-    rows = get_purchase_records_between(
-        start.isoformat(),
-        end.isoformat(),
-    )
+    rows = load_combined_purchase_rows(start, end)
 
     result = build_purchase_result(rows, title="本月入庫紀錄")
     if result.ok and result.data:
@@ -1038,7 +1113,7 @@ def build_purchase_result(rows: list[dict[str, Any]], title: str = "入庫紀錄
     for row in rows:
         output.append(
             {
-                "日期": format_date(first_value(row, ["purchase_date", "created_at"])),
+                "日期": format_date(first_value(row, ["purchase_date", "inbound_date", "created_at"])),
                 "類型": purchase_type_label(row),
                 "批號": purchase_batch_no(row),
                 "原料名稱": first_value(row, ["material_name", "display_name", "name", "material_type"], "-"),
@@ -1131,7 +1206,7 @@ def run_advanced_query(
             return build_feed_result(rows)
 
         if data_type == "入庫紀錄":
-            rows = get_purchase_records_between(start.isoformat(), end_exclusive.isoformat())
+            rows = load_combined_purchase_rows(start, end_exclusive)
             rows = filter_common_rows(rows, category, material_name, supplier, "全部", user_name, include_machine=False)
             return build_purchase_result(rows)
 
@@ -1194,7 +1269,7 @@ def build_report_filter_options() -> ServiceResult:
         material_supplier_map: dict[str, list[str]] = {}
 
         material_rows = get_material_stock_rows()
-        recycled_rows = get_available_recycled_material_rows()
+        recycled_rows = get_recycled_materials_for_options(limit=1000)
         purchase_rows = get_purchase_records_for_options(limit=1000)
         feed_rows = get_feed_records_for_options(limit=1000)
         user_rows = get_user_rows()
