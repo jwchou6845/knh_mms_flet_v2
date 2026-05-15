@@ -1,8 +1,8 @@
 # =====================================================
 # KNH MMS v2
 # File: views/inventory_stocktake.py
-# File Revision: 2026-05-15-recycled-step3-chip-autohide-r11
-# Status: recycled stocktake step 3B - compact status chips with auto-hide
+# File Revision: 2026-05-15-recycled-step3-autohide-r10
+# Status: recycled stocktake step 3 - one-button auto-hide pilot
 # Last Updated: 2026-05-15 Asia/Taipei
 #
 # Purpose:
@@ -21,8 +21,6 @@
 # - r9 Step 2 新增回用料盤點單建立入口與唯讀明細顯示；暫不接單筆核對儲存 UI。
 # - r10 Step 3 只新增「儲存為在庫確認」單筆核對試行版；成功後局部更新 state，
 #   讓該筆從待核對清單移至已核對收合區，不重讀整張 detail、不整頁資料 reload。
-# - r11 Step 3B 將回用料核對改為 compact chip + 單顆儲存按鈕，支援五種核對狀態，
-#   並沿用 r10 已驗證正常的局部更新與 auto-hide 架構。
 #
 # Notes:
 # - Flet 0.84。
@@ -32,7 +30,7 @@
 # - r8 需搭配 services/stocktake_service.py r3 與 inventory_counts.count_mode 欄位。
 # - r9 Step 2 需搭配已部署的 stocktake_repo.py / stocktake_service.py 回用料資料層。
 # - 回用料不使用盲盤；本版保留建立回用料盤點單與在庫明細顯示。
-# - 本版開放五種回用料核對狀態，但仍不開放回用料送出待審核與自動修改 recycled_materials。
+# - 本版只開放「在庫確認」單一按鈕測試 auto-hide 流程；其他結果狀態後續再小步補上。
 # =====================================================
 
 from __future__ import annotations
@@ -135,7 +133,6 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
         "show_return_form": False,
         "show_checked_recycled_items": False,
         "recycled_saving_ids": set(),
-        "recycled_status_inputs": {},
     }
 
     ui_lock = threading.RLock()
@@ -794,24 +791,10 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
         detail["summary"] = recalc_recycled_summary_from_state(items)
         state["detail"] = detail
 
-    def save_recycled_selected_action(item: dict[str, Any]) -> None:
+    def save_recycled_confirmed_action(item: dict[str, Any]) -> None:
         item_id = str(item.get("id") or "")
         if not item_id:
             set_status("找不到回用料盤點明細。", "red", True)
-            rebuild()
-            return
-
-        selected_status = str(
-            (state.get("recycled_status_inputs") or {}).get(item_id)
-            or item.get("check_status")
-            or "confirmed"
-        )
-        if selected_status == "unchecked":
-            selected_status = "confirmed"
-
-        allowed = {"confirmed", "missing", "used_not_recorded", "scrap_required", "data_abnormal"}
-        if selected_status not in allowed:
-            set_status("請選擇回用料盤點結果。", "red", True)
             rebuild()
             return
 
@@ -825,7 +808,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
             try:
                 result = update_count_recycled_item_check(
                     item_id=item_id,
-                    check_status=selected_status,
+                    check_status="confirmed",
                     actual_weight_kg="",
                     actual_supplier="",
                     actual_status="",
@@ -844,15 +827,8 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
                     return
 
                 data = result.data or {}
-                updated_item = data.get("item") or {}
-                replace_recycled_item_in_state(updated_item)
-                try:
-                    (state.get("recycled_status_inputs") or {}).pop(item_id, None)
-                except Exception:
-                    pass
-
-                label = recycled_check_status_label(selected_status)
-                set_status(f"回用料已儲存為{label}。", "green", True)
+                replace_recycled_item_in_state(data.get("item") or {})
+                set_status("回用料已儲存為在庫確認。", "green", True)
                 rebuild()
 
             except Exception as ex:
@@ -1608,58 +1584,6 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
             ),
         )
 
-    def recycled_check_status_options() -> list[tuple[str, str]]:
-        return [
-            ("confirmed", "在庫確認"),
-            ("missing", "找不到實物"),
-            ("used_not_recorded", "已領用未登錄"),
-            ("scrap_required", "需報廢"),
-            ("data_abnormal", "資料異常"),
-        ]
-
-    def recycled_check_status_label(value: str) -> str:
-        mapping = dict(recycled_check_status_options())
-        return mapping.get(str(value or ""), "未核對")
-
-    def recycled_check_status_colors(value: str, selected: bool) -> tuple[str, str, str]:
-        status = str(value or "confirmed")
-        if status == "confirmed":
-            return (GREEN_SOFT if selected else "#FFFFFF", GREEN, GREEN_BORDER)
-        if status == "data_abnormal":
-            return (ORANGE_SOFT if selected else "#FFFFFF", ORANGE, ORANGE_BORDER)
-        return (RED_SOFT if selected else "#FFFFFF", RED, RED_BORDER)
-
-    def select_recycled_check_status(item_id: str, value: str) -> None:
-        if not item_id:
-            return
-        inputs = state.setdefault("recycled_status_inputs", {})
-        inputs[item_id] = value
-        rebuild()
-
-    def recycled_check_status_chip(item_id: str, value: str, label: str, selected_value: str, disabled: bool = False) -> ft.Container:
-        selected = value == selected_value
-        bg, fg, border = recycled_check_status_colors(value, selected)
-        return ft.Container(
-            height=34,
-            padding=ft.padding.symmetric(horizontal=10),
-            border_radius=17,
-            bgcolor=bg if not disabled else GRAY_SOFT,
-            border=ft.border.all(1, border if not disabled else BORDER),
-            ink=not disabled,
-            opacity=0.72 if disabled else 1,
-            on_click=(None if disabled else lambda e, iid=item_id, v=value: select_recycled_check_status(iid, v)),
-            content=ft.Row(
-                tight=True,
-                spacing=5,
-                alignment=ft.MainAxisAlignment.CENTER,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                controls=[
-                    ft.Icon(ft.Icons.CHECK_CIRCLE if selected else ft.Icons.RADIO_BUTTON_UNCHECKED, size=15, color=fg if not disabled else DISABLED),
-                    ft.Text(label, size=12, color=fg if not disabled else DISABLED, weight=ft.FontWeight.W_600, max_lines=1),
-                ],
-            ),
-        )
-
     def recycled_status_badge(item: dict[str, Any]) -> ft.Container:
         status = str(item.get("check_status") or "unchecked")
         label = str(item.get("check_status_label") or "未核對")
@@ -1783,47 +1707,31 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
         item_id = str(item.get("id") or "")
         saving_ids = state.get("recycled_saving_ids") or set()
         saving = item_id in saving_ids
-        current_status = str(item.get("check_status") or "unchecked")
-        selected_status = str((state.get("recycled_status_inputs") or {}).get(item_id) or current_status or "confirmed")
-        if selected_status == "unchecked":
-            selected_status = "confirmed"
-
-        status_chips = [
-            recycled_check_status_chip(item_id, value, label, selected_status, disabled=saving)
-            for value, label in recycled_check_status_options()
-        ]
-        selected_label = recycled_check_status_label(selected_status)
 
         action_box = ft.Container(
-            bgcolor="#FFFFFF",
-            border=ft.border.all(1, BORDER),
+            bgcolor=GREEN_SOFT,
+            border=ft.border.all(1, GREEN_BORDER),
             border_radius=12,
             padding=12,
             content=ft.Column(
                 spacing=10,
                 controls=[
                     ft.Text(
-                        "盤點結果 *",
+                        "盤點結果",
                         size=13,
                         color=TEXT,
                         weight=ft.FontWeight.W_600,
                     ),
                     ft.Text(
-                        "先點選盤點結果，再按儲存；儲存成功後會移到下方已核對收合區。",
+                        "此版先開放最常用的「在庫確認」。儲存成功後，該筆會移到下方已核對收合區。",
                         size=12,
                         color=TEXT_MUTED,
                     ),
-                    ft.Row(
-                        wrap=True,
-                        spacing=8,
-                        run_spacing=8,
-                        controls=status_chips,
-                    ),
                     stable_button(
-                        "正在儲存..." if saving else f"儲存此筆：{selected_label}",
-                        ft.Icons.SAVE_OUTLINED,
-                        GREEN_BTN if selected_status == "confirmed" else (ORANGE_BTN if selected_status == "data_abnormal" else RED_BTN),
-                        on_click=lambda e, it=item: save_recycled_selected_action(it),
+                        "正在儲存..." if saving else "儲存為在庫確認",
+                        ft.Icons.CHECK_CIRCLE_OUTLINE,
+                        GREEN_BTN,
+                        on_click=lambda e, it=item: save_recycled_confirmed_action(it),
                         expand=True,
                         disabled=saving,
                     ),
@@ -2058,7 +1966,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
             controls.append(
                 section_title(
                     "待核對回用料",
-                    f"剩餘 {len(pending_recycled_items)} 筆尚未核對；選擇結果並儲存後會移到已核對區。",
+                    f"剩餘 {len(pending_recycled_items)} 筆尚未核對；此版先開放「在庫確認」單筆儲存，成功後會移到已核對區。",
                 )
             )
             if not recycled_items:
