@@ -1,8 +1,8 @@
 # =====================================================
 # KNH MMS v2
 # File: views/inventory_stocktake_recycled.py
-# File Revision: 2026-05-15-recycled-subpage-r9.1
-# Status: create action no longer navigates from worker thread; route-only count_id
+# File Revision: 2026-05-15-recycled-subpage-r10
+# Status: action feedback and guarded navigation; route-only count_id
 # Last Updated: 2026-05-15 Asia/Taipei
 #
 # Purpose:
@@ -126,6 +126,9 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
         "show_create_form": False,
         "selected_recycled_item_id": "",
         "saving_recycled_item_ids": set(),
+        "navigation_busy": False,
+        "last_action_message": "",
+        "last_action_theme": "green",
     }
 
     ui_lock = threading.RLock()
@@ -174,6 +177,32 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
             nav(route)
             return
         page.go(route)
+
+    def guarded_navigate(route: str, message: str = "正在切換頁面...") -> None:
+        """
+        r10：導頁防連點。
+
+        回用料子頁在列表 / 明細間短時間多次切換時，會連續觸發 route_change、
+        loading placeholder 與背景資料載入。此函式讓同一個 view 只送出一次導頁，
+        並立即顯示狀態，避免使用者以為沒有點到而連點。
+        """
+        if state.get("navigation_busy"):
+            return
+
+        state["navigation_busy"] = True
+        set_status(message, "blue", True)
+
+        try:
+            show_snack(message, success=True)
+        except Exception:
+            pass
+
+        try:
+            navigate(route)
+        except Exception as ex:
+            state["navigation_busy"] = False
+            set_status(f"切換頁面失敗：{ex}", "red", True)
+            rebuild()
 
     def parse_count_id_from_route() -> str:
         """
@@ -942,8 +971,17 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
         # 在發出網路請求前先讀取備註欄位的當前值（view-level field 不受 rebuild 影響）
         note_value = str(_item_note_field.value or "")
 
+        status_label = STATUS_LABELS.get(selected_status, "核對結果")
+        recycled_no = str(item.get("recycled_no") or "-")
+
         saving_ids.add(item_id)
-        set_status(f"正在儲存：{STATUS_LABELS.get(selected_status, '核對結果')}", "blue", True)
+        set_status(f"正在儲存：{status_label}", "blue", True)
+        state["last_action_message"] = f"已送出：{recycled_no}｜{status_label}，正在儲存..."
+        state["last_action_theme"] = "blue"
+
+        # r10：立即給操作員底部回饋，不等待整頁 rebuild。
+        # 使用者盤點時通常已滑到頁面中段，看不到最上方同步膠囊。
+        show_snack(f"已送出：{status_label}，正在儲存...", success=True)
 
         def worker():
             try:
@@ -965,6 +1003,8 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
 
                 if not result.ok:
                     set_status(result.message, "red", True)
+                    state["last_action_message"] = result.message
+                    state["last_action_theme"] = "red"
                     rebuild()
                     return
 
@@ -976,13 +1016,17 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
                     state["selected_recycled_item_id"] = ""
                     _item_note_field.value = ""
 
-                set_status(f"已儲存：{STATUS_LABELS.get(selected_status, '核對結果')}", "green", True)
+                state["last_action_message"] = f"剛剛已儲存：{updated_item.get('recycled_no') or recycled_no}｜{status_label}，已移到最近已核對清單。"
+                state["last_action_theme"] = "green"
+                set_status(f"已儲存：{status_label}", "green", True)
                 rebuild()
 
             except Exception as ex:
                 saving_ids.discard(item_id)
                 if not is_active_view():
                     return
+                state["last_action_message"] = f"回用料核對失敗：{ex}"
+                state["last_action_theme"] = "red"
                 set_status(f"回用料核對失敗：{ex}", "red", True)
                 rebuild()
 
@@ -1086,6 +1130,37 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
     # =====================================================
     # 畫面區塊
     # =====================================================
+    def build_action_feedback_card() -> ft.Control:
+        """r10：顯示最近一次單筆核對結果，放在操作區附近，不依賴最上方同步膠囊。"""
+        message = str(state.get("last_action_message") or "").strip()
+        if not message:
+            return ft.Container(height=0)
+
+        theme = str(state.get("last_action_theme") or "green")
+        if theme == "red":
+            bg, fg, border, icon = RED_SOFT, RED, RED_BORDER, ft.Icons.ERROR_OUTLINE
+        elif theme == "orange":
+            bg, fg, border, icon = ORANGE_SOFT, ORANGE, ORANGE_BORDER, ft.Icons.INFO_OUTLINE
+        elif theme == "blue":
+            bg, fg, border, icon = BLUE_SOFT, BLUE, BLUE_BORDER, ft.Icons.SYNC
+        else:
+            bg, fg, border, icon = GREEN_SOFT, GREEN, GREEN_BORDER, ft.Icons.CHECK_CIRCLE_OUTLINE
+
+        return ft.Container(
+            bgcolor=bg,
+            border=ft.border.all(1, border),
+            border_radius=14,
+            padding=12,
+            content=ft.Row(
+                spacing=10,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[
+                    ft.Icon(icon, size=20, color=fg),
+                    ft.Text(message, size=13, color=fg, weight=ft.FontWeight.W_700, expand=True),
+                ],
+            ),
+        )
+
     def build_summary_cards(summary: dict[str, Any]) -> ft.Control:
         return ft.ResponsiveRow(
             columns=12,
@@ -1316,6 +1391,7 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
                             build_result_action_buttons(item, saving_current),
                         ],
                     ),
+                    build_action_feedback_card(),
                     # r8：使用 view-level _item_note_field，不在此重建 TextField
                     _item_note_field,
                     ft.Text(
@@ -1492,8 +1568,9 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
                                     "進入逐筆盤點",
                                     ft.Icons.ARROW_FORWARD,
                                     GREEN_BTN,
-                                    on_click=lambda e, cid=count_id: navigate(f"/inventory/stocktake/recycled?count_id={cid}"),
+                                    on_click=lambda e, cid=count_id: guarded_navigate(f"/inventory/stocktake/recycled?count_id={cid}", "正在前往逐筆盤點..."),
                                     expand=True,
+                                    disabled=state.get("navigation_busy"),
                                 ),
                             ],
                         ),
@@ -1622,7 +1699,7 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
                 controls=[
                     ft.Container(
                         col={"xs": 12, "md": 6},
-                        content=native_outline_button("回用料盤點單列表", ft.Icons.LIST_ALT, GREEN, on_click=lambda e: navigate("/inventory/stocktake/recycled"), expand=True, disabled=state.get("busy")),
+                        content=native_outline_button("回用料盤點單列表", ft.Icons.LIST_ALT, GREEN, on_click=lambda e: guarded_navigate("/inventory/stocktake/recycled", "正在返回回用料盤點單列表..."), expand=True, disabled=state.get("busy") or state.get("navigation_busy")),
                     ),
                 ],
             )
