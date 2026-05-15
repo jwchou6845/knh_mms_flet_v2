@@ -1,8 +1,8 @@
 # =====================================================
 # KNH MMS v2
 # File: views/inventory_stocktake_recycled.py
-# File Revision: 2026-05-15-recycled-subpage-r4
-# Status: recycled stocktake selectable workflow mobile button and save hotfix
+# File Revision: 2026-05-15-recycled-subpage-r5
+# Status: recycled stocktake selectable workflow direct action chips
 # Last Updated: 2026-05-15 Asia/Taipei
 #
 # Purpose:
@@ -23,6 +23,8 @@
 # - r3 加強「回用料盤點單列表」與儲存按鈕外框，提升手機 Web 可辨識度。
 # - r4 修正手機 Web 上 OutlinedButton 外框不明顯問題，改用外層 Container 強制顯示外框。
 # - r4 調整單筆儲存流程，不再於送出前整頁 rebuild 與全頁 busy，避免儲存期間所有按鈕卡住。
+# - r5 取消「先選 chip 再儲存」流程，改為直接點選結果膠囊即儲存，避免 chip 切換造成整頁 rebuild 卡頓。
+# - r5 導覽與送審按鈕改為自製輕量膠囊按鈕，修正手機 Web 文字被遮蔽與 disabled 色塊過重問題。
 #
 # Notes:
 # - Flet 0.84。
@@ -124,7 +126,6 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
         "counts": [],
         "detail": None,
         "active_count_id": "",
-        "selected_status": "confirmed",
         "creating": False,
         "show_create_form": False,
         "selected_recycled_item_id": "",
@@ -252,78 +253,122 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
             controls.append(ft.Text(subtitle, size=13, color=TEXT_MUTED, max_lines=3))
         return ft.Column(spacing=4, controls=controls)
 
-    def _button_wrapper(
-        button: ft.Control,
-        border_color: str,
-        bg_color: str = "#FFFFFF",
-        expand: bool = False,
+    def pill_button(
+        label: str,
+        icon,
+        color: str,
+        on_click=None,
+        bgcolor: str = "#FFFFFF",
+        border_color: str | None = None,
         disabled: bool = False,
+        expand: bool = False,
+        height: int = 50,
     ) -> ft.Container:
         """
-        Flet Web / 手機 Safari 上，OutlinedButton 的 side 在部分情境不明顯。
-        這裡用外層 Container 強制畫出可見外框；內層仍使用 Flet 原生 Button 的 text/icon，
-        避免手機關鍵按鈕使用 content=Row(...)。
+        手機 Web 專用輕量膠囊按鈕。
+
+        Flet 0.84 的 OutlinedButton / TextButton 在 iPhone Web 上曾出現外框不明顯、
+        文字被裁切或 disabled 色塊過重的問題。此子頁的回用料盤點操作改用
+        Container + ink 繪製固定高度膠囊，減少原生 Button 巢狀渲染成本。
         """
+        safe_color = DISABLED if disabled else color
+        safe_border = "#CBD5E1" if disabled else (border_color or color)
+        safe_bg = "#F8FAFC" if disabled else bgcolor
         return ft.Container(
-            height=56,
+            height=height,
             expand=expand,
-            bgcolor=bg_color,
-            border=ft.border.all(1.6, border_color if not disabled else "#CBD5E1"),
-            border_radius=14,
-            padding=ft.padding.all(1),
-            opacity=0.65 if disabled else 1,
-            content=button,
+            border_radius=height / 2,
+            bgcolor=safe_bg,
+            border=ft.border.all(1.5, safe_border),
+            padding=ft.padding.symmetric(horizontal=14),
+            alignment=ft.Alignment(0, 0),
+            ink=not disabled,
+            opacity=0.72 if disabled else 1,
+            on_click=None if disabled else on_click,
+            content=ft.Row(
+                tight=True,
+                spacing=8,
+                alignment=ft.MainAxisAlignment.CENTER,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[
+                    ft.Icon(icon, size=18, color=safe_color),
+                    ft.Text(
+                        label,
+                        size=14,
+                        color=safe_color,
+                        weight=ft.FontWeight.W_700,
+                        max_lines=1,
+                        overflow=ft.TextOverflow.ELLIPSIS,
+                    ),
+                ],
+            ),
         )
 
     def native_button(label: str, icon, bg: str, fg: str = "#FFFFFF", on_click=None, disabled: bool = False, expand: bool = False):
-        btn = ft.ElevatedButton(
-            label,
+        return pill_button(
+            label=label,
             icon=icon,
-            bgcolor=DISABLED if disabled else bg,
-            color=fg,
-            on_click=None if disabled else on_click,
+            color=fg if not disabled else DISABLED,
+            bgcolor=bg if not disabled else "#F8FAFC",
+            border_color=bg if not disabled else "#CBD5E1",
+            on_click=on_click,
             disabled=disabled,
-        )
-        btn.height = 54
-        btn.expand = True
-        try:
-            btn.style = ft.ButtonStyle(
-                shape=ft.RoundedRectangleBorder(radius=12),
-                elevation=0,
-            )
-        except Exception:
-            pass
-        return _button_wrapper(
-            btn,
-            border_color=bg,
-            bg_color=bg if disabled else "#FFFFFF",
             expand=expand,
-            disabled=disabled,
+            height=52,
         )
 
     def native_outline_button(label: str, icon, color: str, on_click=None, disabled: bool = False, expand: bool = False):
-        btn = ft.TextButton(
-            label,
+        return pill_button(
+            label=label,
             icon=icon,
-            on_click=None if disabled else on_click,
-            disabled=disabled,
-        )
-        btn.height = 54
-        btn.expand = True
-        try:
-            btn.style = ft.ButtonStyle(
-                color=color if not disabled else DISABLED,
-                bgcolor="#FFFFFF",
-                shape=ft.RoundedRectangleBorder(radius=12),
-            )
-        except Exception:
-            pass
-        return _button_wrapper(
-            btn,
+            color=color,
+            bgcolor="#FFFFFF",
             border_color=color,
-            bg_color="#FFFFFF",
-            expand=expand,
+            on_click=on_click,
             disabled=disabled,
+            expand=expand,
+            height=52,
+        )
+
+    def result_action_button(
+        label: str,
+        icon,
+        color: str,
+        soft: str,
+        border: str,
+        on_click=None,
+        disabled: bool = False,
+    ) -> ft.Control:
+        return pill_button(
+            label=label,
+            icon=icon,
+            color=color,
+            bgcolor=soft,
+            border_color=border,
+            on_click=on_click,
+            disabled=disabled,
+            expand=False,
+            height=42,
+        )
+
+    def disabled_submit_hint(pending_count: int) -> ft.Control:
+        return ft.Container(
+            height=52,
+            border_radius=26,
+            bgcolor=ORANGE_SOFT,
+            border=ft.border.all(1.2, ORANGE_BORDER),
+            alignment=ft.Alignment(0, 0),
+            padding=ft.padding.symmetric(horizontal=14),
+            content=ft.Row(
+                tight=True,
+                spacing=8,
+                alignment=ft.MainAxisAlignment.CENTER,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[
+                    ft.Icon(ft.Icons.SEND_OUTLINED, size=18, color=ORANGE),
+                    ft.Text(f"尚有 {pending_count} 筆未核對", size=14, color=ORANGE, weight=ft.FontWeight.W_700),
+                ],
+            ),
         )
 
     def text_field(value: Any = None, hint: str = "", multiline: bool = False, number: bool = False) -> ft.TextField:
@@ -603,7 +648,6 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
         if state.get("busy"):
             return
         state["selected_recycled_item_id"] = str(item_id or "").strip()
-        state["selected_status"] = "confirmed"
         rebuild()
 
     def replace_recycled_item_in_state(updated_item: dict[str, Any]) -> None:
@@ -706,7 +750,6 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
 
                 state["detail"] = data
                 state["loading"] = False
-                state["selected_status"] = "confirmed"
                 set_status("回用料盤點明細已同步", "green", True)
                 rebuild()
 
@@ -772,7 +815,7 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def save_current_item_action(item: dict[str, Any], note_field: ft.TextField) -> None:
+    def save_current_item_action(item: dict[str, Any], note_field: ft.TextField, check_status: str = "confirmed") -> None:
         """
         回用料單筆儲存專用流程。
 
@@ -791,7 +834,7 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
         if item_id in saving_ids:
             return
 
-        selected_status = str(state.get("selected_status") or "confirmed")
+        selected_status = str(check_status or "confirmed")
         if selected_status not in STATUS_LABELS:
             selected_status = "confirmed"
 
@@ -823,7 +866,6 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
 
                 updated_item = (result.data or {}).get("item") or {}
                 replace_recycled_item_in_state(updated_item)
-                state["selected_status"] = "confirmed"
                 if str(state.get("selected_recycled_item_id") or "") == item_id:
                     state["selected_recycled_item_id"] = ""
                 set_status(f"已儲存：{STATUS_LABELS.get(selected_status, '核對結果')}", "green", True)
@@ -949,33 +991,31 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
             ],
         )
 
-    def build_status_chip(value: str, label: str, color: str, soft: str, border: str, icon) -> ft.Control:
-        selected = state.get("selected_status") == value
-        return ft.Container(
-            padding=ft.padding.symmetric(horizontal=12, vertical=8),
-            border_radius=18,
-            bgcolor=soft if selected else "#FFFFFF",
-            border=ft.border.all(1, color if selected else border),
-            ink=True,
-            on_click=lambda e, v=value: select_status(v),
-            content=ft.Row(
-                tight=True,
-                spacing=6,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                controls=[
-                    ft.Icon(ft.Icons.CHECK_CIRCLE if selected else icon, size=16, color=color if selected else TEXT_MUTED),
-                    ft.Text(label, size=12, color=color if selected else TEXT_MUTED, weight=ft.FontWeight.W_600),
-                ],
-            ),
-        )
+    def build_result_action_buttons(item: dict[str, Any], note_field: ft.TextField, saving: bool) -> ft.Control:
+        """
+        r5：結果膠囊直接儲存，不再先切換 chip state。
+        這樣點選「需報廢 / 資料異常」時不會先觸發整頁 rebuild。
+        """
+        controls: list[ft.Control] = []
+        for value, label, color, soft, border, icon in STATUS_OPTIONS:
+            controls.append(
+                result_action_button(
+                    label=label,
+                    icon=icon,
+                    color=color,
+                    soft=soft,
+                    border=border,
+                    on_click=lambda e, it=item, nf=note_field, status_value=value: save_current_item_action(it, nf, status_value),
+                    disabled=saving,
+                )
+            )
 
-    def select_status(value: str) -> None:
-        if state.get("busy"):
-            return
-        if value not in STATUS_LABELS:
-            return
-        state["selected_status"] = value
-        rebuild()
+        return ft.Row(
+            wrap=True,
+            spacing=8,
+            run_spacing=8,
+            controls=controls,
+        )
 
     def build_pending_item_row(self_item: dict[str, Any], selected: bool = False) -> ft.Control:
         status = str(self_item.get("check_status") or "unchecked")
@@ -1045,7 +1085,7 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
                                 spacing=2,
                                 controls=[
                                     ft.Text(f"待核對回用料清單：{len(pending_items)} 筆", size=17, color=TEXT, weight=ft.FontWeight.BOLD),
-                                    ft.Text("請依現場實際看到的回用料編號點選，不必照系統順序盤點。", size=12, color=TEXT_MUTED),
+                                    ft.Text("隨選隨盤，不依照順序。", size=12, color=TEXT_MUTED),
                                 ],
                             ),
                         ],
@@ -1067,7 +1107,6 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
 
     def build_current_item_card(item: dict[str, Any], total_pending: int, total_all: int) -> ft.Control:
         note_field = text_field(value=item.get("note") or "", hint="備註（異常或找不到實物時建議填寫）", multiline=True)
-        selected_label = STATUS_LABELS.get(str(state.get("selected_status") or "confirmed"), "在庫確認")
         saving_ids = state.get("saving_recycled_item_ids") or set()
         saving_current = str(item.get("id") or "") in saving_ids
 
@@ -1155,28 +1194,13 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
                         spacing=8,
                         controls=[
                             ft.Text("盤點結果", size=13, color=TEXT, weight=ft.FontWeight.W_700),
-                            ft.Row(
-                                wrap=True,
-                                spacing=8,
-                                run_spacing=8,
-                                controls=[
-                                    build_status_chip(value, label, color, soft, border, icon)
-                                    for value, label, color, soft, border, icon in STATUS_OPTIONS
-                                ],
-                            ),
+                            ft.Text("點選結果後會直接儲存此筆；若是異常、找不到實物或需報廢，建議先填寫備註。", size=12, color=TEXT_MUTED),
+                            build_result_action_buttons(item, note_field, saving_current),
                         ],
                     ),
                     note_field,
-                    native_outline_button(
-                        "正在儲存..." if saving_current else f"儲存此筆：{selected_label}",
-                        ft.Icons.SAVE_OUTLINED,
-                        GREEN,
-                        on_click=lambda e, it=item, nf=note_field: save_current_item_action(it, nf),
-                        disabled=saving_current,
-                        expand=True,
-                    ),
                     ft.Text(
-                        "儲存後此筆會從待核對清單消失；請再從清單選擇現場正在盤點的下一包。",
+                        "儲存成功後此筆會從待核對清單消失；請再從清單選擇現場正在盤點的下一包。",
                         size=12,
                         color=TEXT_MUTED,
                     ),
@@ -1197,7 +1221,7 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
                         spacing=2,
                         controls=[
                             ft.Text(f"最近已核對：{len(checked_items)} / {total_all} 筆", size=17, color=TEXT, weight=ft.FontWeight.BOLD),
-                            ft.Text("只顯示最近 5 筆摘要，避免大量已核對項目造成畫面卡頓。", size=12, color=TEXT_MUTED),
+                            ft.Text("只顯示最近 5 筆摘要。", size=12, color=TEXT_MUTED),
                         ],
                     ),
                 ],
@@ -1423,7 +1447,7 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
                     border=ft.border.all(1, ORANGE_BORDER),
                     border_radius=14,
                     padding=14,
-                    content=ft.Text("此回用料盤點單已送出待審核。第一版確認後只保留紀錄，不自動修改回用料狀態。", size=13, color="#9A4A12"),
+                    content=ft.Text("此回用料盤點單已送出待審核。", size=13, color="#9A4A12"),
                 )
             )
 
@@ -1434,7 +1458,7 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
                     border=ft.border.all(1, GREEN_BORDER),
                     border_radius=14,
                     padding=14,
-                    content=ft.Text("此回用料盤點單已確認。第一版只保留盤點紀錄，不自動修改回用料狀態。", size=13, color=GREEN, weight=ft.FontWeight.W_600),
+                    content=ft.Text("此回用料盤點單已確認。", size=13, color=GREEN, weight=ft.FontWeight.W_600),
                 )
             )
 
@@ -1482,16 +1506,19 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
                     )
                 )
 
-            controls.append(
-                native_button(
-                    "送出待審核" if can_submit else f"尚有 {len(pending_items)} 筆未核對",
-                    ft.Icons.SEND_OUTLINED,
-                    ORANGE_BTN,
-                    on_click=submit_recycled_count_action,
-                    disabled=state.get("busy") or not can_submit,
-                    expand=True,
+            if can_submit:
+                controls.append(
+                    native_button(
+                        "送出待審核",
+                        ft.Icons.SEND_OUTLINED,
+                        ORANGE_BTN,
+                        on_click=submit_recycled_count_action,
+                        disabled=state.get("busy"),
+                        expand=True,
+                    )
                 )
-            )
+            else:
+                controls.append(disabled_submit_hint(len(pending_items)))
         elif status == "submitted":
             if can_confirm:
                 controls.append(
