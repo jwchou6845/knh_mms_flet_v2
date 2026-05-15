@@ -1,9 +1,9 @@
 # =====================================================
 # KNH MMS v2
 # File: views/inventory_stocktake.py
-# File Revision: 2026-05-14-recycled-step2-r9
-# Status: recycled stocktake step 2 - create and readonly detail
-# Last Updated: 2026-05-14 Asia/Taipei
+# File Revision: 2026-05-15-update-stability-r10-base
+# Status: stocktake view update stability base on recycled step 2
+# Last Updated: 2026-05-15 Asia/Taipei
 #
 # Purpose:
 # - 人工盤點功能頁面：建立盤點單、輸入實盤數、送出待審核、超級管理員確認盤點。
@@ -19,6 +19,7 @@
 # - r7 新增待審核退回修改流程。
 # - r8 新增盲盤模式 count_mode：草稿階段隱藏帳面庫存與差異，送出待審核後才顯示差異。
 # - r9 Step 2 新增回用料盤點單建立入口與唯讀明細顯示；暫不接單筆核對儲存 UI。
+# - r10-base 修正背景 thread / SnackBar / auto-hide 造成連續 page.update 的風險；先穩定盤點頁更新機制，不新增回用料儲存按鈕。
 #
 # Notes:
 # - Flet 0.84。
@@ -28,6 +29,7 @@
 # - r8 需搭配 services/stocktake_service.py r3 與 inventory_counts.count_mode 欄位。
 # - r9 Step 2 需搭配已部署的 stocktake_repo.py / stocktake_service.py 回用料資料層。
 # - 回用料不使用盲盤；此版只建立回用料盤點單並顯示在庫回用料明細。
+# - r10-base 為穩定化基準版，回用料單筆核對 / auto-hide 將待本版穩定後再分段導入。
 # =====================================================
 
 from __future__ import annotations
@@ -127,6 +129,8 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
         "show_entered_items": False,
         "show_void_form": False,
         "show_return_form": False,
+        "pending_snack_message": "",
+        "pending_snack_success": True,
     }
 
     ui_lock = threading.RLock()
@@ -196,24 +200,29 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
         state["status_theme"] = theme
         state["status_visible"] = visible
 
+        # r10-base：先暫停背景 auto-hide thread。
+        # 先前版本會在動作完成後再由獨立 thread 呼叫 rebuild() / page.update()，
+        # 在 Flet Web session 已失效時容易造成 put_nowait NoneType / Working 白畫面。
+        # 本版以穩定為優先，後續若要恢復 3 秒隱藏，需改為主流程單次更新機制。
         if auto_hide:
-            version = time.time()
-            state["status_hide_version"] = version
-
-            def worker():
-                time.sleep(3)
-                if not is_active_view():
-                    return
-                if state.get("status_hide_version") != version:
-                    return
-                state["status_visible"] = False
-                rebuild()
-
-            threading.Thread(target=worker, daemon=True).start()
+            state["status_hide_version"] = time.time()
 
     def show_snack(message: str, success: bool = True) -> None:
+        # r10-base：SnackBar 只先寫入 state，不直接 page.update()。
+        # 由 rebuild() 的 flush_pending_snack() 與主畫面更新一起輸出，避免同一動作連續 update。
+        state["pending_snack_message"] = str(message or "")
+        state["pending_snack_success"] = bool(success)
+
+    def flush_pending_snack() -> None:
+        message = str(state.get("pending_snack_message") or "").strip()
+        if not message:
+            return
+
+        success = bool(state.get("pending_snack_success", True))
+        state["pending_snack_message"] = ""
+
         snack = ft.SnackBar(
-            content=ft.Text(str(message), color="#FFFFFF", weight=ft.FontWeight.W_600),
+            content=ft.Text(message, color="#FFFFFF", weight=ft.FontWeight.W_600),
             bgcolor=GREEN if success else RED,
             duration=3000,
         )
@@ -222,11 +231,11 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
         except Exception:
             pass
         snack.open = True
-        safe_page_update()
 
     def run_action(action, loading_message: str = "處理中...") -> None:
         if state.get("busy"):
             show_snack("系統正在處理上一個動作，請稍候。", success=False)
+            rebuild()
             return
 
         state["busy"] = True
@@ -237,14 +246,14 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
             try:
                 action()
             except Exception as ex:
-                if not is_active_view():
-                    return
-                set_status(f"操作失敗：{ex}", "red", True)
-                show_snack(f"操作失敗：{ex}", success=False)
+                if is_active_view():
+                    set_status(f"操作失敗：{ex}", "red", True)
+                    show_snack(f"操作失敗：{ex}", success=False)
             finally:
+                # busy 必須無論 view 是否仍有效都先重置，避免頁面回來後永久 disabled。
+                state["busy"] = False
                 if not is_active_view():
                     return
-                state["busy"] = False
                 rebuild()
 
         threading.Thread(target=worker, daemon=True).start()
@@ -593,7 +602,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
         if show_loading:
             state["loading"] = True
             set_status("盤點資料同步中", "blue", True)
-            rebuild()
+            # r10-base：不要在 Timer thread 先 rebuild；由 worker 完成後統一更新一次。
 
         def worker():
             try:
@@ -2037,6 +2046,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
                 if not is_active_view():
                     return
                 main_host.content = build_page()
+                flush_pending_snack()
                 page.update()
         except Exception as ex:
             print("stocktake rebuild failed:", repr(ex), flush=True)
