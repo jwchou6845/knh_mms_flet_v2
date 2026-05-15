@@ -1,8 +1,8 @@
 # =====================================================
 # KNH MMS v2
 # File: views/inventory_stocktake.py
-# File Revision: 2026-05-15-stocktake-recycled-subpage-entry-r1
-# Status: stocktake main page routes recycled counts to subpage
+# File Revision: 2026-05-15-stocktake-list-lock-r12
+# Status: stocktake list action lock and compact buttons
 # Last Updated: 2026-05-15 Asia/Taipei
 #
 # Purpose:
@@ -21,6 +21,8 @@
 # - r9 Step 2 新增回用料盤點單建立入口與唯讀明細顯示；暫不接單筆核對儲存 UI。
 # - r10 Step 3 曾新增「儲存為在庫確認」單筆核對試行版。
 # - r11 將回用料逐筆核對移出本頁，改導向 /inventory/stocktake/recycled 子頁，避免本頁渲染 25 筆回用料卡片造成卡頓。
+# - r12 調整盤點單列表動作邏輯：已確認、已作廢與一般使用者不可修改的待審核盤點單不再顯示可編輯入口。
+# - r12 將盤點單列表與上方主要動作按鈕改為較小的 compact button，避免手機版大面積按鈕干擾閱讀。
 #
 # Notes:
 # - Flet 0.84。
@@ -31,6 +33,7 @@
 # - r9 Step 2 需搭配已部署的 stocktake_repo.py / stocktake_service.py 回用料資料層。
 # - 回用料不使用盲盤；本版保留建立回用料盤點單與在庫明細顯示。
 # - 回用料逐筆核對改由 views/inventory_stocktake_recycled.py 子頁處理；本頁只保留入口與列表導向。
+# - 列表中只有草稿盤點單可繼續修改；待審核僅超級管理員可查看 / 審核，已確認與已作廢只顯示鎖定提示。
 # =====================================================
 
 from __future__ import annotations
@@ -319,6 +322,64 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
             on_click=on_click,
             expand=expand,
             disabled=disabled,
+        )
+
+    def compact_button(
+        label: str,
+        icon,
+        bg: str,
+        fg: str = "#FFFFFF",
+        border: str | None = None,
+        on_click=None,
+        disabled: bool = False,
+    ) -> ft.Control:
+        """
+        手機列表用小型動作按鈕。
+
+        r12：不再使用 expand=True 的整列大按鈕，按鈕寬度只比文字略寬，
+        避免盤點單列表中已確認 / 已作廢紀錄的視覺重量過高。
+        """
+        return stable_button(
+            label=label,
+            icon=icon,
+            bg=bg,
+            fg=fg if not disabled else DISABLED,
+            border=border or bg,
+            on_click=on_click,
+            height=38,
+            expand=False,
+            disabled=disabled,
+        )
+
+    def compact_outline_button(label: str, icon, color: str, on_click=None, disabled: bool = False) -> ft.Control:
+        return compact_button(
+            label=label,
+            icon=icon,
+            bg="#FFFFFF",
+            fg=color if not disabled else DISABLED,
+            border=color if not disabled else "#CBD5E1",
+            on_click=on_click,
+            disabled=disabled,
+        )
+
+    def compact_lock_hint(label: str, icon, color: str = TEXT_MUTED) -> ft.Control:
+        return ft.Container(
+            height=34,
+            border_radius=17,
+            bgcolor="#F8FAFC",
+            border=ft.border.all(1, BORDER),
+            padding=ft.padding.symmetric(horizontal=12),
+            alignment=ft.Alignment(0, 0),
+            content=ft.Row(
+                tight=True,
+                spacing=6,
+                alignment=ft.MainAxisAlignment.CENTER,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[
+                    ft.Icon(icon, size=16, color=color),
+                    ft.Text(label, size=12, color=color, weight=ft.FontWeight.W_600, max_lines=1),
+                ],
+            ),
         )
 
     def field_group(label: str, control: ft.Control, required: bool = False) -> ft.Column:
@@ -1221,10 +1282,12 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
 
     def build_top_actions() -> ft.Control:
         return ft.Row(
-            spacing=12,
+            wrap=True,
+            spacing=10,
+            run_spacing=10,
             controls=[
-                stable_button("新增盤點單", ft.Icons.ADD, BLUE_BTN, on_click=open_create_form, expand=True, disabled=state.get("busy")),
-                outline_button("重新整理", ft.Icons.REFRESH, BLUE, lambda e: load_counts_background(True), expand=True, disabled=state.get("busy")),
+                compact_button("新增盤點單", ft.Icons.ADD, BLUE_BTN, on_click=open_create_form, disabled=state.get("busy")),
+                compact_outline_button("重新整理", ft.Icons.REFRESH, BLUE, lambda e: load_counts_background(True), disabled=state.get("busy")),
             ],
         )
 
@@ -1268,14 +1331,57 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
 
     def build_count_card(count: dict[str, Any], action_label: str = "查看明細", highlight: bool = False) -> ft.Control:
         is_recycled = str(count.get("count_type") or "") == "recycled"
-        display_action_label = "逐筆核對" if is_recycled else action_label
-        action_icon = ft.Icons.RECYCLING_OUTLINED if is_recycled else ft.Icons.VISIBILITY_OUTLINED
+        status = str(count.get("status") or "draft")
+        count_id = str(count.get("id") or "")
 
-        def open_action(e=None, cid=count.get("id")):
+        def open_action(e=None, cid=count_id):
+            if not cid:
+                return
             if is_recycled:
                 open_recycled_stocktake_page(str(cid or ""))
                 return
             load_detail(str(cid or ""))
+
+        action_controls: list[ft.Control] = []
+
+        # r12：列表動作依盤點單狀態鎖定，避免已確認 / 已作廢 / 待審核被誤認為可繼續修改。
+        if status == "draft":
+            action_controls.append(
+                compact_outline_button(
+                    "逐筆核對" if is_recycled else action_label,
+                    ft.Icons.RECYCLING_OUTLINED if is_recycled else ft.Icons.PLAY_ARROW_OUTLINED,
+                    GREEN if is_recycled else BLUE,
+                    open_action,
+                    disabled=state.get("busy"),
+                )
+            )
+        elif status == "submitted":
+            if is_super_admin():
+                action_controls.append(
+                    compact_outline_button(
+                        "查看 / 審核",
+                        ft.Icons.RATE_REVIEW_OUTLINED,
+                        ORANGE,
+                        open_action,
+                        disabled=state.get("busy"),
+                    )
+                )
+            else:
+                action_controls.append(
+                    compact_lock_hint("待審核中，不可修改", ft.Icons.LOCK_CLOCK_OUTLINED, ORANGE)
+                )
+        elif status == "confirmed":
+            action_controls.append(
+                compact_lock_hint("已確認，不可修改", ft.Icons.LOCK_OUTLINE, GREEN)
+            )
+        elif status == "voided":
+            action_controls.append(
+                compact_lock_hint("已作廢，不可修改", ft.Icons.BLOCK, RED)
+            )
+        else:
+            action_controls.append(
+                compact_lock_hint("狀態鎖定", ft.Icons.LOCK_OUTLINE, TEXT_MUTED)
+            )
 
         return ft.Container(
             bgcolor="#FFFFFF",
@@ -1322,10 +1428,10 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
                         ],
                     ),
                     ft.Row(
-                        spacing=10,
-                        controls=[
-                            outline_button(display_action_label, action_icon, GREEN if is_recycled else BLUE, open_action, expand=True),
-                        ],
+                        wrap=True,
+                        spacing=8,
+                        run_spacing=8,
+                        controls=action_controls,
                     ),
                 ],
             ),
