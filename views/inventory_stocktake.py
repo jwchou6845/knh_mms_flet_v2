@@ -1,8 +1,8 @@
 # =====================================================
 # KNH MMS v2
 # File: views/inventory_stocktake.py
-# File Revision: 2026-05-15-recycled-step3-checked-recent-r13
-# Status: recycled stocktake step 3D - fixed recent checked summary for recycled stocktake
+# File Revision: 2026-05-15-recycled-step3-checked-lite-r12
+# Status: recycled stocktake step 3C - lightweight checked list for recycled stocktake
 # Last Updated: 2026-05-15 Asia/Taipei
 #
 # Purpose:
@@ -25,8 +25,6 @@
 #   並沿用 r10 已驗證正常的局部更新與 auto-hide 架構。
 # - r12 將「已核對回用料」展開區改為極簡唯讀列，只顯示編號、核對結果、重量、供應商，
 #   避免展開時重建完整卡片造成 Flet Web Working / 卡頓。
-# - r13 移除「已核對回用料」顯示 / 收合切換，改為固定顯示最近 5 筆極簡摘要，
-#   避免切換按鈕觸發整頁 rebuild 造成 Working 卡頓。
 #
 # Notes:
 # - Flet 0.84。
@@ -37,7 +35,7 @@
 # - r9 Step 2 需搭配已部署的 stocktake_repo.py / stocktake_service.py 回用料資料層。
 # - 回用料不使用盲盤；本版保留建立回用料盤點單與在庫明細顯示。
 # - 本版開放五種回用料核對狀態，但仍不開放回用料送出待審核與自動修改 recycled_materials。
-# - 已核對回用料區固定顯示最近 5 筆極簡唯讀摘要，不提供顯示 / 收合按鈕。
+# - 已核對回用料展開區僅顯示極簡唯讀列，不建立 TextField、不顯示操作按鈕。
 # =====================================================
 
 from __future__ import annotations
@@ -138,9 +136,9 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
         "show_entered_items": False,
         "show_void_form": False,
         "show_return_form": False,
+        "show_checked_recycled_items": False,
         "recycled_saving_ids": set(),
         "recycled_status_inputs": {},
-        "recent_checked_recycled_ids": [],
     }
 
     ui_lock = threading.RLock()
@@ -518,6 +516,10 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
         state["show_entered_items"] = not bool(state.get("show_entered_items"))
         rebuild()
 
+    def toggle_checked_recycled_items(e=None):
+        state["show_checked_recycled_items"] = not bool(state.get("show_checked_recycled_items"))
+        rebuild()
+
     def toggle_void_form(e=None):
         state["show_void_form"] = not bool(state.get("show_void_form"))
         rebuild()
@@ -851,13 +853,6 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
                     (state.get("recycled_status_inputs") or {}).pop(item_id, None)
                 except Exception:
                     pass
-
-                # r13：記錄最近核對的回用料，讓已核對區固定顯示最近 5 筆，
-                # 不再透過「顯示 / 收合」切換觸發整頁 rebuild。
-                recent_ids = list(state.get("recent_checked_recycled_ids") or [])
-                recent_ids = [rid for rid in recent_ids if str(rid) != item_id]
-                recent_ids.insert(0, item_id)
-                state["recent_checked_recycled_ids"] = recent_ids[:5]
 
                 label = recycled_check_status_label(selected_status)
                 set_status(f"回用料已儲存為{label}。", "green", True)
@@ -2187,29 +2182,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
                 for item in pending_recycled_items:
                     controls.append(build_recycled_pending_item_card(item, editable=editable))
 
-            recent_ids = [str(value) for value in (state.get("recent_checked_recycled_ids") or [])]
-            checked_by_id = {str(item.get("id") or ""): item for item in checked_recycled_items}
-            recent_checked_items: list[dict[str, Any]] = []
-
-            for recent_id in recent_ids:
-                item = checked_by_id.get(recent_id)
-                if item:
-                    recent_checked_items.append(item)
-
-            for item in checked_recycled_items:
-                if len(recent_checked_items) >= 5:
-                    break
-                item_id = str(item.get("id") or "")
-                if item_id and item_id not in recent_ids:
-                    recent_checked_items.append(item)
-
-            recent_rows: list[ft.Control] = []
-            if checked_recycled_items and not recent_checked_items:
-                recent_checked_items = checked_recycled_items[:5]
-
-            for item in recent_checked_items[:5]:
-                recent_rows.append(build_recycled_checked_item_row(item))
-
+            checked_visible = bool(state.get("show_checked_recycled_items"))
             controls.append(
                 ft.Container(
                     bgcolor="#FFFFFF",
@@ -2229,22 +2202,34 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
                                         spacing=2,
                                         controls=[
                                             ft.Text(f"已核對回用料：{len(checked_recycled_items)} 筆", size=17, color=TEXT, weight=ft.FontWeight.BOLD),
-                                            ft.Text("固定顯示最近 5 筆極簡摘要；不提供展開 / 收合，避免手機 Web Working 卡頓。", size=12, color=TEXT_MUTED),
+                                            ft.Text("預設收合；展開時只顯示極簡清單，避免手機 Web 卡頓。", size=12, color=TEXT_MUTED),
                                         ],
+                                    ),
+                                    ft.Container(
+                                        height=36,
+                                        padding=ft.padding.symmetric(horizontal=12),
+                                        border_radius=18,
+                                        bgcolor=GREEN_SOFT if checked_visible else "#FFFFFF",
+                                        border=ft.border.all(1, GREEN_BORDER),
+                                        ink=True,
+                                        on_click=toggle_checked_recycled_items,
+                                        content=ft.Row(
+                                            tight=True,
+                                            spacing=6,
+                                            alignment=ft.MainAxisAlignment.CENTER,
+                                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                            controls=[
+                                                ft.Icon(ft.Icons.EXPAND_LESS if checked_visible else ft.Icons.EXPAND_MORE, size=17, color=GREEN),
+                                                ft.Text("收合" if checked_visible else "顯示", size=13, color=GREEN, weight=ft.FontWeight.W_600),
+                                            ],
+                                        ),
                                     ),
                                 ],
                             ),
                             *(
-                                recent_rows
-                                if recent_rows
-                                else [
-                                    ft.Container(
-                                        bgcolor="#F8FAFC",
-                                        border_radius=12,
-                                        padding=12,
-                                        content=ft.Text("尚無已核對回用料。", size=13, color=TEXT_MUTED),
-                                    )
-                                ]
+                                [build_recycled_checked_item_row(item) for item in checked_recycled_items]
+                                if checked_visible
+                                else []
                             ),
                         ],
                     ),
