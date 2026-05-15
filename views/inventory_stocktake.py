@@ -1,8 +1,8 @@
 # =====================================================
 # KNH MMS v2
 # File: views/inventory_stocktake.py
-# File Revision: 2026-05-15-recycled-step3-checked-lite-r12
-# Status: recycled stocktake step 3C - lightweight checked list for recycled stocktake
+# File Revision: 2026-05-15-recycled-step3-chip-autohide-r11
+# Status: recycled stocktake step 3B - compact status chips with auto-hide
 # Last Updated: 2026-05-15 Asia/Taipei
 #
 # Purpose:
@@ -23,8 +23,6 @@
 #   讓該筆從待核對清單移至已核對收合區，不重讀整張 detail、不整頁資料 reload。
 # - r11 Step 3B 將回用料核對改為 compact chip + 單顆儲存按鈕，支援五種核對狀態，
 #   並沿用 r10 已驗證正常的局部更新與 auto-hide 架構。
-# - r12 將「已核對回用料」展開區改為極簡唯讀列，只顯示編號、核對結果、重量、供應商，
-#   避免展開時重建完整卡片造成 Flet Web Working / 卡頓。
 #
 # Notes:
 # - Flet 0.84。
@@ -35,7 +33,6 @@
 # - r9 Step 2 需搭配已部署的 stocktake_repo.py / stocktake_service.py 回用料資料層。
 # - 回用料不使用盲盤；本版保留建立回用料盤點單與在庫明細顯示。
 # - 本版開放五種回用料核對狀態，但仍不開放回用料送出待審核與自動修改 recycled_materials。
-# - 已核對回用料展開區僅顯示極簡唯讀列，不建立 TextField、不顯示操作按鈕。
 # =====================================================
 
 from __future__ import annotations
@@ -1840,102 +1837,6 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
             pass
         return card
 
-    def build_recycled_checked_item_row(item: dict[str, Any]) -> ft.Control:
-        """
-        r12：已核對回用料展開區專用的極簡唯讀列。
-
-        目的：
-        - 不重建完整回用料卡片。
-        - 不建立 TextField。
-        - 不顯示操作按鈕。
-        - 降低手機 Web 展開已核對區時的 Flet 控制項數量，避免 Working / 卡頓。
-        """
-        status = str(item.get("check_status") or "unchecked")
-        status_label = str(item.get("check_status_label") or recycled_check_status_label(status))
-
-        if status == "confirmed":
-            result_bg, result_fg, result_border = GREEN_SOFT, GREEN, GREEN_BORDER
-        elif status == "data_abnormal":
-            result_bg, result_fg, result_border = ORANGE_SOFT, ORANGE, ORANGE_BORDER
-        else:
-            result_bg, result_fg, result_border = RED_SOFT, RED, RED_BORDER
-
-        return ft.Container(
-            bgcolor="#F8FAFC",
-            border=ft.border.all(1, BORDER),
-            border_radius=12,
-            padding=12,
-            content=ft.ResponsiveRow(
-                columns=12,
-                spacing=8,
-                run_spacing=8,
-                controls=[
-                    ft.Container(
-                        col={"xs": 12, "md": 3},
-                        content=ft.Column(
-                            spacing=2,
-                            controls=[
-                                ft.Text("回用料編號", size=11, color=TEXT_MUTED),
-                                ft.Text(
-                                    to_text(item.get("recycled_no")),
-                                    size=14,
-                                    color=TEXT,
-                                    weight=ft.FontWeight.BOLD,
-                                    max_lines=1,
-                                    overflow=ft.TextOverflow.ELLIPSIS,
-                                ),
-                            ],
-                        ),
-                    ),
-                    ft.Container(
-                        col={"xs": 6, "md": 3},
-                        content=ft.Column(
-                            spacing=2,
-                            controls=[
-                                ft.Text("核對結果", size=11, color=TEXT_MUTED),
-                                ft.Container(
-                                    height=28,
-                                    padding=ft.padding.symmetric(horizontal=9),
-                                    border_radius=14,
-                                    bgcolor=result_bg,
-                                    border=ft.border.all(1, result_border),
-                                    alignment=ft.Alignment(0, 0),
-                                    content=ft.Text(status_label, size=12, color=result_fg, weight=ft.FontWeight.W_600, max_lines=1),
-                                ),
-                            ],
-                        ),
-                    ),
-                    ft.Container(
-                        col={"xs": 6, "md": 2},
-                        content=ft.Column(
-                            spacing=2,
-                            controls=[
-                                ft.Text("重量", size=11, color=TEXT_MUTED),
-                                ft.Text(fmt_num(item.get("weight_kg"), " KG"), size=14, color=TEXT, weight=ft.FontWeight.W_600),
-                            ],
-                        ),
-                    ),
-                    ft.Container(
-                        col={"xs": 12, "md": 4},
-                        content=ft.Column(
-                            spacing=2,
-                            controls=[
-                                ft.Text("供應商", size=11, color=TEXT_MUTED),
-                                ft.Text(
-                                    to_text(item.get("supplier")),
-                                    size=14,
-                                    color=TEXT,
-                                    weight=ft.FontWeight.W_600,
-                                    max_lines=1,
-                                    overflow=ft.TextOverflow.ELLIPSIS,
-                                ),
-                            ],
-                        ),
-                    ),
-                ],
-            ),
-        )
-
     def build_detail_panel() -> ft.Control:
         detail = state.get("detail")
         if not detail:
@@ -2202,7 +2103,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
                                         spacing=2,
                                         controls=[
                                             ft.Text(f"已核對回用料：{len(checked_recycled_items)} 筆", size=17, color=TEXT, weight=ft.FontWeight.BOLD),
-                                            ft.Text("預設收合；展開時只顯示極簡清單，避免手機 Web 卡頓。", size=12, color=TEXT_MUTED),
+                                            ft.Text("預設收合，避免已完成項目佔滿畫面。", size=12, color=TEXT_MUTED),
                                         ],
                                     ),
                                     ft.Container(
@@ -2227,7 +2128,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
                                 ],
                             ),
                             *(
-                                [build_recycled_checked_item_row(item) for item in checked_recycled_items]
+                                [build_recycled_readonly_item_card(item) for item in checked_recycled_items]
                                 if checked_visible
                                 else []
                             ),
