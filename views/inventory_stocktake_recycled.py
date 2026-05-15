@@ -1,8 +1,8 @@
 # =====================================================
 # KNH MMS v2
 # File: views/inventory_stocktake_recycled.py
-# File Revision: 2026-05-15-recycled-subpage-r11
-# Status: add recycled stocktake void flow
+# File Revision: 2026-05-15-recycled-subpage-r12
+# Status: lock non-editable list actions and compact list buttons
 # Last Updated: 2026-05-15 Asia/Taipei
 #
 # Purpose:
@@ -32,6 +32,10 @@
 # - r11 [FEATURE] 補上回用料盤點單作廢流程：超級管理員可作廢草稿 / 待審核盤點單，作廢原因必填。
 #   使用既有 services.stocktake_service.void_inventory_count，不直接修改資料庫。
 # - r11 只改 views/inventory_stocktake_recycled.py，不動 main.py / service / repo。
+# - r12 [UX] 回用料盤點單列表中，只有草稿盤點單顯示「進入逐筆盤點」；
+#   待審核改為「查看 / 審核」，已確認 / 已作廢顯示鎖定提示，不再以逐筆盤點入口呈現。
+# - r12 [UX] 列表卡片的主要動作按鈕改為較小的 compact button，避免手機版大面積綠色按鈕過重。
+# - r12 只改 views/inventory_stocktake_recycled.py，不動 main.py / service / repo。
 # =====================================================
 
 from __future__ import annotations
@@ -383,6 +387,120 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
             expand=expand,
             height=52,
         )
+
+    def compact_list_button(
+        label: str,
+        icon,
+        color: str,
+        on_click=None,
+        bgcolor: str = "#FFFFFF",
+        border_color: str | None = None,
+        disabled: bool = False,
+    ) -> ft.Control:
+        """
+        r12：列表卡片使用的較小動作按鈕。
+
+        不再讓「進入逐筆盤點」佔滿整張卡片寬度，避免手機版綠色區塊過重。
+        """
+        safe_color = DISABLED if disabled else color
+        safe_border = "#CBD5E1" if disabled else (border_color or color)
+        safe_bg = "#F8FAFC" if disabled else bgcolor
+
+        return ft.Container(
+            width=238,
+            height=44,
+            border_radius=22,
+            bgcolor=safe_bg,
+            border=ft.border.all(1.4, safe_border),
+            padding=ft.padding.symmetric(horizontal=12),
+            alignment=ft.Alignment(0, 0),
+            ink=False,
+            opacity=0.72 if disabled else 1,
+            on_click=None if disabled else on_click,
+            content=ft.Row(
+                tight=True,
+                spacing=7,
+                alignment=ft.MainAxisAlignment.CENTER,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[
+                    ft.Icon(icon, size=17, color=safe_color),
+                    ft.Text(
+                        label,
+                        size=13,
+                        color=safe_color,
+                        weight=ft.FontWeight.W_700,
+                        max_lines=1,
+                        overflow=ft.TextOverflow.ELLIPSIS,
+                    ),
+                ],
+            ),
+        )
+
+    def locked_count_hint(status_label: str) -> ft.Control:
+        return ft.Container(
+            border_radius=14,
+            bgcolor="#F8FAFC",
+            border=ft.border.all(1, BORDER),
+            padding=ft.padding.symmetric(horizontal=12, vertical=10),
+            content=ft.Row(
+                spacing=8,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[
+                    ft.Icon(ft.Icons.LOCK_OUTLINED, size=17, color=TEXT_MUTED),
+                    ft.Text(
+                        f"{status_label or '已鎖定'}，不可逐筆盤點。",
+                        size=13,
+                        color=TEXT_MUTED,
+                        weight=ft.FontWeight.W_600,
+                    ),
+                ],
+            ),
+        )
+
+    def build_count_list_action(count: dict[str, Any]) -> ft.Control:
+        status = str(count.get("status") or "draft")
+        status_text = str(count.get("status_label") or "")
+        count_id = str(count.get("id") or "")
+
+        if status == "draft":
+            return ft.Row(
+                alignment=ft.MainAxisAlignment.END,
+                controls=[
+                    compact_list_button(
+                        "進入逐筆盤點",
+                        ft.Icons.ARROW_FORWARD,
+                        "#FFFFFF",
+                        bgcolor=GREEN_BTN,
+                        border_color=GREEN_BTN,
+                        on_click=lambda e, cid=count_id: guarded_navigate(
+                            f"/inventory/stocktake/recycled?count_id={cid}",
+                            "正在前往逐筆盤點...",
+                        ),
+                        disabled=state.get("navigation_busy"),
+                    )
+                ],
+            )
+
+        if status == "submitted" and is_super_admin():
+            return ft.Row(
+                alignment=ft.MainAxisAlignment.END,
+                controls=[
+                    compact_list_button(
+                        "查看 / 審核",
+                        ft.Icons.VISIBILITY_OUTLINED,
+                        ORANGE,
+                        bgcolor="#FFFFFF",
+                        border_color=ORANGE_BORDER,
+                        on_click=lambda e, cid=count_id: guarded_navigate(
+                            f"/inventory/stocktake/recycled?count_id={cid}",
+                            "正在開啟待審核盤點單...",
+                        ),
+                        disabled=state.get("navigation_busy"),
+                    )
+                ],
+            )
+
+        return locked_count_hint(status_text)
 
     def result_action_button(
         label: str,
@@ -1670,14 +1788,7 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
                                         status_badge(count.get("status"), count.get("status_label") or "-"),
                                     ],
                                 ),
-                                native_button(
-                                    "進入逐筆盤點",
-                                    ft.Icons.ARROW_FORWARD,
-                                    GREEN_BTN,
-                                    on_click=lambda e, cid=count_id: guarded_navigate(f"/inventory/stocktake/recycled?count_id={cid}", "正在前往逐筆盤點..."),
-                                    expand=True,
-                                    disabled=state.get("navigation_busy"),
-                                ),
+                                build_count_list_action(count),
                             ],
                         ),
                     )
