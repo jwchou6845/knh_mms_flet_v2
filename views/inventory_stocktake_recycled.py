@@ -1,8 +1,8 @@
 # =====================================================
 # KNH MMS v2
 # File: views/inventory_stocktake_recycled.py
-# File Revision: 2026-05-15-recycled-subpage-r5
-# Status: recycled stocktake selectable workflow direct action chips
+# File Revision: 2026-05-15-recycled-subpage-r6
+# Status: recycled stocktake selectable workflow UI stability fix
 # Last Updated: 2026-05-15 Asia/Taipei
 #
 # Purpose:
@@ -25,6 +25,8 @@
 # - r4 調整單筆儲存流程，不再於送出前整頁 rebuild 與全頁 busy，避免儲存期間所有按鈕卡住。
 # - r5 取消「先選 chip 再儲存」流程，改為直接點選結果膠囊即儲存，避免 chip 切換造成整頁 rebuild 卡頓。
 # - r5 導覽與送審按鈕改為自製輕量膠囊按鈕，修正手機 Web 文字被遮蔽與 disabled 色塊過重問題。
+# - r6 修正盤點結果區大灰框問題：結果按鈕改為固定尺寸卡片式動作列，備註欄位改為白底低高度。
+# - r6 修正未核對提示色塊過重問題，改為輕量提示卡，不再像 disabled 大按鈕。
 #
 # Notes:
 # - Flet 0.84。
@@ -282,7 +284,7 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
             border=ft.border.all(1.5, safe_border),
             padding=ft.padding.symmetric(horizontal=14),
             alignment=ft.Alignment(0, 0),
-            ink=not disabled,
+            ink=False,
             opacity=0.72 if disabled else 1,
             on_click=None if disabled else on_click,
             content=ft.Row(
@@ -339,34 +341,76 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
         on_click=None,
         disabled: bool = False,
     ) -> ft.Control:
-        return pill_button(
-            label=label,
-            icon=icon,
-            color=color,
-            bgcolor=soft,
-            border_color=border,
-            on_click=on_click,
-            disabled=disabled,
-            expand=False,
-            height=42,
-        )
+        """
+        r6：盤點結果用固定尺寸卡片式按鈕。
 
-    def disabled_submit_hint(pending_count: int) -> ft.Control:
+        r5 的膠囊按鈕在部分手機 Web 上出現大灰框渲染問題。
+        這裡改用外層 Container 固定高度與邊框，不使用 ink ripple，降低 Flet Web
+        對 Material/Ink 層的重繪負擔。
+        """
+        safe_color = DISABLED if disabled else color
+        safe_bg = "#F8FAFC" if disabled else soft
+        safe_border = "#CBD5E1" if disabled else border
+
         return ft.Container(
-            height=52,
-            border_radius=26,
-            bgcolor=ORANGE_SOFT,
-            border=ft.border.all(1.2, ORANGE_BORDER),
+            height=46,
+            border_radius=15,
+            bgcolor=safe_bg,
+            border=ft.border.all(1.4, safe_border),
+            padding=ft.padding.symmetric(horizontal=10),
             alignment=ft.Alignment(0, 0),
-            padding=ft.padding.symmetric(horizontal=14),
+            opacity=0.62 if disabled else 1,
+            on_click=None if disabled else on_click,
             content=ft.Row(
                 tight=True,
-                spacing=8,
+                spacing=6,
                 alignment=ft.MainAxisAlignment.CENTER,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 controls=[
-                    ft.Icon(ft.Icons.SEND_OUTLINED, size=18, color=ORANGE),
-                    ft.Text(f"尚有 {pending_count} 筆未核對", size=14, color=ORANGE, weight=ft.FontWeight.W_700),
+                    ft.Icon(icon, size=17, color=safe_color),
+                    ft.Text(
+                        label,
+                        size=13,
+                        color=safe_color,
+                        weight=ft.FontWeight.W_700,
+                        max_lines=1,
+                        overflow=ft.TextOverflow.ELLIPSIS,
+                    ),
+                ],
+            ),
+        )
+
+    def disabled_submit_hint(pending_count: int) -> ft.Control:
+        """尚未可送審時的提示卡。
+
+        r5 的橘色 disabled 大按鈕在手機 Web 上容易像一塊色塊；r6 改為
+        左對齊提示卡，避免誤認為可點擊按鈕，也降低視覺重量。
+        """
+        return ft.Container(
+            border_radius=15,
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1.2, ORANGE_BORDER),
+            padding=ft.padding.symmetric(horizontal=14, vertical=12),
+            content=ft.Row(
+                spacing=10,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[
+                    ft.Container(
+                        width=34,
+                        height=34,
+                        border_radius=17,
+                        bgcolor=ORANGE_SOFT,
+                        alignment=ft.Alignment(0, 0),
+                        content=ft.Icon(ft.Icons.SEND_OUTLINED, size=18, color=ORANGE),
+                    ),
+                    ft.Column(
+                        expand=True,
+                        spacing=2,
+                        controls=[
+                            ft.Text(f"尚有 {pending_count} 筆未核對", size=14, color=TEXT, weight=ft.FontWeight.W_700),
+                            ft.Text("所有回用料核對完成後才可送出待審核。", size=12, color=TEXT_MUTED),
+                        ],
+                    ),
                 ],
             ),
         )
@@ -993,25 +1037,30 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
 
     def build_result_action_buttons(item: dict[str, Any], note_field: ft.TextField, saving: bool) -> ft.Control:
         """
-        r5：結果膠囊直接儲存，不再先切換 chip state。
-        這樣點選「需報廢 / 資料異常」時不會先觸發整頁 rebuild。
+        r6：結果按鈕改為 ResponsiveRow。
+
+        每顆按鈕有明確欄寬，手機版兩欄排列，避免 Row wrap 在 Safari / Flet Web
+        上偶發產生大灰色占位區。點擊仍直接儲存，不再有 chip 切換重建頁面的流程。
         """
         controls: list[ft.Control] = []
         for value, label, color, soft, border, icon in STATUS_OPTIONS:
             controls.append(
-                result_action_button(
-                    label=label,
-                    icon=icon,
-                    color=color,
-                    soft=soft,
-                    border=border,
-                    on_click=lambda e, it=item, nf=note_field, status_value=value: save_current_item_action(it, nf, status_value),
-                    disabled=saving,
+                ft.Container(
+                    col={"xs": 6, "md": 4},
+                    content=result_action_button(
+                        label=label,
+                        icon=icon,
+                        color=color,
+                        soft=soft,
+                        border=border,
+                        on_click=lambda e, it=item, nf=note_field, status_value=value: save_current_item_action(it, nf, status_value),
+                        disabled=saving,
+                    ),
                 )
             )
 
-        return ft.Row(
-            wrap=True,
+        return ft.ResponsiveRow(
+            columns=12,
             spacing=8,
             run_spacing=8,
             controls=controls,
@@ -1085,7 +1134,7 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
                                 spacing=2,
                                 controls=[
                                     ft.Text(f"待核對回用料清單：{len(pending_items)} 筆", size=17, color=TEXT, weight=ft.FontWeight.BOLD),
-                                    ft.Text("隨選隨盤，不依照順序。", size=12, color=TEXT_MUTED),
+                                    ft.Text("請依現場實際看到的回用料編號點選，不必照系統順序盤點。", size=12, color=TEXT_MUTED),
                                 ],
                             ),
                         ],
@@ -1106,7 +1155,23 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
         )
 
     def build_current_item_card(item: dict[str, Any], total_pending: int, total_all: int) -> ft.Control:
-        note_field = text_field(value=item.get("note") or "", hint="備註（異常或找不到實物時建議填寫）", multiline=True)
+        note_field = ft.TextField(
+            value=str(item.get("note") or ""),
+            hint_text="備註（異常或找不到實物時建議填寫）",
+            hint_style=ft.TextStyle(size=13, color="#94A3B8"),
+            label="備註（選填）",
+            label_style=ft.TextStyle(size=13, color="#94A3B8"),
+            bgcolor="#FFFFFF",
+            border_color=BORDER,
+            focused_border_color=GREEN,
+            border_radius=12,
+            text_size=14,
+            height=78,
+            multiline=True,
+            min_lines=2,
+            max_lines=2,
+            content_padding=ft.padding.symmetric(horizontal=14, vertical=10),
+        )
         saving_ids = state.get("saving_recycled_item_ids") or set()
         saving_current = str(item.get("id") or "") in saving_ids
 
@@ -1221,7 +1286,7 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
                         spacing=2,
                         controls=[
                             ft.Text(f"最近已核對：{len(checked_items)} / {total_all} 筆", size=17, color=TEXT, weight=ft.FontWeight.BOLD),
-                            ft.Text("只顯示最近 5 筆摘要。", size=12, color=TEXT_MUTED),
+                            ft.Text("只顯示最近 5 筆摘要，避免大量已核對項目造成畫面卡頓。", size=12, color=TEXT_MUTED),
                         ],
                     ),
                 ],
@@ -1447,7 +1512,7 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
                     border=ft.border.all(1, ORANGE_BORDER),
                     border_radius=14,
                     padding=14,
-                    content=ft.Text("此回用料盤點單已送出待審核。", size=13, color="#9A4A12"),
+                    content=ft.Text("此回用料盤點單已送出待審核。第一版確認後只保留紀錄，不自動修改回用料狀態。", size=13, color="#9A4A12"),
                 )
             )
 
@@ -1458,7 +1523,7 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
                     border=ft.border.all(1, GREEN_BORDER),
                     border_radius=14,
                     padding=14,
-                    content=ft.Text("此回用料盤點單已確認。", size=13, color=GREEN, weight=ft.FontWeight.W_600),
+                    content=ft.Text("此回用料盤點單已確認。第一版只保留盤點紀錄，不自動修改回用料狀態。", size=13, color=GREEN, weight=ft.FontWeight.W_600),
                 )
             )
 
