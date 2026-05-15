@@ -1,9 +1,9 @@
 # =====================================================
 # KNH MMS v2
 # File: views/inventory_stocktake.py
-# File Revision: 2026-05-14-recycled-step2-r9
-# Status: recycled stocktake step 2 - create and readonly detail
-# Last Updated: 2026-05-14 Asia/Taipei
+# File Revision: 2026-05-15-recycled-step3-safe-r10
+# Status: recycled stocktake step 3 safe item save
+# Last Updated: 2026-05-15 Asia/Taipei
 #
 # Purpose:
 # - 人工盤點功能頁面：建立盤點單、輸入實盤數、送出待審核、超級管理員確認盤點。
@@ -19,6 +19,7 @@
 # - r7 新增待審核退回修改流程。
 # - r8 新增盲盤模式 count_mode：草稿階段隱藏帳面庫存與差異，送出待審核後才顯示差異。
 # - r9 Step 2 新增回用料盤點單建立入口與唯讀明細顯示；暫不接單筆核對儲存 UI。
+# - r10 Safe Step 3 新增回用料單筆核對儲存按鈕；儲存後不重讀整張 detail、不整頁 rebuild，降低 Flet Web 白畫面風險。
 #
 # Notes:
 # - Flet 0.84。
@@ -27,7 +28,7 @@
 # - 第一版新料 / 母粒正式庫存盤點已完成；回用料逐筆盤點採分階段重新導入。
 # - r8 需搭配 services/stocktake_service.py r3 與 inventory_counts.count_mode 欄位。
 # - r9 Step 2 需搭配已部署的 stocktake_repo.py / stocktake_service.py 回用料資料層。
-# - 回用料不使用盲盤；此版只建立回用料盤點單並顯示在庫回用料明細。
+# - 回用料不使用盲盤；r10 Safe Step 3 只接單筆核對儲存，後續分類與送審再分階段處理。
 # =====================================================
 
 from __future__ import annotations
@@ -46,6 +47,7 @@ from services.stocktake_service import (
     now_taipei,
     return_inventory_count,
     submit_inventory_count,
+    update_count_recycled_item_check,
     update_count_item_actual_stock,
     void_inventory_count,
 )
@@ -723,6 +725,82 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
             show_snack(result.message, success=True)
 
         run_action(action, "正在更新實盤數...")
+
+    def save_recycled_item_action(
+        item: dict[str, Any],
+        check_status: str,
+        actual_weight_field: ft.TextField,
+        actual_supplier_field: ft.TextField,
+        actual_status_field: ft.TextField,
+        note_field: ft.TextField,
+    ) -> None:
+        """
+        回用料單筆核對儲存安全版。
+
+        重要：此函式刻意不呼叫 load_inventory_count_detail()、不刷新整張明細、
+        不 rebuild 全頁，避免 Flet Web session / websocket 失效後背景 page.update()
+        觸發白畫面。儲存後只提示成功，讓使用者手動重新整理確認。
+        """
+        if state.get("busy"):
+            show_snack("系統正在處理上一個動作，請稍候。", success=False)
+            return
+
+        state["busy"] = True
+        set_status("正在儲存回用料核對結果...", "blue", True)
+        safe_page_update()
+
+        def worker():
+            try:
+                result = update_count_recycled_item_check(
+                    item_id=str(item.get("id") or ""),
+                    check_status=str(check_status or "unchecked"),
+                    actual_weight_kg=str(actual_weight_field.value or ""),
+                    actual_supplier=str(actual_supplier_field.value or ""),
+                    actual_status=str(actual_status_field.value or ""),
+                    note=str(note_field.value or ""),
+                    checked_by_user_id=current_user_id(),
+                    checked_by_name=current_user_name(),
+                )
+
+                if not is_active_view():
+                    return
+
+                if not result.ok:
+                    set_status(result.message, "red", True)
+                    show_snack(result.message, success=False)
+                    return
+
+                # 只同步目前記憶體中的 item，避免重新讀整張 detail 並整頁 rebuild。
+                updated_item = (result.data or {}).get("item") or {}
+                if updated_item:
+                    try:
+                        item.update(updated_item)
+                    except Exception:
+                        pass
+
+                    detail = state.get("detail") or {}
+                    recycled_items = detail.get("recycled_items") or []
+                    for idx, old_item in enumerate(recycled_items):
+                        if str(old_item.get("id") or "") == str(updated_item.get("id") or item.get("id") or ""):
+                            try:
+                                recycled_items[idx] = {**old_item, **updated_item}
+                            except Exception:
+                                recycled_items[idx] = updated_item
+                            break
+
+                set_status("回用料核對結果已儲存。請手動重新整理或重新進入明細確認狀態。", "green", True)
+                show_snack("回用料核對結果已儲存。", success=True)
+
+            except Exception as ex:
+                if not is_active_view():
+                    return
+                set_status(f"回用料核對儲存失敗：{ex}", "red", True)
+                show_snack(f"回用料核對儲存失敗：{ex}", success=False)
+            finally:
+                state["busy"] = False
+                # 不呼叫 rebuild()，也不重讀 detail。避免再次觸發白畫面。
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def submit_count_action(e=None):
         detail = state.get("detail") or {}
@@ -1488,99 +1566,256 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
             content=ft.Text(label, size=12, color=fg, weight=ft.FontWeight.W_600),
         )
 
-    def build_recycled_readonly_item_card(item: dict[str, Any]) -> ft.Control:
+    def build_recycled_item_card(item: dict[str, Any], editable: bool = False) -> ft.Control:
+        actual_weight_field = text_field(
+            value="" if item.get("actual_weight_kg") is None else fmt_num(item.get("actual_weight_kg")),
+            hint="現場重量 KG",
+            number=True,
+        )
+        actual_supplier_field = text_field(value=item.get("actual_supplier") or "", hint="現場供應商")
+        actual_status_field = text_field(value=item.get("actual_status") or "", hint="現場狀態")
+        note_field = text_field(value=item.get("note") or "", hint="此筆備註", multiline=True)
+
+        controls: list[ft.Control] = [
+            ft.Row(
+                spacing=12,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[
+                    ft.Container(
+                        width=48,
+                        height=48,
+                        border_radius=14,
+                        bgcolor=GREEN_SOFT,
+                        alignment=ft.Alignment(0, 0),
+                        content=ft.Icon(ft.Icons.RECYCLING_OUTLINED, color=GREEN, size=25),
+                    ),
+                    ft.Column(
+                        expand=True,
+                        spacing=3,
+                        controls=[
+                            ft.Text(item.get("recycled_no") or "-", size=18, color=TEXT, weight=ft.FontWeight.BOLD),
+                            ft.Text(
+                                f"{item.get('material_type') or '-'}｜{item.get('supplier') or '-'}｜{fmt_num(item.get('weight_kg'), ' KG')}",
+                                size=13,
+                                color=TEXT_MUTED,
+                                max_lines=1,
+                                overflow=ft.TextOverflow.ELLIPSIS,
+                            ),
+                        ],
+                    ),
+                    recycled_status_badge(item),
+                ],
+            ),
+            ft.Container(
+                bgcolor="#F8FAFC",
+                border_radius=12,
+                padding=12,
+                content=ft.ResponsiveRow(
+                    columns=12,
+                    spacing=8,
+                    run_spacing=8,
+                    controls=[
+                        ft.Container(
+                            col={"xs": 6, "md": 3},
+                            content=ft.Column(
+                                spacing=2,
+                                controls=[
+                                    ft.Text("重量", size=12, color=TEXT_MUTED),
+                                    ft.Text(fmt_num(item.get("weight_kg"), " KG"), size=15, color=TEXT, weight=ft.FontWeight.BOLD),
+                                ],
+                            ),
+                        ),
+                        ft.Container(
+                            col={"xs": 6, "md": 3},
+                            content=ft.Column(
+                                spacing=2,
+                                controls=[
+                                    ft.Text("供應商", size=12, color=TEXT_MUTED),
+                                    ft.Text(to_text(item.get("supplier")), size=15, color=TEXT, weight=ft.FontWeight.BOLD),
+                                ],
+                            ),
+                        ),
+                        ft.Container(
+                            col={"xs": 12, "md": 6},
+                            content=ft.Column(
+                                spacing=2,
+                                controls=[
+                                    ft.Text("目前狀態", size=12, color=TEXT_MUTED),
+                                    ft.Text(to_text(item.get("usage_status")), size=15, color=TEXT, weight=ft.FontWeight.BOLD),
+                                ],
+                            ),
+                        ),
+                    ],
+                ),
+            ),
+        ]
+
+        if editable:
+            controls.extend(
+                [
+                    ft.Container(
+                        bgcolor="#FFFFFF",
+                        border=ft.border.all(1, BORDER),
+                        border_radius=12,
+                        padding=12,
+                        content=ft.Column(
+                            spacing=10,
+                            controls=[
+                                ft.Text("盤點結果 *", size=13, color=TEXT, weight=ft.FontWeight.W_600),
+                                ft.Text(
+                                    "安全版：儲存後不自動重整整頁，避免手機 Web 白畫面。請按下方結果按鈕儲存，再手動重新整理確認。",
+                                    size=12,
+                                    color=TEXT_MUTED,
+                                ),
+                                ft.ResponsiveRow(
+                                    columns=12,
+                                    spacing=8,
+                                    run_spacing=8,
+                                    controls=[
+                                        ft.Container(
+                                            col={"xs": 12, "md": 6},
+                                            content=stable_button(
+                                                "儲存為在庫確認",
+                                                ft.Icons.CHECK_CIRCLE_OUTLINE,
+                                                GREEN_BTN,
+                                                on_click=lambda e, it=item, aw=actual_weight_field, aps=actual_supplier_field, ast=actual_status_field, nf=note_field: save_recycled_item_action(
+                                                    it,
+                                                    "confirmed",
+                                                    aw,
+                                                    aps,
+                                                    ast,
+                                                    nf,
+                                                ),
+                                                expand=True,
+                                                disabled=state.get("busy"),
+                                            ),
+                                        ),
+                                        ft.Container(
+                                            col={"xs": 12, "md": 6},
+                                            content=stable_button(
+                                                "儲存為找不到實物",
+                                                ft.Icons.SEARCH_OFF_OUTLINED,
+                                                RED_BTN,
+                                                on_click=lambda e, it=item, aw=actual_weight_field, aps=actual_supplier_field, ast=actual_status_field, nf=note_field: save_recycled_item_action(
+                                                    it,
+                                                    "missing",
+                                                    aw,
+                                                    aps,
+                                                    ast,
+                                                    nf,
+                                                ),
+                                                expand=True,
+                                                disabled=state.get("busy"),
+                                            ),
+                                        ),
+                                        ft.Container(
+                                            col={"xs": 12, "md": 6},
+                                            content=stable_button(
+                                                "儲存為已領用未登錄",
+                                                ft.Icons.OUTBOX_OUTLINED,
+                                                RED_BTN,
+                                                on_click=lambda e, it=item, aw=actual_weight_field, aps=actual_supplier_field, ast=actual_status_field, nf=note_field: save_recycled_item_action(
+                                                    it,
+                                                    "used_not_recorded",
+                                                    aw,
+                                                    aps,
+                                                    ast,
+                                                    nf,
+                                                ),
+                                                expand=True,
+                                                disabled=state.get("busy"),
+                                            ),
+                                        ),
+                                        ft.Container(
+                                            col={"xs": 12, "md": 6},
+                                            content=stable_button(
+                                                "儲存為需報廢",
+                                                ft.Icons.DELETE_FOREVER_OUTLINED,
+                                                RED_BTN,
+                                                on_click=lambda e, it=item, aw=actual_weight_field, aps=actual_supplier_field, ast=actual_status_field, nf=note_field: save_recycled_item_action(
+                                                    it,
+                                                    "scrap_required",
+                                                    aw,
+                                                    aps,
+                                                    ast,
+                                                    nf,
+                                                ),
+                                                expand=True,
+                                                disabled=state.get("busy"),
+                                            ),
+                                        ),
+                                        ft.Container(
+                                            col={"xs": 12},
+                                            content=stable_button(
+                                                "儲存為資料異常",
+                                                ft.Icons.REPORT_PROBLEM_OUTLINED,
+                                                ORANGE_BTN,
+                                                on_click=lambda e, it=item, aw=actual_weight_field, aps=actual_supplier_field, ast=actual_status_field, nf=note_field: save_recycled_item_action(
+                                                    it,
+                                                    "data_abnormal",
+                                                    aw,
+                                                    aps,
+                                                    ast,
+                                                    nf,
+                                                ),
+                                                expand=True,
+                                                disabled=state.get("busy"),
+                                            ),
+                                        ),
+                                    ],
+                                ),
+                            ],
+                        ),
+                    ),
+                    ft.ResponsiveRow(
+                        columns=12,
+                        spacing=14,
+                        run_spacing=14,
+                        controls=[
+                            ft.Container(col={"xs": 12, "md": 4}, content=field_group("現場重量 KG", actual_weight_field, False)),
+                            ft.Container(col={"xs": 12, "md": 4}, content=field_group("現場供應商", actual_supplier_field, False)),
+                            ft.Container(col={"xs": 12, "md": 4}, content=field_group("現場狀態", actual_status_field, False)),
+                            ft.Container(col={"xs": 12}, content=field_group("備註", note_field, False)),
+                        ],
+                    ),
+                ]
+            )
+        elif item.get("has_checked"):
+            controls.append(
+                ft.Container(
+                    bgcolor=GREEN_SOFT if item.get("check_status") == "confirmed" else RED_SOFT,
+                    border=ft.border.all(1, GREEN_BORDER if item.get("check_status") == "confirmed" else RED_BORDER),
+                    border_radius=12,
+                    padding=12,
+                    content=ft.Text(
+                        f"此筆已核對：{item.get('check_status_label') or '-'}",
+                        size=13,
+                        color=GREEN if item.get("check_status") == "confirmed" else RED,
+                        weight=ft.FontWeight.W_600,
+                    ),
+                )
+            )
+        else:
+            controls.append(
+                ft.Container(
+                    bgcolor=BLUE_SOFT,
+                    border=ft.border.all(1, BLUE_BORDER),
+                    border_radius=12,
+                    padding=12,
+                    content=ft.Text(
+                        "此階段可逐筆核對；儲存後請手動重新整理或重新進入明細確認狀態。",
+                        size=12,
+                        color="#315F9A",
+                    ),
+                )
+            )
+
         return ft.Container(
             bgcolor="#FFFFFF",
             border=ft.border.all(1, BORDER),
             border_radius=18,
             padding=16,
-            content=ft.Column(
-                spacing=12,
-                controls=[
-                    ft.Row(
-                        spacing=12,
-                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                        controls=[
-                            ft.Container(
-                                width=48,
-                                height=48,
-                                border_radius=14,
-                                bgcolor=GREEN_SOFT,
-                                alignment=ft.Alignment(0, 0),
-                                content=ft.Icon(ft.Icons.RECYCLING_OUTLINED, color=GREEN, size=25),
-                            ),
-                            ft.Column(
-                                expand=True,
-                                spacing=3,
-                                controls=[
-                                    ft.Text(item.get("recycled_no") or "-", size=18, color=TEXT, weight=ft.FontWeight.BOLD),
-                                    ft.Text(
-                                        f"{item.get('material_type') or '-'}｜{item.get('supplier') or '-'}｜{fmt_num(item.get('weight_kg'), ' KG')}",
-                                        size=13,
-                                        color=TEXT_MUTED,
-                                        max_lines=1,
-                                        overflow=ft.TextOverflow.ELLIPSIS,
-                                    ),
-                                ],
-                            ),
-                            recycled_status_badge(item),
-                        ],
-                    ),
-                    ft.Container(
-                        bgcolor="#F8FAFC",
-                        border_radius=12,
-                        padding=12,
-                        content=ft.ResponsiveRow(
-                            columns=12,
-                            spacing=8,
-                            run_spacing=8,
-                            controls=[
-                                ft.Container(
-                                    col={"xs": 6, "md": 3},
-                                    content=ft.Column(
-                                        spacing=2,
-                                        controls=[
-                                            ft.Text("重量", size=12, color=TEXT_MUTED),
-                                            ft.Text(fmt_num(item.get("weight_kg"), " KG"), size=15, color=TEXT, weight=ft.FontWeight.BOLD),
-                                        ],
-                                    ),
-                                ),
-                                ft.Container(
-                                    col={"xs": 6, "md": 3},
-                                    content=ft.Column(
-                                        spacing=2,
-                                        controls=[
-                                            ft.Text("供應商", size=12, color=TEXT_MUTED),
-                                            ft.Text(to_text(item.get("supplier")), size=15, color=TEXT, weight=ft.FontWeight.BOLD),
-                                        ],
-                                    ),
-                                ),
-                                ft.Container(
-                                    col={"xs": 12, "md": 6},
-                                    content=ft.Column(
-                                        spacing=2,
-                                        controls=[
-                                            ft.Text("目前狀態", size=12, color=TEXT_MUTED),
-                                            ft.Text(to_text(item.get("usage_status")), size=15, color=TEXT, weight=ft.FontWeight.BOLD),
-                                        ],
-                                    ),
-                                ),
-                            ],
-                        ),
-                    ),
-                    ft.Container(
-                        bgcolor=BLUE_SOFT,
-                        border=ft.border.all(1, BLUE_BORDER),
-                        border_radius=12,
-                        padding=12,
-                        content=ft.Text(
-                            "此階段先顯示回用料逐筆明細；單筆核對與儲存按鈕將於下一步接上。",
-                            size=12,
-                            color="#315F9A",
-                        ),
-                    ),
-                ],
-            ),
+            content=ft.Column(spacing=12, controls=controls),
         )
 
     def build_detail_panel() -> ft.Control:
@@ -1727,7 +1962,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
             if recycled_count:
                 action_buttons.append(
                     stable_button(
-                        "回用料核對下階段開放",
+                        "回用料暫不開放送審",
                         ft.Icons.SEND_OUTLINED,
                         ORANGE_BTN,
                         on_click=None,
@@ -1801,14 +2036,14 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
             controls.append(
                 section_title(
                     "回用料盤點明細",
-                    "此階段先顯示回用料盤點單與在庫明細；單筆核對儲存將於下一步接上。",
+                    "此階段開放單筆核對儲存；儲存後不自動重整整頁，請手動重新整理確認狀態。",
                 )
             )
             if not recycled_items:
                 controls.append(ft.Text("此回用料盤點單沒有明細。", size=14, color=TEXT_MUTED))
             else:
                 for item in recycled_items:
-                    controls.append(build_recycled_readonly_item_card(item))
+                    controls.append(build_recycled_item_card(item, editable=editable and not state.get("busy")))
         elif not items:
             controls.append(section_title("盤點項目", "此盤點單沒有明細。"))
             controls.append(ft.Text("此盤點單沒有明細。", size=14, color=TEXT_MUTED))
