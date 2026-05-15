@@ -1,9 +1,9 @@
 # =====================================================
 # KNH MMS v2
 # File: main.py
-# File Revision: 2026-05-13-stocktake-route-r1
-# Status: current working version
-# Last Updated: 2026-05-13 Asia/Taipei
+# File Revision: 2026-05-15-stocktake-recycled-subpage-r1
+# Status: add recycled stocktake subpage route
+# Last Updated: 2026-05-15 Asia/Taipei
 #
 # Purpose:
 # - 系統主路由、12 小時免重登恢復流程、共用 shell 與導覽
@@ -14,6 +14,7 @@
 # - 保留 maintenance items / deleted 子頁路由與既有 page.go() route fallback 修正
 # - 新增 /admin 系統控制中心第一階段路由與超級管理員 Drawer 入口
 # - 新增 /inventory/stocktake 人工盤點功能路由
+# - 新增 /inventory/stocktake/recycled 回用料逐筆盤點子頁路由
 #
 # Notes:
 # - 本檔以 2026-05-11 auth restore guard 穩定版為基礎
@@ -29,6 +30,7 @@ from views.login import LoginView
 from views.dashboard import DashboardContent
 from views.inventory import InventoryContent
 from views.inventory_stocktake import InventoryStocktakeContent
+from views.inventory_stocktake_recycled import InventoryStocktakeRecycledContent
 from views.spinneret import SpinneretContent
 from views.handover import HandoverContent
 from views.handover_tasks import HandoverTasksContent
@@ -1213,6 +1215,14 @@ def main(page: ft.Page):
                     "/inventory",
                     "原料入庫作業",
                     InventoryContent(page),
+                    0,
+                )
+
+            elif str(route or "").startswith("/inventory/stocktake/recycled"):
+                target_view = shell(
+                    route,
+                    "回用料逐筆盤點",
+                    InventoryStocktakeRecycledContent(page),
                     0,
                 )
 

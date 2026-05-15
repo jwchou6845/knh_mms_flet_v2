@@ -1,8 +1,8 @@
 # =====================================================
 # KNH MMS v2
 # File: views/inventory_stocktake.py
-# File Revision: 2026-05-15-recycled-step3-autohide-r10
-# Status: recycled stocktake step 3 - one-button auto-hide pilot
+# File Revision: 2026-05-15-stocktake-recycled-subpage-entry-r1
+# Status: stocktake main page routes recycled counts to subpage
 # Last Updated: 2026-05-15 Asia/Taipei
 #
 # Purpose:
@@ -19,8 +19,8 @@
 # - r7 新增待審核退回修改流程。
 # - r8 新增盲盤模式 count_mode：草稿階段隱藏帳面庫存與差異，送出待審核後才顯示差異。
 # - r9 Step 2 新增回用料盤點單建立入口與唯讀明細顯示；暫不接單筆核對儲存 UI。
-# - r10 Step 3 只新增「儲存為在庫確認」單筆核對試行版；成功後局部更新 state，
-#   讓該筆從待核對清單移至已核對收合區，不重讀整張 detail、不整頁資料 reload。
+# - r10 Step 3 曾新增「儲存為在庫確認」單筆核對試行版。
+# - r11 將回用料逐筆核對移出本頁，改導向 /inventory/stocktake/recycled 子頁，避免本頁渲染 25 筆回用料卡片造成卡頓。
 #
 # Notes:
 # - Flet 0.84。
@@ -30,7 +30,7 @@
 # - r8 需搭配 services/stocktake_service.py r3 與 inventory_counts.count_mode 欄位。
 # - r9 Step 2 需搭配已部署的 stocktake_repo.py / stocktake_service.py 回用料資料層。
 # - 回用料不使用盲盤；本版保留建立回用料盤點單與在庫明細顯示。
-# - 本版只開放「在庫確認」單一按鈕測試 auto-hide 流程；其他結果狀態後續再小步補上。
+# - 回用料逐筆核對改由 views/inventory_stocktake_recycled.py 子頁處理；本頁只保留入口與列表導向。
 # =====================================================
 
 from __future__ import annotations
@@ -671,6 +671,13 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
         state["show_create_form"] = False
         rebuild()
 
+    def open_recycled_stocktake_page(count_id: str | None = None) -> None:
+        count_id = str(count_id or "").strip()
+        if count_id:
+            navigate(f"/inventory/stocktake/recycled?count_id={count_id}")
+        else:
+            navigate("/inventory/stocktake/recycled")
+
     # create form controls are created once to preserve input values while rebuilding.
     count_date_field = text_field(value=today_text(), hint="YYYY-MM-DD")
     create_note_field = text_field(hint="例如：月盤、臨時盤點、低水位複查", multiline=True)
@@ -702,6 +709,12 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
             refresh_counts(silent=True)
             set_status(result.message, "green", True, auto_hide=True)
             show_snack(result.message, success=True)
+
+            if str(state.get("create_count_type") or "") == "recycled":
+                if count_id:
+                    open_recycled_stocktake_page(count_id)
+                return
+
             if count_id:
                 detail_result = load_inventory_count_detail(count_id)
                 if detail_result.ok:
@@ -1105,7 +1118,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
                     controls=[
                         ft.Icon(ft.Icons.INFO_OUTLINE, color=ORANGE, size=20),
                         ft.Text(
-                            "回用料採逐筆核對，不使用盲盤模式；本階段先建立盤點單並顯示在庫回用料明細。",
+                            "回用料採逐筆核對，不使用盲盤模式；建立後會進入「回用料逐筆盤點」子頁。",
                             size=13,
                             color="#9A4A12",
                             weight=ft.FontWeight.W_600,
@@ -1160,7 +1173,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
                         border_radius=14,
                         padding=14,
                         content=ft.Text(
-                            "第一版支援新料 / 母粒盤點；回用料逐筆盤點採分階段導入，本階段先建立盤點單並顯示明細。盲盤模式在草稿階段不顯示帳面庫存與差異，送出待審核後才顯示盤盈盤虧。",
+                            "第一版支援新料 / 母粒盤點；回用料逐筆盤點已拆到獨立子頁，建立後會自動進入逐筆核對流程。盲盤模式在草稿階段不顯示帳面庫存與差異，送出待審核後才顯示盤盈盤虧。",
                             size=13,
                             color="#315F9A",
                         ),
@@ -1254,6 +1267,16 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
         )
 
     def build_count_card(count: dict[str, Any], action_label: str = "查看明細", highlight: bool = False) -> ft.Control:
+        is_recycled = str(count.get("count_type") or "") == "recycled"
+        display_action_label = "逐筆核對" if is_recycled else action_label
+        action_icon = ft.Icons.RECYCLING_OUTLINED if is_recycled else ft.Icons.VISIBILITY_OUTLINED
+
+        def open_action(e=None, cid=count.get("id")):
+            if is_recycled:
+                open_recycled_stocktake_page(str(cid or ""))
+                return
+            load_detail(str(cid or ""))
+
         return ft.Container(
             bgcolor="#FFFFFF",
             border=ft.border.all(1, BLUE_BORDER if highlight else BORDER),
@@ -1270,9 +1293,9 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
                                 width=48,
                                 height=48,
                                 border_radius=14,
-                                bgcolor="#F8FAFC",
+                                bgcolor=GREEN_SOFT if is_recycled else "#F8FAFC",
                                 alignment=ft.Alignment(0, 0),
-                                content=ft.Icon(ft.Icons.ASSIGNMENT_OUTLINED, color=BLUE, size=25),
+                                content=ft.Icon(ft.Icons.RECYCLING_OUTLINED if is_recycled else ft.Icons.ASSIGNMENT_OUTLINED, color=GREEN if is_recycled else BLUE, size=25),
                             ),
                             ft.Column(
                                 expand=True,
@@ -1301,12 +1324,13 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
                     ft.Row(
                         spacing=10,
                         controls=[
-                            outline_button(action_label, ft.Icons.VISIBILITY_OUTLINED, BLUE, lambda e, cid=count.get("id"): load_detail(str(cid)), expand=True),
+                            outline_button(display_action_label, action_icon, GREEN if is_recycled else BLUE, open_action, expand=True),
                         ],
                     ),
                 ],
             ),
         )
+
 
     def build_count_list() -> ft.Control:
         all_counts = state.get("counts") or []
@@ -1889,12 +1913,12 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
             if recycled_count:
                 action_buttons.append(
                     stable_button(
-                        "回用料核對下階段開放",
-                        ft.Icons.SEND_OUTLINED,
-                        ORANGE_BTN,
-                        on_click=None,
+                        "前往回用料逐筆盤點",
+                        ft.Icons.RECYCLING_OUTLINED,
+                        GREEN_BTN,
+                        on_click=lambda e, cid=count.get("id"): open_recycled_stocktake_page(str(cid or "")),
                         expand=True,
-                        disabled=True,
+                        disabled=False,
                     )
                 )
             else:
@@ -1966,7 +1990,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
             controls.append(
                 section_title(
                     "待核對回用料",
-                    f"剩餘 {len(pending_recycled_items)} 筆尚未核對；此版先開放「在庫確認」單筆儲存，成功後會移到已核對區。",
+                    f"剩餘 {len(pending_recycled_items)} 筆尚未核對；回用料逐筆核對已移至獨立子頁；請點上方「前往回用料逐筆盤點」。",
                 )
             )
             if not recycled_items:
