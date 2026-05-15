@@ -1,37 +1,29 @@
 # =====================================================
 # KNH MMS v2
 # File: views/inventory_stocktake.py
-# File Revision: 2026-05-15-stocktake-recycled-subpage-entry-r1
-# Status: stocktake main page routes recycled counts to subpage
+# File Revision: 2026-05-15-stocktake-main-list-lock-r14-safe
+# Status: safe main stocktake list locking for non-draft counts
 # Last Updated: 2026-05-15 Asia/Taipei
 #
 # Purpose:
 # - 人工盤點功能頁面：建立盤點單、輸入實盤數、送出待審核、超級管理員確認盤點。
 #
 # Major Changes in This Revision:
-# - 延續 r2 寬度修正版與 r4 控制中心風格麵包屑。
-# - 新增「目前進行中的盤點」區塊，草稿盤點單獨立顯示，避免混在底下盤點單列表。
-# - 盤點單列表預設不重複顯示草稿盤點單，降低操作員誤點與視覺干擾。
-# - 草稿明細拆成「待盤點品項」與「已盤點品項」；儲存後的品項移至已盤點收合區。
-# - 全部品項完成前，送出待審核按鈕維持停用，並顯示尚未盤點數量。
-# - 不修改盤點建立、明細儲存、確認盤點與 stock_adjustments 寫入邏輯。
-# - r6 將作廢盤點單改為底部「危險操作」收合式區塊；未輸入作廢原因不得送出。
-# - r7 新增待審核退回修改流程。
-# - r8 新增盲盤模式 count_mode：草稿階段隱藏帳面庫存與差異，送出待審核後才顯示差異。
-# - r9 Step 2 新增回用料盤點單建立入口與唯讀明細顯示；暫不接單筆核對儲存 UI。
-# - r10 Step 3 曾新增「儲存為在庫確認」單筆核對試行版。
-# - r11 將回用料逐筆核對移出本頁，改導向 /inventory/stocktake/recycled 子頁，避免本頁渲染 25 筆回用料卡片造成卡頓。
+# - r14-safe 僅修主人工盤點頁列表導向邏輯，不調整按鈕尺寸與複雜排版，避免手機 Web 再次出現大灰塊。
+# - 主頁盤點單列表中，只有 draft / 草稿盤點單可進入修改或回用料逐筆核對。
+# - submitted / confirmed / voided 狀態一律只開啟本頁唯讀明細或審核明細，不再導向回用料逐筆盤點子頁。
+# - 回用料草稿仍可從「目前進行中的盤點」進入 /inventory/stocktake/recycled 子頁。
+# - 回用料非草稿明細只在本頁查看盤點結果，不顯示主頁舊版單筆核對儲存按鈕。
+# - 不修改建立盤點單、明細儲存、送出待審核、退回、確認、作廢與 stock_adjustments 寫入邏輯。
 #
 # Notes:
 # - Flet 0.84。
 # - 不使用 page.push_route()。
 # - 時間與庫存調整邏輯由 services/stocktake_service.py 統一使用 Asia/Taipei。
-# - 第一版新料 / 母粒正式庫存盤點已完成；回用料逐筆盤點採分階段重新導入。
-# - r8 需搭配 services/stocktake_service.py r3 與 inventory_counts.count_mode 欄位。
-# - r9 Step 2 需搭配已部署的 stocktake_repo.py / stocktake_service.py 回用料資料層。
-# - 回用料不使用盲盤；本版保留建立回用料盤點單與在庫明細顯示。
-# - 回用料逐筆核對改由 views/inventory_stocktake_recycled.py 子頁處理；本頁只保留入口與列表導向。
+# - 回用料逐筆核對正式操作由 views/inventory_stocktake_recycled.py 子頁處理；本頁只負責建立入口、列表、唯讀/審核明細。
+# - 本版刻意不重做 compact button，以降低手機 Web 渲染風險；若要縮小按鈕，需另開小步版本處理。
 # =====================================================
+
 
 from __future__ import annotations
 
@@ -50,7 +42,6 @@ from services.stocktake_service import (
     return_inventory_count,
     submit_inventory_count,
     update_count_item_actual_stock,
-    update_count_recycled_item_check,
     void_inventory_count,
 )
 
@@ -132,7 +123,6 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
         "show_void_form": False,
         "show_return_form": False,
         "show_checked_recycled_items": False,
-        "recycled_saving_ids": set(),
     }
 
     ui_lock = threading.RLock()
@@ -747,111 +737,6 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
 
         run_action(action, "正在更新實盤數...")
 
-    def recalc_recycled_summary_from_state(items: list[dict[str, Any]]) -> dict[str, Any]:
-        total = len(items)
-        checked = 0
-        abnormal = 0
-        status_counts = {
-            "unchecked": 0,
-            "confirmed": 0,
-            "missing": 0,
-            "used_not_recorded": 0,
-            "scrap_required": 0,
-            "data_abnormal": 0,
-        }
-
-        for item in items:
-            status = str(item.get("check_status") or "unchecked")
-            if status not in status_counts:
-                status = "unchecked"
-            status_counts[status] += 1
-            if status != "unchecked":
-                checked += 1
-            if status in ["missing", "used_not_recorded", "scrap_required", "data_abnormal"]:
-                abnormal += 1
-
-        return {
-            "total_items": total,
-            "checked_items": checked,
-            "unchecked_items": max(0, total - checked),
-            "entered_items": checked,
-            "not_entered_items": max(0, total - checked),
-            "difference_items": abnormal,
-            "abnormal_items": abnormal,
-            "status_counts": status_counts,
-        }
-
-    def replace_recycled_item_in_state(updated_item: dict[str, Any]) -> None:
-        if not updated_item:
-            return
-        detail = state.get("detail") or {}
-        items = list(detail.get("recycled_items") or [])
-        updated_id = str(updated_item.get("id") or "")
-        if not updated_id:
-            return
-
-        replaced = False
-        for index, current in enumerate(items):
-            if str(current.get("id") or "") == updated_id:
-                items[index] = updated_item
-                replaced = True
-                break
-
-        if not replaced:
-            items.append(updated_item)
-
-        detail["recycled_items"] = items
-        detail["summary"] = recalc_recycled_summary_from_state(items)
-        state["detail"] = detail
-
-    def save_recycled_confirmed_action(item: dict[str, Any]) -> None:
-        item_id = str(item.get("id") or "")
-        if not item_id:
-            set_status("找不到回用料盤點明細。", "red", True)
-            rebuild()
-            return
-
-        saving_ids = state.setdefault("recycled_saving_ids", set())
-        if item_id in saving_ids:
-            return
-
-        saving_ids.add(item_id)
-
-        def worker():
-            try:
-                result = update_count_recycled_item_check(
-                    item_id=item_id,
-                    check_status="confirmed",
-                    actual_weight_kg="",
-                    actual_supplier="",
-                    actual_status="",
-                    note="",
-                    checked_by_user_id=current_user_id(),
-                    checked_by_name=current_user_name(),
-                )
-                saving_ids.discard(item_id)
-
-                if not is_active_view():
-                    return
-
-                if not result.ok:
-                    set_status(result.message, "red", True)
-                    rebuild()
-                    return
-
-                data = result.data or {}
-                replace_recycled_item_in_state(data.get("item") or {})
-                set_status("回用料已儲存為在庫確認。", "green", True)
-                rebuild()
-
-            except Exception as ex:
-                saving_ids.discard(item_id)
-                if not is_active_view():
-                    return
-                set_status(f"回用料核對失敗：{ex}", "red", True)
-                rebuild()
-
-        threading.Thread(target=worker, daemon=True).start()
 
     def submit_count_action(e=None):
         detail = state.get("detail") or {}
@@ -1267,15 +1152,30 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
         )
 
     def build_count_card(count: dict[str, Any], action_label: str = "查看明細", highlight: bool = False) -> ft.Control:
+        status = str(count.get("status") or "draft")
+        is_draft = status == "draft"
         is_recycled = str(count.get("count_type") or "") == "recycled"
-        display_action_label = "逐筆核對" if is_recycled else action_label
-        action_icon = ft.Icons.RECYCLING_OUTLINED if is_recycled else ft.Icons.VISIBILITY_OUTLINED
+
+        # r14-safe:
+        # - 只有草稿回用料盤點單可進入 /inventory/stocktake/recycled 逐筆核對子頁。
+        # - 待審核 / 已確認 / 已作廢的回用料盤點單只開啟本頁明細，避免再次進入可修改流程。
+        if is_recycled and is_draft:
+            display_action_label = "逐筆核對"
+            action_icon = ft.Icons.RECYCLING_OUTLINED
+            action_color = GREEN
+        else:
+            display_action_label = action_label
+            action_icon = ft.Icons.VISIBILITY_OUTLINED
+            action_color = BLUE
 
         def open_action(e=None, cid=count.get("id")):
-            if is_recycled:
-                open_recycled_stocktake_page(str(cid or ""))
+            cid_text = str(cid or "").strip()
+            if not cid_text:
                 return
-            load_detail(str(cid or ""))
+            if is_recycled and is_draft:
+                open_recycled_stocktake_page(cid_text)
+                return
+            load_detail(cid_text)
 
         return ft.Container(
             bgcolor="#FFFFFF",
@@ -1324,7 +1224,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
                     ft.Row(
                         spacing=10,
                         controls=[
-                            outline_button(display_action_label, action_icon, GREEN if is_recycled else BLUE, open_action, expand=True),
+                            outline_button(display_action_label, action_icon, action_color, open_action, expand=True),
                         ],
                     ),
                 ],
@@ -1714,7 +1614,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
                         border_radius=12,
                         padding=12,
                         content=ft.Text(
-                            "此階段先顯示回用料逐筆明細；單筆核對與儲存按鈕將於下一步接上。",
+                            "回用料逐筆核對請從 /inventory/stocktake/recycled 子頁操作；本頁僅顯示盤點明細與審核結果。",
                             size=12,
                             color="#315F9A",
                         ),
@@ -1724,50 +1624,12 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
         )
 
     def build_recycled_pending_item_card(item: dict[str, Any], editable: bool) -> ft.Control:
-        card = build_recycled_readonly_item_card(item)
-        if not editable:
-            return card
+        # r14-safe:
+        # 主人工盤點頁不再提供回用料單筆核對儲存按鈕。
+        # 回用料逐筆核對一律交由 /inventory/stocktake/recycled 子頁處理；
+        # 本頁只顯示唯讀明細，避免主頁與子頁同時存在兩套修改入口。
+        return build_recycled_readonly_item_card(item)
 
-        item_id = str(item.get("id") or "")
-        saving_ids = state.get("recycled_saving_ids") or set()
-        saving = item_id in saving_ids
-
-        action_box = ft.Container(
-            bgcolor=GREEN_SOFT,
-            border=ft.border.all(1, GREEN_BORDER),
-            border_radius=12,
-            padding=12,
-            content=ft.Column(
-                spacing=10,
-                controls=[
-                    ft.Text(
-                        "盤點結果",
-                        size=13,
-                        color=TEXT,
-                        weight=ft.FontWeight.W_600,
-                    ),
-                    ft.Text(
-                        "此版先開放最常用的「在庫確認」。儲存成功後，該筆會移到下方已核對收合區。",
-                        size=12,
-                        color=TEXT_MUTED,
-                    ),
-                    stable_button(
-                        "正在儲存..." if saving else "儲存為在庫確認",
-                        ft.Icons.CHECK_CIRCLE_OUTLINE,
-                        GREEN_BTN,
-                        on_click=lambda e, it=item: save_recycled_confirmed_action(it),
-                        expand=True,
-                        disabled=saving,
-                    ),
-                ],
-            ),
-        )
-
-        try:
-            card.content.controls[-1] = action_box
-        except Exception:
-            pass
-        return card
 
     def build_detail_panel() -> ft.Control:
         detail = state.get("detail")
@@ -1783,7 +1645,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
         editable = status == "draft"
         blind_draft = is_blind_draft(count)
         remaining_items = int(summary.get("not_entered_items", 0) or 0)
-        # Step 2 先只顯示回用料明細，不開放單筆核對與送出待審核。
+        # 回用料送審規則由子頁 /inventory/stocktake/recycled 控制；主頁只保留唯讀/審核明細。
         can_submit = editable and remaining_items == 0 and not recycled_count
         can_confirm = status == "submitted" and is_super_admin()
         can_void = status in ["draft", "submitted"] and is_super_admin()
@@ -1990,7 +1852,7 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
             controls.append(
                 section_title(
                     "待核對回用料",
-                    f"剩餘 {len(pending_recycled_items)} 筆尚未核對；回用料逐筆核對已移至獨立子頁；請點上方「前往回用料逐筆盤點」。",
+                    f"剩餘 {len(pending_recycled_items)} 筆尚未核對；草稿請從「前往回用料逐筆盤點」進入子頁操作，非草稿狀態僅供查看。",
                 )
             )
             if not recycled_items:
