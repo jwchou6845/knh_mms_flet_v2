@@ -1,8 +1,8 @@
 # =====================================================
 # KNH MMS v2
 # File: views/inventory_stocktake_recycled.py
-# File Revision: 2026-05-15-recycled-subpage-r6
-# Status: recycled stocktake selectable workflow UI stability fix
+# File Revision: 2026-05-15-recycled-subpage-r9.1
+# Status: create action no longer navigates from worker thread; route-only count_id
 # Last Updated: 2026-05-15 Asia/Taipei
 #
 # Purpose:
@@ -10,29 +10,24 @@
 # - 採待核對輕量清單 + 單筆核對卡片模式，避免一次渲染大量完整卡片造成 Flet Web 卡頓。
 #
 # Major Changes in This Revision:
-# - 新增 /inventory/stocktake/recycled 子頁內容。
-# - 麵包屑路徑：原料入庫作業 > 人工盤點 > 回用料逐筆盤點 > 盤點單號。
-# - 回用料採逐筆核對，不使用盲盤。
-# - 待核對回用料以輕量清單呈現，操作員可依現場實際排列自行選擇要盤點的那一包。
-# - 支援五種核對結果：在庫確認、找不到實物、已領用未登錄、需報廢、資料異常。
-# - 單筆儲存後該筆從待核對清單消失，底部僅顯示最近已核對 5 筆極簡摘要。
-# - r2 修正手機 Web 按鈕文字被裁切問題，將關鍵導覽按鈕改為可換行的 ResponsiveRow。
-# - r2 修正最近已核對比例，改為 已核對 / 總筆數，例如 2 / 25 筆。
-# - r3 改為「待核對輕量清單選取模式」，不再強迫依系統順序逐筆下一筆。
-# - r3 移除「返回人工盤點」大按鈕，因上方麵包屑已可返回人工盤點。
-# - r3 加強「回用料盤點單列表」與儲存按鈕外框，提升手機 Web 可辨識度。
-# - r4 修正手機 Web 上 OutlinedButton 外框不明顯問題，改用外層 Container 強制顯示外框。
-# - r4 調整單筆儲存流程，不再於送出前整頁 rebuild 與全頁 busy，避免儲存期間所有按鈕卡住。
-# - r5 取消「先選 chip 再儲存」流程，改為直接點選結果膠囊即儲存，避免 chip 切換造成整頁 rebuild 卡頓。
-# - r5 導覽與送審按鈕改為自製輕量膠囊按鈕，修正手機 Web 文字被遮蔽與 disabled 色塊過重問題。
-# - r6 修正盤點結果區大灰框問題：結果按鈕改為固定尺寸卡片式動作列，備註欄位改為白底低高度。
-# - r6 修正未核對提示色塊過重問題，改為輕量提示卡，不再像 disabled 大按鈕。
+# - r8 [BUG FIX] select_recycled_item 改為 debounced rebuild。
+# - r8 [BUG FIX] _item_note_field 提升為 view-level 控制項。
+# - r8 [BUG FIX] load 函式移除 show_loading 階段的 immediate rebuild()。
+# - r8 [BUG FIX] 初始化改為先顯示 loading placeholder。
+# - r9 [BUG FIX] create_recycled_count_action 建立成功後不再從 worker thread
+#     呼叫 navigate()，改為直接將新盤點單 detail 載入 state 並 rebuild()，
+#     消除背景 thread 觸發路由切換的潛在白畫面風險。
+#     網址列不會帶 ?count_id=，但畫面會直接進入新盤點單明細。
+# - r9.1 [BUG FIX] parse_count_id_from_route 只讀取網址列 ?count_id=，
+#     不再 fallback 到 session_data 裡的上一張盤點單 ID，
+#     確保 /inventory/stocktake/recycled 一定回到回用料盤點單列表。
 #
 # Notes:
 # - Flet 0.84。
 # - 不使用 page.push_route()，導頁一律使用 page.go() 或 main.py 提供的 _navigate。
 # - 時間與資料寫入邏輯由 services/stocktake_service.py 統一使用 Asia/Taipei。
 # - 第一版不自動修改 recycled_materials 狀態，只保留盤點紀錄。
+# - r9.1 只改 views/inventory_stocktake_recycled.py，不動其他檔案。
 # =====================================================
 
 from __future__ import annotations
@@ -128,13 +123,15 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
         "counts": [],
         "detail": None,
         "active_count_id": "",
-        "creating": False,
         "show_create_form": False,
         "selected_recycled_item_id": "",
         "saving_recycled_item_ids": set(),
     }
 
     ui_lock = threading.RLock()
+
+    # r8：debounce 用的 Timer 參考，存在 list 裡方便 nonlocal 替換
+    _debounce_timer: list[threading.Timer | None] = [None]
 
     # =====================================================
     # 基礎工具
@@ -179,6 +176,13 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
         page.go(route)
 
     def parse_count_id_from_route() -> str:
+        """
+        r9.1：只依網址列 ?count_id= 判斷是否進入指定明細。
+
+        重要：不再 fallback 到 session_data["_stocktake_recycled_count_id"]。
+        這樣使用者點「回用料盤點單列表」進入 /inventory/stocktake/recycled 時，
+        會穩定回到列表，而不是被上一張盤點單 ID 拉回明細。
+        """
         route = str(getattr(page, "route", "") or "")
         try:
             parsed = urlparse(route)
@@ -188,7 +192,7 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
                 return str(count_id).strip()
         except Exception:
             pass
-        return str(session_get("_stocktake_recycled_count_id", "") or "").strip()
+        return ""
 
     def remember_count_id(count_id: str) -> None:
         try:
@@ -245,6 +249,26 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
             print("recycled stocktake rebuild failed:", repr(ex), flush=True)
 
     # =====================================================
+    # r8：view-level note_field（不在 build 函式內每次重建）
+    # =====================================================
+    _item_note_field = ft.TextField(
+        hint_text="備註（異常或找不到實物時建議填寫）",
+        hint_style=ft.TextStyle(size=13, color="#94A3B8"),
+        label="備註（選填）",
+        label_style=ft.TextStyle(size=13, color="#94A3B8"),
+        bgcolor="#FFFFFF",
+        border_color=BORDER,
+        focused_border_color=GREEN,
+        border_radius=12,
+        text_size=14,
+        height=78,
+        multiline=True,
+        min_lines=2,
+        max_lines=2,
+        content_padding=ft.padding.symmetric(horizontal=14, vertical=10),
+    )
+
+    # =====================================================
     # UI 工具
     # =====================================================
     def section_title(title: str, subtitle: str | None = None) -> ft.Column:
@@ -266,13 +290,6 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
         expand: bool = False,
         height: int = 50,
     ) -> ft.Container:
-        """
-        手機 Web 專用輕量膠囊按鈕。
-
-        Flet 0.84 的 OutlinedButton / TextButton 在 iPhone Web 上曾出現外框不明顯、
-        文字被裁切或 disabled 色塊過重的問題。此子頁的回用料盤點操作改用
-        Container + ink 繪製固定高度膠囊，減少原生 Button 巢狀渲染成本。
-        """
         safe_color = DISABLED if disabled else color
         safe_border = "#CBD5E1" if disabled else (border_color or color)
         safe_bg = "#F8FAFC" if disabled else bgcolor
@@ -341,13 +358,6 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
         on_click=None,
         disabled: bool = False,
     ) -> ft.Control:
-        """
-        r6：盤點結果用固定尺寸卡片式按鈕。
-
-        r5 的膠囊按鈕在部分手機 Web 上出現大灰框渲染問題。
-        這裡改用外層 Container 固定高度與邊框，不使用 ink ripple，降低 Flet Web
-        對 Material/Ink 層的重繪負擔。
-        """
         safe_color = DISABLED if disabled else color
         safe_bg = "#F8FAFC" if disabled else soft
         safe_border = "#CBD5E1" if disabled else border
@@ -381,11 +391,6 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
         )
 
     def disabled_submit_hint(pending_count: int) -> ft.Control:
-        """尚未可送審時的提示卡。
-
-        r5 的橘色 disabled 大按鈕在手機 Web 上容易像一塊色塊；r6 改為
-        左對齊提示卡，避免誤認為可點擊按鈕，也降低視覺重量。
-        """
         return ft.Container(
             border_radius=15,
             bgcolor="#FFFFFF",
@@ -492,7 +497,10 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
         if status == "confirmed":
             bg, fg, border = GREEN_SOFT, GREEN, GREEN_BORDER
         elif status in ["missing", "used_not_recorded", "scrap_required", "data_abnormal"]:
-            bg, fg, border = RED_SOFT if status != "data_abnormal" else ORANGE_SOFT, RED if status != "data_abnormal" else ORANGE, RED_BORDER if status != "data_abnormal" else ORANGE_BORDER
+            if status == "data_abnormal":
+                bg, fg, border = ORANGE_SOFT, ORANGE, ORANGE_BORDER
+            else:
+                bg, fg, border = RED_SOFT, RED, RED_BORDER
         else:
             bg, fg, border = GRAY_SOFT, TEXT_MUTED, BORDER
 
@@ -689,10 +697,32 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
         return pending_items[0]
 
     def select_recycled_item(item_id: str) -> None:
+        """
+        r8：改為 debounced rebuild。
+
+        快速連點時取消舊的排程 Timer，只執行最後一次 rebuild，
+        避免每次點選都在 UI 事件 thread 上同步重建整頁清單。
+        同時更新 _item_note_field.value，讓備註欄顯示選取項目的既有備註。
+        """
         if state.get("busy"):
             return
+
         state["selected_recycled_item_id"] = str(item_id or "").strip()
-        rebuild()
+
+        # 更新 view-level note_field 的值，選取不同項目時自動帶入既有備註
+        pending_items, _ = split_recycled_items()
+        selected = get_selected_pending_item(pending_items)
+        _item_note_field.value = str((selected or {}).get("note") or "")
+
+        # 取消尚未執行的舊 Timer（debounce）
+        old_timer = _debounce_timer[0]
+        if old_timer is not None and old_timer.is_alive():
+            old_timer.cancel()
+
+        # 排程 80ms 後執行 rebuild（單次，不會與其他 page.update 重疊）
+        t = threading.Timer(0.08, rebuild)
+        _debounce_timer[0] = t
+        t.start()
 
     def replace_recycled_item_in_state(updated_item: dict[str, Any]) -> None:
         if not updated_item:
@@ -722,10 +752,18 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
     # 資料載入與操作
     # =====================================================
     def load_recycled_counts_background(show_loading: bool = True) -> None:
+        """
+        r8：移除 show_loading 階段的 immediate rebuild()。
+
+        舊版在 show_loading=True 時會先 rebuild() 一次顯示 loading 狀態，
+        接著 worker 完成後再 rebuild() 一次，造成雙重 page.update()。
+        r8 改為只在 worker 完成後統一 rebuild() 一次；
+        loading 狀態由初始化時顯示的 placeholder 承擔視覺回饋。
+        """
         if show_loading:
             state["loading"] = True
             set_status("正在讀取回用料盤點單", "blue", True)
-            rebuild()
+            # 不在這裡呼叫 rebuild()
 
         def worker():
             try:
@@ -743,7 +781,7 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
                     state["loading"] = False
                     set_status(result.message, "red", True)
 
-                rebuild()
+                rebuild()  # worker 完成後統一呼叫一次
             except Exception as ex:
                 if not is_active_view():
                     return
@@ -755,6 +793,9 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
         threading.Thread(target=worker, daemon=True).start()
 
     def load_detail_background(count_id: str, show_loading: bool = True) -> None:
+        """
+        r8：同樣移除 show_loading 階段的 immediate rebuild()。
+        """
         count_id = str(count_id or "").strip()
         if not count_id:
             state["detail"] = None
@@ -768,7 +809,7 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
         if show_loading:
             state["loading"] = True
             set_status("正在讀取回用料盤點明細", "blue", True)
-            rebuild()
+            # 不在這裡呼叫 rebuild()
 
         def worker():
             try:
@@ -795,7 +836,7 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
                 state["detail"] = data
                 state["loading"] = False
                 set_status("回用料盤點明細已同步", "green", True)
-                rebuild()
+                rebuild()  # worker 完成後統一呼叫一次
 
             except Exception as ex:
                 if not is_active_view():
@@ -843,11 +884,31 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
                 state["show_create_form"] = False
                 create_note_field.value = ""
 
-                if count_id:
-                    navigate(f"/inventory/stocktake/recycled?count_id={count_id}")
+                if not count_id:
+                    # count_id 取不到時退回列表並提示
+                    set_status("盤點單已建立，但無法取得 ID，請重新整理。", "orange", True)
+                    rebuild()
                     return
 
-                set_status(result.message, "green", True)
+                # r9：不從 worker thread 呼叫 navigate()，
+                # 改為直接把新盤點單的 detail 載入 state 再 rebuild()。
+                # 網址列不會帶 ?count_id=，但畫面會直接進入新盤點單明細。
+                # 等 r9 互動穩定後若需要補網址，再於 main.py 安全地處理路由。
+                remember_count_id(count_id)
+                state["active_count_id"] = count_id
+
+                detail_result = load_inventory_count_detail(count_id)
+                if not is_active_view():
+                    return
+
+                if detail_result.ok:
+                    state["detail"] = detail_result.data or {}
+                    set_status(f"回用料盤點單已建立，請開始逐筆核對。", "green", True)
+                else:
+                    # detail 讀取失敗時仍把 create result 的資料填入，讓使用者看到盤點單
+                    state["detail"] = result.data or {}
+                    set_status(f"盤點單已建立，但明細讀取失敗：{detail_result.message}", "orange", True)
+
                 rebuild()
 
             except Exception as ex:
@@ -859,14 +920,10 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def save_current_item_action(item: dict[str, Any], note_field: ft.TextField, check_status: str = "confirmed") -> None:
+    def save_current_item_action(item: dict[str, Any], check_status: str = "confirmed") -> None:
         """
-        回用料單筆儲存專用流程。
-
-        r4 重點：
-        - 不使用全頁 state["busy"]，避免一筆儲存期間整頁按鈕全部失效。
-        - 不在送出前先 rebuild()，避免手機 Web 在建立大量待核對清單時卡住。
-        - 僅用 saving_recycled_item_ids 防重複送出；成功後才單次 rebuild()。
+        r8：note_field 改為使用 view-level 的 _item_note_field，
+        不再從 build 函式傳入，避免每次 rebuild 後 reference 失效。
         """
         item_id = str(item.get("id") or "")
         if not item_id:
@@ -882,6 +939,9 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
         if selected_status not in STATUS_LABELS:
             selected_status = "confirmed"
 
+        # 在發出網路請求前先讀取備註欄位的當前值（view-level field 不受 rebuild 影響）
+        note_value = str(_item_note_field.value or "")
+
         saving_ids.add(item_id)
         set_status(f"正在儲存：{STATUS_LABELS.get(selected_status, '核對結果')}", "blue", True)
 
@@ -893,7 +953,7 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
                     actual_weight_kg="",
                     actual_supplier="",
                     actual_status="",
-                    note=str(note_field.value or ""),
+                    note=note_value,
                     checked_by_user_id=current_user_id(),
                     checked_by_name=current_user_name(),
                 )
@@ -910,8 +970,12 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
 
                 updated_item = (result.data or {}).get("item") or {}
                 replace_recycled_item_in_state(updated_item)
+
+                # 儲存成功後清除選取與備註欄位
                 if str(state.get("selected_recycled_item_id") or "") == item_id:
                     state["selected_recycled_item_id"] = ""
+                    _item_note_field.value = ""
+
                 set_status(f"已儲存：{STATUS_LABELS.get(selected_status, '核對結果')}", "green", True)
                 rebuild()
 
@@ -1035,12 +1099,10 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
             ],
         )
 
-    def build_result_action_buttons(item: dict[str, Any], note_field: ft.TextField, saving: bool) -> ft.Control:
+    def build_result_action_buttons(item: dict[str, Any], saving: bool) -> ft.Control:
         """
-        r6：結果按鈕改為 ResponsiveRow。
-
-        每顆按鈕有明確欄寬，手機版兩欄排列，避免 Row wrap 在 Safari / Flet Web
-        上偶發產生大灰色占位區。點擊仍直接儲存，不再有 chip 切換重建頁面的流程。
+        r8：on_click 改為直接呼叫 save_current_item_action(item, status_value)，
+        不再傳入 note_field 參數（已改為 view-level _item_note_field）。
         """
         controls: list[ft.Control] = []
         for value, label, color, soft, border, icon in STATUS_OPTIONS:
@@ -1053,7 +1115,7 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
                         color=color,
                         soft=soft,
                         border=border,
-                        on_click=lambda e, it=item, nf=note_field, status_value=value: save_current_item_action(it, nf, status_value),
+                        on_click=lambda e, it=item, sv=value: save_current_item_action(it, sv),
                         disabled=saving,
                     ),
                 )
@@ -1067,7 +1129,6 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
         )
 
     def build_pending_item_row(self_item: dict[str, Any], selected: bool = False) -> ft.Control:
-        status = str(self_item.get("check_status") or "unchecked")
         border_color = GREEN if selected else BORDER
         bg_color = GREEN_SOFT if selected else "#FFFFFF"
 
@@ -1103,7 +1164,12 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
                             vertical_alignment=ft.CrossAxisAlignment.CENTER,
                             controls=[
                                 ft.Icon(ft.Icons.CHECK_CIRCLE if selected else ft.Icons.RADIO_BUTTON_UNCHECKED, size=16, color=GREEN if selected else TEXT_MUTED),
-                                ft.Text("目前選取" if selected else to_text(self_item.get("supplier")), size=13, color=GREEN if selected else TEXT_MUTED, weight=ft.FontWeight.W_600 if selected else ft.FontWeight.W_500),
+                                ft.Text(
+                                    "目前選取" if selected else to_text(self_item.get("supplier")),
+                                    size=13,
+                                    color=GREEN if selected else TEXT_MUTED,
+                                    weight=ft.FontWeight.W_600 if selected else ft.FontWeight.W_500,
+                                ),
                             ],
                         ),
                     ),
@@ -1155,23 +1221,10 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
         )
 
     def build_current_item_card(item: dict[str, Any], total_pending: int, total_all: int) -> ft.Control:
-        note_field = ft.TextField(
-            value=str(item.get("note") or ""),
-            hint_text="備註（異常或找不到實物時建議填寫）",
-            hint_style=ft.TextStyle(size=13, color="#94A3B8"),
-            label="備註（選填）",
-            label_style=ft.TextStyle(size=13, color="#94A3B8"),
-            bgcolor="#FFFFFF",
-            border_color=BORDER,
-            focused_border_color=GREEN,
-            border_radius=12,
-            text_size=14,
-            height=78,
-            multiline=True,
-            min_lines=2,
-            max_lines=2,
-            content_padding=ft.padding.symmetric(horizontal=14, vertical=10),
-        )
+        """
+        r8：不再在此函式內建立 note_field；改用 view-level 的 _item_note_field。
+        saving 狀態依 saving_recycled_item_ids 判斷，結果按鈕 on_click 不再傳入 note_field。
+        """
         saving_ids = state.get("saving_recycled_item_ids") or set()
         saving_current = str(item.get("id") or "") in saving_ids
 
@@ -1260,10 +1313,11 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
                         controls=[
                             ft.Text("盤點結果", size=13, color=TEXT, weight=ft.FontWeight.W_700),
                             ft.Text("點選結果後會直接儲存此筆；若是異常、找不到實物或需報廢，建議先填寫備註。", size=12, color=TEXT_MUTED),
-                            build_result_action_buttons(item, note_field, saving_current),
+                            build_result_action_buttons(item, saving_current),
                         ],
                     ),
-                    note_field,
+                    # r8：使用 view-level _item_note_field，不在此重建 TextField
+                    _item_note_field,
                     ft.Text(
                         "儲存成功後此筆會從待核對清單消失；請再從清單選擇現場正在盤點的下一包。",
                         size=12,
@@ -1369,7 +1423,23 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
             build_create_form(),
         ]
 
-        if not counts:
+        if state.get("loading"):
+            controls.append(
+                ft.Container(
+                    bgcolor="#FFFFFF",
+                    border=ft.border.all(1, BORDER),
+                    border_radius=16,
+                    padding=18,
+                    content=ft.Row(
+                        spacing=10,
+                        controls=[
+                            ft.ProgressRing(width=18, height=18, stroke_width=2, color=GREEN),
+                            ft.Text("正在讀取回用料盤點單...", size=14, color=TEXT_MUTED),
+                        ],
+                    ),
+                )
+            )
+        elif not counts:
             controls.append(
                 ft.Container(
                     bgcolor="#FFFFFF",
@@ -1473,6 +1543,24 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
 
     def build_detail_panel() -> ft.Control:
         detail = state.get("detail")
+
+        # loading 中且沒有 detail 時顯示 loading placeholder
+        if not detail and state.get("loading"):
+            return ft.Container(
+                bgcolor="#FFFFFF",
+                border=ft.border.all(1, BORDER),
+                border_radius=20,
+                padding=24,
+                content=ft.Column(
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                    spacing=14,
+                    controls=[
+                        ft.ProgressRing(width=32, height=32, stroke_width=3, color=GREEN),
+                        ft.Text(str(state.get("status_message") or "讀取中..."), size=14, color=TEXT_MUTED),
+                    ],
+                ),
+            )
+
         if not detail:
             return build_counts_list()
 
@@ -1481,7 +1569,6 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
         status = str(count.get("status") or "draft")
         pending_items, checked_items = split_recycled_items()
         total_all = int(summary.get("total_items") or len(pending_items) + len(checked_items))
-        current_index = len(checked_items) + 1 if pending_items else total_all
         can_edit = status == "draft"
         can_submit = can_edit and not pending_items and total_all > 0
         can_confirm = status == "submitted" and is_super_admin()
@@ -1584,6 +1671,7 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
                 )
             else:
                 controls.append(disabled_submit_hint(len(pending_items)))
+
         elif status == "submitted":
             if can_confirm:
                 controls.append(
@@ -1627,11 +1715,25 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
             ),
         )
 
-    main_host = ft.Container(width=float("inf"), expand=True, content=ft.Container())
+    # =====================================================
+    # r8：初始化改為先顯示 loading placeholder，
+    # 避免 main_host.content = build_page() 與 Timer worker 的 rebuild() 重疊。
+    # =====================================================
+    main_host = ft.Container(
+        width=float("inf"),
+        expand=True,
+        alignment=ft.Alignment(0, 0),
+        content=ft.Column(
+            expand=True,
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            alignment=ft.MainAxisAlignment.CENTER,
+            controls=[
+                ft.ProgressRing(width=32, height=32, stroke_width=3, color=GREEN),
+                ft.Text("回用料盤點資料同步中...", size=14, color=TEXT_MUTED),
+            ],
+        ),
+    )
 
-    # =====================================================
-    # 初始化
-    # =====================================================
     initial_count_id = parse_count_id_from_route()
     if initial_count_id:
         try:
@@ -1644,5 +1746,4 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
         except Exception:
             load_recycled_counts_background(show_loading=True)
 
-    main_host.content = build_page()
     return main_host
