@@ -1,8 +1,8 @@
 # =====================================================
 # KNH MMS v2
 # File: main.py
-# File Revision: 2026-05-15-stocktake-recycled-subpage-r1
-# Status: add recycled stocktake subpage route
+# File Revision: 2026-05-15-admin-users-route-r1
+# Status: add /admin/users route
 # Last Updated: 2026-05-15 Asia/Taipei
 #
 # Purpose:
@@ -15,6 +15,7 @@
 # - 新增 /admin 系統控制中心第一階段路由與超級管理員 Drawer 入口
 # - 新增 /inventory/stocktake 人工盤點功能路由
 # - 新增 /inventory/stocktake/recycled 回用料逐筆盤點子頁路由
+# - 新增 /admin/users 使用者與權限管理子頁路由
 #
 # Notes:
 # - 本檔以 2026-05-11 auth restore guard 穩定版為基礎
@@ -48,6 +49,7 @@ from views.reports import ReportsContent
 from views.admin import AdminContent
 from views.admin_materials import AdminMaterialsContent
 from views.admin_maintenance import AdminMaintenanceContent
+from views.admin_users import AdminUsersContent
 
 
 SESSION_TOKEN_KEY = "knh_session_token"
@@ -1321,6 +1323,14 @@ def main(page: ft.Page):
                     "保養管理",
                     AdminMaintenanceContent(page),
                     3,
+                )
+
+            elif route == "/admin/users":
+                target_view = shell(
+                    "/admin/users",
+                    "使用者與權限",
+                    AdminUsersContent(page),
+                    0,
                 )
 
             elif route == "/education":

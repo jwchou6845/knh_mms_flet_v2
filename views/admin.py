@@ -1,9 +1,9 @@
 # =====================================================
 # KNH MMS v2
 # File: views/admin.py
-# File Revision: 2026-05-12-admin-home-phase1-r1
-# Status: phase 1 new file
-# Last Updated: 2026-05-12 Asia/Taipei
+# File Revision: 2026-05-15-admin-home-users-entry-r1
+# Status: add users and permissions entry
+# Last Updated: 2026-05-15 Asia/Taipei
 #
 # Purpose:
 # - /admin 系統控制中心首頁。
@@ -16,6 +16,7 @@
 # - 使用背景 thread 載入資料，避免阻塞 Flet Web 手機畫面。
 # - 新增人工盤點管理入口，導向既有 /inventory/stocktake 頁面。
 # - 新增人工盤點摘要：草稿、待審核、本月已確認、已作廢。
+# - 使用者與權限入口改為可使用，導向 /admin/users。
 #
 # Notes:
 # - Flet 0.84；不使用 page.push_route()。
@@ -409,7 +410,7 @@ def AdminContent(page: ft.Page) -> ft.Control:
                 module_card(1, "原料與庫存設定", "新增、停用原料，管理包重與低水位。", ft.Icons.INVENTORY_2_OUTLINED, BLUE_BTN, BLUE_SOFT, BLUE_BORDER, "/admin/materials"),
                 module_card(2, "人工盤點管理", "查看盤點單、待審核盤點與作廢紀錄。", ft.Icons.FACT_CHECK_OUTLINED, GREEN, GREEN_SOFT, GREEN_BORDER, "/inventory/stocktake"),
                 module_card(3, "保養管理", "整合保養項目管理與已刪除項目入口。", ft.Icons.HANDYMAN_OUTLINED, PURPLE_BTN, PURPLE_SOFT, PURPLE_BORDER, "/admin/maintenance"),
-                module_card(4, "使用者與權限", "管理帳號啟用狀態、角色與 Session。", ft.Icons.GROUP_OUTLINED, BLUE_BTN, BLUE_SOFT, BLUE_BORDER, "/admin/users", planned=True),
+                module_card(4, "使用者與權限", "管理帳號啟用狀態、角色與權限。", ft.Icons.GROUP_OUTLINED, BLUE_BTN, BLUE_SOFT, BLUE_BORDER, "/admin/users"),
                 module_card(5, "報表與匯出設定", "設定報表欄位、預覽筆數與匯出格式。", ft.Icons.BAR_CHART_OUTLINED, BLUE_BTN, BLUE_SOFT, BLUE_BORDER, "/admin/reports", planned=True),
                 module_card(6, "系統參數", "管理同步秒數、預設查詢筆數與模組開關。", ft.Icons.SETTINGS_OUTLINED, ORANGE_BTN, ORANGE_SOFT, ORANGE_BORDER, "/admin/settings", planned=True),
                 module_card(7, "稽核與刪除還原", "查詢操作紀錄與刪除還原紀錄。", ft.Icons.ADMIN_PANEL_SETTINGS_OUTLINED, GREEN, GREEN_SOFT, GREEN_BORDER, "/admin/audit", planned=True),
@@ -464,7 +465,7 @@ def AdminContent(page: ft.Page) -> ft.Control:
                                 ft.Icon(ft.Icons.LOCK_OUTLINE, size=48, color=RED),
                                 ft.Text("無權限存取", size=24, color=TEXT, weight=ft.FontWeight.BOLD),
                                 ft.Text("此頁面僅限超級管理員使用。如需調整權限，請聯繫系統管理員。", size=14, color=TEXT_MUTED, text_align=ft.TextAlign.CENTER),
-                                ft.ElevatedButton(text="返回首頁", icon=ft.Icons.HOME_OUTLINED, bgcolor=BLUE_BTN, color="#FFFFFF", on_click=lambda _: navigate("/")),
+                                ft.ElevatedButton("返回首頁", icon=ft.Icons.HOME_OUTLINED, bgcolor=BLUE_BTN, color="#FFFFFF", on_click=lambda _: navigate("/")),
                             ],
                         ),
                     )
