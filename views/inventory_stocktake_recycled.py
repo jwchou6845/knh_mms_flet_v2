@@ -1,8 +1,8 @@
 # =====================================================
 # KNH MMS v2
 # File: views/inventory_stocktake_recycled.py
-# File Revision: 2026-05-15-recycled-subpage-r1
-# Status: recycled stocktake dedicated single-item workflow
+# File Revision: 2026-05-15-recycled-subpage-r2
+# Status: recycled stocktake dedicated single-item workflow mobile layout fix
 # Last Updated: 2026-05-15 Asia/Taipei
 #
 # Purpose:
@@ -16,6 +16,8 @@
 # - 每次只顯示目前待核對的一筆回用料；儲存後自動切到下一筆。
 # - 支援五種核對結果：在庫確認、找不到實物、已領用未登錄、需報廢、資料異常。
 # - 底部僅顯示最近已核對 5 筆極簡摘要，不提供顯示 / 收合大量明細。
+# - r2 修正手機 Web 按鈕文字被裁切問題，將關鍵導覽按鈕改為可換行的 ResponsiveRow。
+# - r2 修正最近已核對比例，改為 已核對 / 總筆數，例如 2 / 25 筆。
 #
 # Notes:
 # - Flet 0.84。
@@ -252,7 +254,7 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
             on_click=None if disabled else on_click,
             disabled=disabled,
         )
-        btn.height = 46
+        btn.height = 54
         btn.expand = expand
         return btn
 
@@ -263,7 +265,7 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
             on_click=None if disabled else on_click,
             disabled=disabled,
         )
-        btn.height = 46
+        btn.height = 54
         btn.expand = expand
         try:
             btn.style = ft.ButtonStyle(color=color)
@@ -1011,7 +1013,7 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
             ),
         )
 
-    def build_recent_checked_rows(checked_items: list[dict[str, Any]]) -> ft.Control:
+    def build_recent_checked_rows(checked_items: list[dict[str, Any]], total_all: int) -> ft.Control:
         recent = checked_items[:5]
         rows: list[ft.Control] = [
             ft.Row(
@@ -1023,7 +1025,7 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
                         expand=True,
                         spacing=2,
                         controls=[
-                            ft.Text(f"最近已核對：{len(recent)} / {len(checked_items)} 筆", size=17, color=TEXT, weight=ft.FontWeight.BOLD),
+                            ft.Text(f"最近已核對：{len(checked_items)} / {total_all} 筆", size=17, color=TEXT, weight=ft.FontWeight.BOLD),
                             ft.Text("只顯示最近 5 筆摘要，避免大量已核對項目造成畫面卡頓。", size=12, color=TEXT_MUTED),
                         ],
                     ),
@@ -1093,11 +1095,19 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
                     section_title("回用料盤點單", "選擇一張草稿盤點單繼續逐筆核對，或新增一張回用料盤點單。"),
                 ],
             ),
-            ft.Row(
+            ft.ResponsiveRow(
+                columns=12,
                 spacing=10,
+                run_spacing=10,
                 controls=[
-                    native_button("新增回用料盤點單", ft.Icons.ADD, GREEN_BTN, on_click=lambda e: open_create_form(), expand=True, disabled=state.get("busy")),
-                    native_outline_button("返回人工盤點", ft.Icons.ARROW_BACK, BLUE, on_click=lambda e: navigate("/inventory/stocktake"), expand=True),
+                    ft.Container(
+                        col={"xs": 12, "md": 6},
+                        content=native_button("新增回用料盤點單", ft.Icons.ADD, GREEN_BTN, on_click=lambda e: open_create_form(), expand=True, disabled=state.get("busy")),
+                    ),
+                    ft.Container(
+                        col={"xs": 12, "md": 6},
+                        content=native_outline_button("返回人工盤點", ft.Icons.ARROW_BACK, BLUE, on_click=lambda e: navigate("/inventory/stocktake"), expand=True),
+                    ),
                 ],
             ),
             build_create_form(),
@@ -1262,11 +1272,19 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
             )
 
         controls.append(
-            ft.Row(
+            ft.ResponsiveRow(
+                columns=12,
                 spacing=10,
+                run_spacing=10,
                 controls=[
-                    native_outline_button("返回人工盤點", ft.Icons.ARROW_BACK, BLUE, on_click=lambda e: navigate("/inventory/stocktake"), expand=True, disabled=state.get("busy")),
-                    native_outline_button("回用料盤點單列表", ft.Icons.LIST_ALT, GREEN, on_click=lambda e: navigate("/inventory/stocktake/recycled"), expand=True, disabled=state.get("busy")),
+                    ft.Container(
+                        col={"xs": 12, "md": 6},
+                        content=native_outline_button("返回人工盤點", ft.Icons.ARROW_BACK, BLUE, on_click=lambda e: navigate("/inventory/stocktake"), expand=True, disabled=state.get("busy")),
+                    ),
+                    ft.Container(
+                        col={"xs": 12, "md": 6},
+                        content=native_outline_button("回用料盤點單列表", ft.Icons.LIST_ALT, GREEN, on_click=lambda e: navigate("/inventory/stocktake/recycled"), expand=True, disabled=state.get("busy")),
+                    ),
                 ],
             )
         )
@@ -1321,7 +1339,7 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
                     )
                 )
 
-        controls.append(build_recent_checked_rows(checked_items))
+        controls.append(build_recent_checked_rows(checked_items, total_all))
 
         return ft.Container(
             bgcolor="#FFFFFF",
