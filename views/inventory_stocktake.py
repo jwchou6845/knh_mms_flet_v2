@@ -1,9 +1,9 @@
 # =====================================================
 # KNH MMS v2
 # File: views/inventory_stocktake.py
-# File Revision: 2026-05-14-recycled-step2-r9
-# Status: recycled stocktake step 2 - create and readonly detail
-# Last Updated: 2026-05-14 Asia/Taipei
+# File Revision: 2026-05-15-recycled-step3-autohide-r10
+# Status: recycled stocktake step 3 - one-button auto-hide pilot
+# Last Updated: 2026-05-15 Asia/Taipei
 #
 # Purpose:
 # - 人工盤點功能頁面：建立盤點單、輸入實盤數、送出待審核、超級管理員確認盤點。
@@ -19,6 +19,8 @@
 # - r7 新增待審核退回修改流程。
 # - r8 新增盲盤模式 count_mode：草稿階段隱藏帳面庫存與差異，送出待審核後才顯示差異。
 # - r9 Step 2 新增回用料盤點單建立入口與唯讀明細顯示；暫不接單筆核對儲存 UI。
+# - r10 Step 3 只新增「儲存為在庫確認」單筆核對試行版；成功後局部更新 state，
+#   讓該筆從待核對清單移至已核對收合區，不重讀整張 detail、不整頁資料 reload。
 #
 # Notes:
 # - Flet 0.84。
@@ -27,7 +29,8 @@
 # - 第一版新料 / 母粒正式庫存盤點已完成；回用料逐筆盤點採分階段重新導入。
 # - r8 需搭配 services/stocktake_service.py r3 與 inventory_counts.count_mode 欄位。
 # - r9 Step 2 需搭配已部署的 stocktake_repo.py / stocktake_service.py 回用料資料層。
-# - 回用料不使用盲盤；此版只建立回用料盤點單並顯示在庫回用料明細。
+# - 回用料不使用盲盤；本版保留建立回用料盤點單與在庫明細顯示。
+# - 本版只開放「在庫確認」單一按鈕測試 auto-hide 流程；其他結果狀態後續再小步補上。
 # =====================================================
 
 from __future__ import annotations
@@ -47,6 +50,7 @@ from services.stocktake_service import (
     return_inventory_count,
     submit_inventory_count,
     update_count_item_actual_stock,
+    update_count_recycled_item_check,
     void_inventory_count,
 )
 
@@ -127,6 +131,8 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
         "show_entered_items": False,
         "show_void_form": False,
         "show_return_form": False,
+        "show_checked_recycled_items": False,
+        "recycled_saving_ids": set(),
     }
 
     ui_lock = threading.RLock()
@@ -504,6 +510,10 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
         state["show_entered_items"] = not bool(state.get("show_entered_items"))
         rebuild()
 
+    def toggle_checked_recycled_items(e=None):
+        state["show_checked_recycled_items"] = not bool(state.get("show_checked_recycled_items"))
+        rebuild()
+
     def toggle_void_form(e=None):
         state["show_void_form"] = not bool(state.get("show_void_form"))
         rebuild()
@@ -723,6 +733,112 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
             show_snack(result.message, success=True)
 
         run_action(action, "正在更新實盤數...")
+
+    def recalc_recycled_summary_from_state(items: list[dict[str, Any]]) -> dict[str, Any]:
+        total = len(items)
+        checked = 0
+        abnormal = 0
+        status_counts = {
+            "unchecked": 0,
+            "confirmed": 0,
+            "missing": 0,
+            "used_not_recorded": 0,
+            "scrap_required": 0,
+            "data_abnormal": 0,
+        }
+
+        for item in items:
+            status = str(item.get("check_status") or "unchecked")
+            if status not in status_counts:
+                status = "unchecked"
+            status_counts[status] += 1
+            if status != "unchecked":
+                checked += 1
+            if status in ["missing", "used_not_recorded", "scrap_required", "data_abnormal"]:
+                abnormal += 1
+
+        return {
+            "total_items": total,
+            "checked_items": checked,
+            "unchecked_items": max(0, total - checked),
+            "entered_items": checked,
+            "not_entered_items": max(0, total - checked),
+            "difference_items": abnormal,
+            "abnormal_items": abnormal,
+            "status_counts": status_counts,
+        }
+
+    def replace_recycled_item_in_state(updated_item: dict[str, Any]) -> None:
+        if not updated_item:
+            return
+        detail = state.get("detail") or {}
+        items = list(detail.get("recycled_items") or [])
+        updated_id = str(updated_item.get("id") or "")
+        if not updated_id:
+            return
+
+        replaced = False
+        for index, current in enumerate(items):
+            if str(current.get("id") or "") == updated_id:
+                items[index] = updated_item
+                replaced = True
+                break
+
+        if not replaced:
+            items.append(updated_item)
+
+        detail["recycled_items"] = items
+        detail["summary"] = recalc_recycled_summary_from_state(items)
+        state["detail"] = detail
+
+    def save_recycled_confirmed_action(item: dict[str, Any]) -> None:
+        item_id = str(item.get("id") or "")
+        if not item_id:
+            set_status("找不到回用料盤點明細。", "red", True)
+            rebuild()
+            return
+
+        saving_ids = state.setdefault("recycled_saving_ids", set())
+        if item_id in saving_ids:
+            return
+
+        saving_ids.add(item_id)
+
+        def worker():
+            try:
+                result = update_count_recycled_item_check(
+                    item_id=item_id,
+                    check_status="confirmed",
+                    actual_weight_kg="",
+                    actual_supplier="",
+                    actual_status="",
+                    note="",
+                    checked_by_user_id=current_user_id(),
+                    checked_by_name=current_user_name(),
+                )
+                saving_ids.discard(item_id)
+
+                if not is_active_view():
+                    return
+
+                if not result.ok:
+                    set_status(result.message, "red", True)
+                    rebuild()
+                    return
+
+                data = result.data or {}
+                replace_recycled_item_in_state(data.get("item") or {})
+                set_status("回用料已儲存為在庫確認。", "green", True)
+                rebuild()
+
+            except Exception as ex:
+                saving_ids.discard(item_id)
+                if not is_active_view():
+                    return
+                set_status(f"回用料核對失敗：{ex}", "red", True)
+                rebuild()
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def submit_count_action(e=None):
         detail = state.get("detail") or {}
@@ -1583,6 +1699,52 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
             ),
         )
 
+    def build_recycled_pending_item_card(item: dict[str, Any], editable: bool) -> ft.Control:
+        card = build_recycled_readonly_item_card(item)
+        if not editable:
+            return card
+
+        item_id = str(item.get("id") or "")
+        saving_ids = state.get("recycled_saving_ids") or set()
+        saving = item_id in saving_ids
+
+        action_box = ft.Container(
+            bgcolor=GREEN_SOFT,
+            border=ft.border.all(1, GREEN_BORDER),
+            border_radius=12,
+            padding=12,
+            content=ft.Column(
+                spacing=10,
+                controls=[
+                    ft.Text(
+                        "盤點結果",
+                        size=13,
+                        color=TEXT,
+                        weight=ft.FontWeight.W_600,
+                    ),
+                    ft.Text(
+                        "此版先開放最常用的「在庫確認」。儲存成功後，該筆會移到下方已核對收合區。",
+                        size=12,
+                        color=TEXT_MUTED,
+                    ),
+                    stable_button(
+                        "正在儲存..." if saving else "儲存為在庫確認",
+                        ft.Icons.CHECK_CIRCLE_OUTLINE,
+                        GREEN_BTN,
+                        on_click=lambda e, it=item: save_recycled_confirmed_action(it),
+                        expand=True,
+                        disabled=saving,
+                    ),
+                ],
+            ),
+        )
+
+        try:
+            card.content.controls[-1] = action_box
+        except Exception:
+            pass
+        return card
+
     def build_detail_panel() -> ft.Control:
         detail = state.get("detail")
         if not detail:
@@ -1798,17 +1960,90 @@ def InventoryStocktakeContent(page: ft.Page) -> ft.Control:
         controls.append(ft.Divider(height=18, color="#EEF2F7"))
 
         if recycled_count:
+            pending_recycled_items = [item for item in recycled_items if not bool(item.get("has_checked"))]
+            checked_recycled_items = [item for item in recycled_items if bool(item.get("has_checked"))]
+
             controls.append(
                 section_title(
-                    "回用料盤點明細",
-                    "此階段先顯示回用料盤點單與在庫明細；單筆核對儲存將於下一步接上。",
+                    "待核對回用料",
+                    f"剩餘 {len(pending_recycled_items)} 筆尚未核對；此版先開放「在庫確認」單筆儲存，成功後會移到已核對區。",
                 )
             )
             if not recycled_items:
                 controls.append(ft.Text("此回用料盤點單沒有明細。", size=14, color=TEXT_MUTED))
+            elif not pending_recycled_items:
+                controls.append(
+                    ft.Container(
+                        bgcolor=GREEN_SOFT,
+                        border=ft.border.all(1, GREEN_BORDER),
+                        border_radius=14,
+                        padding=14,
+                        content=ft.Row(
+                            spacing=10,
+                            controls=[
+                                ft.Icon(ft.Icons.CHECK_CIRCLE_OUTLINE, color=GREEN, size=20),
+                                ft.Text("所有回用料都已核對。", size=13, color=GREEN, weight=ft.FontWeight.W_600),
+                            ],
+                        ),
+                    )
+                )
             else:
-                for item in recycled_items:
-                    controls.append(build_recycled_readonly_item_card(item))
+                for item in pending_recycled_items:
+                    controls.append(build_recycled_pending_item_card(item, editable=editable))
+
+            checked_visible = bool(state.get("show_checked_recycled_items"))
+            controls.append(
+                ft.Container(
+                    bgcolor="#FFFFFF",
+                    border=ft.border.all(1, BORDER),
+                    border_radius=16,
+                    padding=14,
+                    content=ft.Column(
+                        spacing=12,
+                        controls=[
+                            ft.Row(
+                                spacing=10,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                controls=[
+                                    ft.Icon(ft.Icons.DONE_ALL_OUTLINED, size=23, color=GREEN),
+                                    ft.Column(
+                                        expand=True,
+                                        spacing=2,
+                                        controls=[
+                                            ft.Text(f"已核對回用料：{len(checked_recycled_items)} 筆", size=17, color=TEXT, weight=ft.FontWeight.BOLD),
+                                            ft.Text("預設收合，避免已完成項目佔滿畫面。", size=12, color=TEXT_MUTED),
+                                        ],
+                                    ),
+                                    ft.Container(
+                                        height=36,
+                                        padding=ft.padding.symmetric(horizontal=12),
+                                        border_radius=18,
+                                        bgcolor=GREEN_SOFT if checked_visible else "#FFFFFF",
+                                        border=ft.border.all(1, GREEN_BORDER),
+                                        ink=True,
+                                        on_click=toggle_checked_recycled_items,
+                                        content=ft.Row(
+                                            tight=True,
+                                            spacing=6,
+                                            alignment=ft.MainAxisAlignment.CENTER,
+                                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                            controls=[
+                                                ft.Icon(ft.Icons.EXPAND_LESS if checked_visible else ft.Icons.EXPAND_MORE, size=17, color=GREEN),
+                                                ft.Text("收合" if checked_visible else "顯示", size=13, color=GREEN, weight=ft.FontWeight.W_600),
+                                            ],
+                                        ),
+                                    ),
+                                ],
+                            ),
+                            *(
+                                [build_recycled_readonly_item_card(item) for item in checked_recycled_items]
+                                if checked_visible
+                                else []
+                            ),
+                        ],
+                    ),
+                )
+            )
         elif not items:
             controls.append(section_title("盤點項目", "此盤點單沒有明細。"))
             controls.append(ft.Text("此盤點單沒有明細。", size=14, color=TEXT_MUTED))
