@@ -1,8 +1,8 @@
 # =====================================================
 # KNH MMS v2
 # File: views/inventory_stocktake_recycled.py
-# File Revision: 2026-05-15-recycled-subpage-r10
-# Status: action feedback and guarded navigation; route-only count_id
+# File Revision: 2026-05-15-recycled-subpage-r11
+# Status: add recycled stocktake void flow
 # Last Updated: 2026-05-15 Asia/Taipei
 #
 # Purpose:
@@ -28,6 +28,10 @@
 # - 時間與資料寫入邏輯由 services/stocktake_service.py 統一使用 Asia/Taipei。
 # - 第一版不自動修改 recycled_materials 狀態，只保留盤點紀錄。
 # - r9.1 只改 views/inventory_stocktake_recycled.py，不動其他檔案。
+# - r10 [UX] 新增單筆核對操作回饋與導頁防連點。
+# - r11 [FEATURE] 補上回用料盤點單作廢流程：超級管理員可作廢草稿 / 待審核盤點單，作廢原因必填。
+#   使用既有 services.stocktake_service.void_inventory_count，不直接修改資料庫。
+# - r11 只改 views/inventory_stocktake_recycled.py，不動 main.py / service / repo。
 # =====================================================
 
 from __future__ import annotations
@@ -46,6 +50,7 @@ from services.stocktake_service import (
     now_taipei,
     submit_inventory_count,
     update_count_recycled_item_check,
+    void_inventory_count,
 )
 
 
@@ -124,6 +129,7 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
         "detail": None,
         "active_count_id": "",
         "show_create_form": False,
+        "show_void_form": False,
         "selected_recycled_item_id": "",
         "saving_recycled_item_ids": set(),
         "navigation_busy": False,
@@ -878,6 +884,7 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
         threading.Thread(target=worker, daemon=True).start()
 
     create_note_field = text_field(hint="例如：月盤、臨時盤點、回用料複查", multiline=True)
+    void_reason_field = text_field(hint="請輸入作廢原因", multiline=True)
 
     def create_recycled_count_action(e=None) -> None:
         if state.get("busy"):
@@ -1028,6 +1035,105 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
                 state["last_action_message"] = f"回用料核對失敗：{ex}"
                 state["last_action_theme"] = "red"
                 set_status(f"回用料核對失敗：{ex}", "red", True)
+                rebuild()
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def toggle_void_form(e=None) -> None:
+        if state.get("busy"):
+            return
+        state["show_void_form"] = not bool(state.get("show_void_form"))
+        rebuild()
+
+    def close_void_form(e=None) -> None:
+        state["show_void_form"] = False
+        try:
+            void_reason_field.value = ""
+        except Exception:
+            pass
+        rebuild()
+
+    def void_recycled_count_action(e=None) -> None:
+        if not is_super_admin():
+            state["last_action_message"] = "只有超級管理員可以作廢盤點單。"
+            state["last_action_theme"] = "red"
+            set_status("只有超級管理員可以作廢盤點單。", "red", True)
+            rebuild()
+            return
+
+        reason = str(void_reason_field.value or "").strip()
+        if not reason:
+            state["last_action_message"] = "請輸入作廢原因。"
+            state["last_action_theme"] = "red"
+            set_status("請輸入作廢原因。", "red", True)
+            rebuild()
+            return
+
+        detail = state.get("detail") or {}
+        count = detail.get("count") or {}
+        count_id = str(count.get("id") or "")
+        if not count_id or state.get("busy"):
+            return
+
+        state["busy"] = True
+        set_status("正在作廢回用料盤點單", "blue", True)
+        state["last_action_message"] = "正在作廢回用料盤點單..."
+        state["last_action_theme"] = "blue"
+        rebuild()
+
+        def worker():
+            try:
+                result = void_inventory_count(
+                    count_id=count_id,
+                    void_reason=reason,
+                    voided_by_user_id=current_user_id(),
+                    voided_by_name=current_user_name(),
+                )
+
+                if not is_active_view():
+                    state["busy"] = False
+                    return
+
+                state["busy"] = False
+
+                if not result.ok:
+                    state["last_action_message"] = result.message
+                    state["last_action_theme"] = "red"
+                    set_status(result.message, "red", True)
+                    rebuild()
+                    return
+
+                void_reason_field.value = ""
+                state["show_void_form"] = False
+                state["selected_recycled_item_id"] = ""
+                try:
+                    _item_note_field.value = ""
+                except Exception:
+                    pass
+
+                detail_result = load_inventory_count_detail(count_id)
+                if detail_result.ok:
+                    state["detail"] = detail_result.data or {}
+                else:
+                    # 作廢已成功，但明細重讀失敗時至少更新目前 count 狀態，避免畫面誤導。
+                    updated_count = (result.data or {}).get("count") or {}
+                    if updated_count:
+                        current_detail = state.get("detail") or {}
+                        current_detail["count"] = updated_count
+                        state["detail"] = current_detail
+
+                state["last_action_message"] = result.message or "回用料盤點單已作廢。"
+                state["last_action_theme"] = "green"
+                set_status(result.message or "回用料盤點單已作廢。", "green", True)
+                rebuild()
+
+            except Exception as ex:
+                state["busy"] = False
+                if not is_active_view():
+                    return
+                state["last_action_message"] = f"作廢回用料盤點單失敗：{ex}"
+                state["last_action_theme"] = "red"
+                set_status(f"作廢回用料盤點單失敗：{ex}", "red", True)
                 rebuild()
 
         threading.Thread(target=worker, daemon=True).start()
@@ -1618,6 +1724,94 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
             ),
         )
 
+    def build_void_section() -> ft.Control:
+        """r11：回用料盤點單作廢區塊。僅超級管理員、草稿 / 待審核可見。"""
+        if state.get("show_void_form"):
+            return ft.Container(
+                bgcolor=RED_SOFT,
+                border=ft.border.all(1, RED_BORDER),
+                border_radius=16,
+                padding=14,
+                content=ft.Column(
+                    spacing=12,
+                    controls=[
+                        ft.Row(
+                            spacing=8,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                            controls=[
+                                ft.Icon(ft.Icons.WARNING_AMBER_ROUNDED, color=RED, size=22),
+                                ft.Column(
+                                    expand=True,
+                                    spacing=2,
+                                    controls=[
+                                        ft.Text("危險操作：作廢回用料盤點單", size=16, color=RED, weight=ft.FontWeight.BOLD),
+                                        ft.Text("作廢後不會修改回用料狀態，但會保留稽核紀錄；請務必填寫原因。", size=12, color=TEXT_MUTED),
+                                    ],
+                                ),
+                            ],
+                        ),
+                        void_reason_field,
+                        ft.Row(
+                            spacing=10,
+                            controls=[
+                                native_outline_button(
+                                    "取消作廢",
+                                    ft.Icons.CLOSE,
+                                    TEXT_MUTED,
+                                    on_click=close_void_form,
+                                    expand=True,
+                                    disabled=state.get("busy"),
+                                ),
+                                native_button(
+                                    "確認作廢",
+                                    ft.Icons.BLOCK,
+                                    RED_BTN,
+                                    on_click=void_recycled_count_action,
+                                    expand=True,
+                                    disabled=state.get("busy"),
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+            )
+
+        return ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, RED_BORDER),
+            border_radius=16,
+            padding=14,
+            content=ft.Row(
+                spacing=12,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[
+                    ft.Container(
+                        width=42,
+                        height=42,
+                        border_radius=13,
+                        bgcolor=RED_SOFT,
+                        alignment=ft.Alignment(0, 0),
+                        content=ft.Icon(ft.Icons.WARNING_AMBER_ROUNDED, color=RED, size=22),
+                    ),
+                    ft.Column(
+                        expand=True,
+                        spacing=2,
+                        controls=[
+                            ft.Text("危險操作", size=15, color=TEXT, weight=ft.FontWeight.BOLD),
+                            ft.Text("需要取消本張草稿或待審核回用料盤點單時，請從這裡作廢。", size=12, color=TEXT_MUTED),
+                        ],
+                    ),
+                    native_outline_button(
+                        "作廢盤點單",
+                        ft.Icons.BLOCK,
+                        RED,
+                        on_click=toggle_void_form,
+                        disabled=state.get("busy"),
+                    ),
+                ],
+            ),
+        )
+
     def build_detail_panel() -> ft.Control:
         detail = state.get("detail")
 
@@ -1649,6 +1843,7 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
         can_edit = status == "draft"
         can_submit = can_edit and not pending_items and total_all > 0
         can_confirm = status == "submitted" and is_super_admin()
+        can_void = status in ["draft", "submitted"] and is_super_admin()
 
         controls: list[ft.Control] = [
             ft.Row(
@@ -1688,6 +1883,22 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
                     border_radius=14,
                     padding=14,
                     content=ft.Text("此回用料盤點單已確認。第一版只保留盤點紀錄，不自動修改回用料狀態。", size=13, color=GREEN, weight=ft.FontWeight.W_600),
+                )
+            )
+
+        if status == "voided":
+            controls.append(
+                ft.Container(
+                    bgcolor=RED_SOFT,
+                    border=ft.border.all(1, RED_BORDER),
+                    border_radius=14,
+                    padding=14,
+                    content=ft.Text(
+                        f"此回用料盤點單已作廢。原因：{count.get('void_reason') or '-'}",
+                        size=13,
+                        color=RED,
+                        weight=ft.FontWeight.W_600,
+                    ),
                 )
             )
 
@@ -1761,6 +1972,9 @@ def InventoryStocktakeRecycledContent(page: ft.Page) -> ft.Control:
                         expand=True,
                     )
                 )
+
+        if can_void:
+            controls.append(build_void_section())
 
         controls.append(build_recent_checked_rows(checked_items, total_all))
 
