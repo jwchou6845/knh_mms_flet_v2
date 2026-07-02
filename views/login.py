@@ -17,6 +17,11 @@ from services.auth_session_service import create_persistent_session
 REMEMBER_EMPLOYEE_KEY = "knh_employee_id"
 SESSION_TOKEN_KEY = "knh_session_token"
 
+# V2 -> V3 過渡期公告：純文字提醒 + 倒數自動導向新版登入頁。
+# 之後 V2 正式關閉時，這段連同下方 migration_banner / redirect_to_v3 相關程式碼可整段移除。
+V3_LOGIN_URL = "https://knh18bond.com/v3"
+V3_REDIRECT_DELAY_SECONDS = 5
+
 
 def LoginView(page: ft.Page):
     # =====================================================
@@ -989,6 +994,30 @@ def LoginView(page: ft.Page):
             spacing=6,
         )
 
+    def build_migration_banner():
+        return ft.Container(
+            width=card_width,
+            padding=ft.padding.symmetric(horizontal=14, vertical=10),
+            border_radius=12,
+            bgcolor="#FFF7E6",
+            border=ft.border.all(1, "#FBBF6B"),
+            content=ft.Row(
+                controls=[
+                    ft.Icon(ft.Icons.CAMPAIGN_OUTLINED, size=18, color="#B45309"),
+                    ft.Text(
+                        f"系統即將搬遷至新版 V3，{V3_REDIRECT_DELAY_SECONDS} 秒後將自動導向新版登入頁，請改用新網址登入",
+                        size=13,
+                        color="#B45309",
+                        weight=ft.FontWeight.W_600,
+                        text_align=ft.TextAlign.START,
+                        expand=True,
+                    ),
+                ],
+                spacing=8,
+                vertical_alignment=ft.CrossAxisAlignment.START,
+            ),
+        )
+
     def build_footer():
         return ft.Row(
             controls=[
@@ -1020,6 +1049,8 @@ def LoginView(page: ft.Page):
 
     def build_page_content(main_card, footer_visible=True):
         page_controls = [
+            build_migration_banner(),
+            ft.Container(height=12),
             build_header(),
             ft.Container(height=header_gap),
             main_card,
@@ -1280,6 +1311,53 @@ def LoginView(page: ft.Page):
 
     try:
         threading.Timer(0.35, load_remembered_employee_from_browser).start()
+    except Exception:
+        pass
+
+    # =====================================================
+    # V2 -> V3 過渡期：倒數自動導向新版登入頁
+    #
+    # 這個 Flet 版本（0.84 新架構）的 Page 沒有 eval_js / run_javascript，
+    # 且 page.launch_url() 已改為 async，同步呼叫只會拿到「沒被 await 的
+    # coroutine」而不會真的執行，所以一定要包在 async function 裡透過
+    # page.run_task() 丟進事件迴圈執行（跟 reports.py 下載連結用的是
+    # 同一套 Flet 0.84 async 呼叫模式）。
+    # 優先用 UrlLauncher 指定 web_only_window_name="_self" 讓瀏覽器在
+    # 「同一個分頁」導向新網址；若這個 Flet 版本簽名不吃這個參數，退回
+    # page.launch_url()（可能會開新分頁，但至少會導向 V3）。
+    # =====================================================
+    def redirect_to_v3():
+        async def do_redirect():
+            try:
+                await ft.UrlLauncher().launch_url(
+                    V3_LOGIN_URL,
+                    web_only_window_name="_self",
+                )
+                return
+            except Exception as ex:
+                print("redirect to v3 UrlLauncher failed:", repr(ex))
+
+            try:
+                result = page.launch_url(V3_LOGIN_URL)
+                if hasattr(result, "__await__"):
+                    await result
+            except Exception as ex:
+                print("redirect to v3 page.launch_url fallback failed:", repr(ex))
+
+        try:
+            if hasattr(page, "run_task"):
+                page.run_task(do_redirect)
+                return
+        except Exception as ex:
+            print("redirect to v3 run_task dispatch failed:", repr(ex))
+
+        try:
+            page.launch_url(V3_LOGIN_URL)
+        except Exception as ex:
+            print("redirect to v3 sync fallback failed:", repr(ex))
+
+    try:
+        threading.Timer(V3_REDIRECT_DELAY_SECONDS, redirect_to_v3).start()
     except Exception:
         pass
 
